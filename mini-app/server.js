@@ -36,10 +36,10 @@ nextApp.prepare().then(async () => {
   mqttService.start();
 
   const app = express();
+  const jsonParser = express.json({ limit: `${config.images.maxBytes + 1024}b` });
 
   app.use(cors());
   app.use(morgan('dev'));
-  app.use(express.json({ limit: `${config.images.maxBytes + 1024}b` }));
 
   app.get('/health', (_request, response) => {
     response.json({
@@ -50,8 +50,8 @@ nextApp.prepare().then(async () => {
   });
 
   // Mount existing API routes
-  app.use('/api/mqtt', createMqttRouter(mqttService));
-  app.use('/api/images', createImagesRouter());
+  app.use('/api/mqtt', jsonParser, createMqttRouter(mqttService));
+  app.use('/api/images', jsonParser, createImagesRouter());
 
   // Let Next.js handle all other requests
   app.use((req, res) => {

@@ -53,32 +53,12 @@ export const mockEvents: SecurityEvent[] = [
   },
   {
     id: '6',
-    type: 'access_granted',
-    title: 'Truy cập hợp lệ',
-    description: 'Thẻ RFID #A3F2 - Nguyễn Văn A',
-    timestamp: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
-    thumbnailUrl: '/thumbnails/access.png',
-    severity: 'info',
-    cardId: 'card-1',
-  },
-  {
-    id: '7',
     type: 'camera_blocked',
     title: 'Camera bị che',
     description: 'Camera chính bị che hoặc mờ',
     timestamp: new Date(Date.now() - 1000 * 60 * 60 * 8).toISOString(),
     thumbnailUrl: '/thumbnails/blocked.png',
     aiConfidence: 0.95,
-    severity: 'danger',
-  },
-  {
-    id: '8',
-    type: 'stranger_detected',
-    title: 'Phát hiện người lạ',
-    description: 'Phát hiện 2 người lạ lúc rạng sáng',
-    timestamp: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
-    thumbnailUrl: '/thumbnails/stranger.png',
-    aiConfidence: 0.89,
     severity: 'danger',
   },
 ];
@@ -111,7 +91,7 @@ export const mockCards: RfidCard[] = [
   {
     id: 'card-4',
     cardUid: 'E8:2C:91:A5',
-    name: 'Phạm Thị D (Khách)',
+    name: 'Phạm Thị D',
     isActive: false,
     addedAt: '2025-04-05T09:00:00Z',
   },
@@ -130,6 +110,8 @@ export const mockSystemStatus: SystemStatus = {
   motionDetected: false,
   temperatureC: 28.4,
   humidityPct: 65,
+  modelLabel: 'normal',
+  anomalyScore: 0.08,
   lastUpdate: new Date().toISOString(),
 };
 
@@ -137,4 +119,5 @@ export const defaultAlertConfig: AlertConfig = {
   objectLeftMaxSeconds: 60,
   strangerAlertEnabled: true,
   cameraBlockedAlertEnabled: true,
+  masterKeyEnabled: false,
 };

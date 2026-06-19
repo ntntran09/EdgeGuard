@@ -136,7 +136,7 @@ export function createMqttService({ onImageSaved } = {}) {
           deviceId: config.mqtt.deviceId,
           label: parsed.label,
           confidence: parsed.anomaly_score,
-          imagePath: snapshot.latestImage?.filename,
+          imagePath: snapshot.latestImage?.base64,
           telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
         });
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
@@ -144,14 +144,16 @@ export function createMqttService({ onImageSaved } = {}) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'motion',
-            message: 'Motion detected at the camera',
+            message: 'Phát hiện chuyển động (Cảm biến)',
+            thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
         if (parsed.door_open) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'door_open',
-            message: 'The door was opened',
+            message: 'Cửa đã được mở (Cảm biến)',
+            thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
       } else if (key === 'system' && parsed && parsed.rfid_scanned) {
@@ -161,7 +163,15 @@ export function createMqttService({ onImageSaved } = {}) {
             supabaseService.insertAlert({
               deviceId: config.mqtt.deviceId,
               alertType: 'rfid_invalid',
-              message: `Unauthorized RFID scanned: ${parsed.rfid_scanned}`,
+              message: `Thẻ RFID không hợp lệ: ${parsed.rfid_scanned}`,
+              thumbnailUrl: snapshot.latestImage?.base64,
+            });
+          } else {
+            supabaseService.insertAlert({
+              deviceId: config.mqtt.deviceId,
+              alertType: 'access_granted',
+              message: `Mở cửa thành công bằng thẻ: ${parsed.rfid_scanned}`,
+              thumbnailUrl: snapshot.latestImage?.base64,
             });
           }
         });

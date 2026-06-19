@@ -50,7 +50,15 @@ declare global {
 }
 
 // Domain types
-export type EventType = 'access_granted' | 'access_denied' | 'stranger_detected' | 'object_left' | 'camera_blocked' | 'rfid_scan';
+export type EventType =
+  | 'access_granted'
+  | 'access_denied'
+  | 'stranger_detected'
+  | 'object_left'
+  | 'camera_blocked'
+  | 'rfid_scan'
+  | 'rfid_invalid'
+  | 'system_event';
 export type EventSeverity = 'info' | 'warning' | 'danger';
 
 export interface SecurityEvent {
@@ -87,13 +95,17 @@ export interface SystemStatus {
   motionDetected: boolean;
   temperatureC?: number;
   humidityPct?: number;
+  modelLabel?: string;
+  anomalyScore?: number;
   lastUpdate?: string;
+  error?: string;
 }
 
 export interface AlertConfig {
   objectLeftMaxSeconds: number;
   strangerAlertEnabled: boolean;
   cameraBlockedAlertEnabled: boolean;
+  masterKeyEnabled?: boolean;
 }
 
 export type MascotState = 'idle' | 'alert' | 'happy' | 'sleep';

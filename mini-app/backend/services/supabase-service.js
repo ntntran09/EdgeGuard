@@ -28,7 +28,7 @@ export const supabaseService = {
     }
   },
 
-  async insertAlert({ deviceId, alertType, message }) {
+  async insertAlert({ deviceId, alertType, message, thumbnailUrl }) {
     if (!supabase) return;
 
     const { error } = await supabase.from('alerts').insert([
@@ -36,6 +36,7 @@ export const supabaseService = {
         device_id: deviceId,
         alert_type: alertType,
         message,
+        thumbnail_url: thumbnailUrl,
         resolved: false,
       },
     ]);

@@ -120,6 +120,7 @@ export async function saveImageBuffer(buffer, metadata = {}) {
     deviceId: metadata.deviceId,
     capturedAt: metadata.capturedAt,
     savedAt,
+    base64: `data:${detected.contentType};base64,${buffer.toString('base64')}`
   };
 
   await ensureImageStorage();

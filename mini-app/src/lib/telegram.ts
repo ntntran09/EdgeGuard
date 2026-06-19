@@ -14,11 +14,12 @@ export function formatTimeAgo(timestamp: string): string {
   const diffHours = Math.floor(diffMinutes / 60);
   const diffDays = Math.floor(diffHours / 24);
 
+  if (Number.isNaN(then)) return 'Không rõ thời gian';
   if (diffSeconds < 60) return 'Vừa xong';
   if (diffMinutes < 60) return `${diffMinutes} phút trước`;
   if (diffHours < 24) return `${diffHours} giờ trước`;
   if (diffDays < 7) return `${diffDays} ngày trước`;
-  
+
   return new Date(timestamp).toLocaleDateString('vi-VN', {
     day: '2-digit',
     month: '2-digit',

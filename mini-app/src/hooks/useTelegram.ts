@@ -14,22 +14,25 @@ export function useTelegram() {
     if (tg) {
       tg.ready();
       tg.expand();
-      setWebApp(tg);
-      setUser(tg.initDataUnsafe?.user || null);
-      setColorScheme(tg.colorScheme || 'light');
-      setIsReady(true);
-    } else {
-      // Development fallback when not in Telegram
-      setUser({
-        id: 123456789,
-        first_name: 'Developer',
-        last_name: 'Mode',
-        username: 'dev_user',
+      queueMicrotask(() => {
+        setWebApp(tg);
+        setUser(tg.initDataUnsafe?.user || null);
+        setColorScheme(tg.colorScheme || 'light');
+        setIsReady(true);
       });
-      setColorScheme(
-        window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-      );
-      setIsReady(true);
+    } else {
+      queueMicrotask(() => {
+        setUser({
+          id: 123456789,
+          first_name: 'Developer',
+          last_name: 'Mode',
+          username: 'dev_user',
+        });
+        setColorScheme(
+          window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        );
+        setIsReady(true);
+      });
     }
   }, []);
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import type { MascotState } from '@/types';
 
 interface CatMascotProps {
@@ -11,12 +11,9 @@ interface CatMascotProps {
 }
 
 export function CatMascot({ state = 'idle', size = 140, message, onClick }: CatMascotProps) {
-  const [currentState, setCurrentState] = useState<MascotState>(state);
-  const [showMessage, setShowMessage] = useState(!!message);
+  const currentState = state;
+  const showMessage = Boolean(message);
   const [isClicked, setIsClicked] = useState(false);
-
-  useEffect(() => { setCurrentState(state); }, [state]);
-  useEffect(() => { setShowMessage(!!message); }, [message]);
 
   const handleClick = useCallback(() => {
     setIsClicked(true);

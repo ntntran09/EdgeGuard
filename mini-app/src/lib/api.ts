@@ -47,11 +47,22 @@ export const api = {
     ),
   getCards: () => fetchApi<{ cards: import('@/types').RfidCard[] }>('/api/cards'),
   addCard: (cardUid: string, name: string) =>
-    fetchApi('/api/cards', {
+    fetchApi<{ card: import('@/types').RfidCard }>('/api/cards', {
       method: 'POST',
       body: JSON.stringify({ cardUid, name }),
     }),
   deleteCard: (id: string) =>
     fetchApi(`/api/cards?id=${id}`, { method: 'DELETE' }),
+  editCard: (id: string, updates: Partial<import('@/types').RfidCard>) =>
+    fetchApi<{ card: import('@/types').RfidCard }>('/api/cards', {
+      method: 'PUT',
+      body: JSON.stringify({ id, ...updates }),
+    }),
   getStatus: () => fetchApi<import('@/types').SystemStatus>('/api/status'),
+  getSettings: () => fetchApi<{ settings: import('@/types').AlertConfig }>('/api/settings'),
+  updateSettings: (settings: Partial<import('@/types').AlertConfig>) =>
+    fetchApi('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
 };

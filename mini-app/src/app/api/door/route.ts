@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
 
@@ -19,6 +20,16 @@ export async function POST() {
     }
 
     const data = await res.json();
+
+    if (isSupabaseConfigured) {
+      await supabase.from('alerts').insert([{
+        device_id: process.env.MQTT_DEVICE_ID || 'device_001',
+        alert_type: 'system_event',
+        message: 'Người dùng mở cửa từ xa qua Mini App',
+        resolved: true,
+      }]);
+    }
+
     return NextResponse.json({ ok: true, ...data });
   } catch (error) {
     console.error('[API /door] Error:', error);

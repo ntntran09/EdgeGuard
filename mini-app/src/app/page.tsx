@@ -1,43 +1,111 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
+import Link from 'next/link';
 import { useTelegram } from '@/hooks/useTelegram';
 import { getGreeting, formatDate, formatTimeAgo } from '@/lib/telegram';
 import {
+  AlarmOffFilledIcon,
+  AlarmOnFilledIcon,
+  BlockFilledIcon,
+  CheckFilledIcon,
+  ChevronRightFilledIcon,
   LockOpenFilledIcon,
-  AlarmOnFilledIcon, AlarmOffFilledIcon,
-  CheckFilledIcon, BlockFilledIcon,
-  ShieldFilledIcon, WifiFilledIcon,
-  BellFilledIcon, ChevronRightFilledIcon,
+  ShieldFilledIcon,
+  WifiFilledIcon,
   getEventFilledIcon,
 } from '@/components/icons/FilledIcons';
 import { api } from '@/lib/api';
-import { mockEvents } from '@/lib/mock-data';
-import type { SecurityEvent } from '@/types';
-import Link from 'next/link';
-import Image from 'next/image';
+import type { SecurityEvent, SystemStatus } from '@/types';
+
+type ToastKind = 'success' | 'error' | 'warn';
 
 export default function DashboardPage() {
   const { user } = useTelegram();
-
   const [doorLoading, setDoorLoading] = useState(false);
   const [alarmLoading, setAlarmLoading] = useState(false);
   const [doorSuccess, setDoorSuccess] = useState(false);
   const [alarmActive, setAlarmActive] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; kind: 'success' | 'error' | 'warn' } | null>(null);
-  const [recentEvents] = useState<SecurityEvent[]>(mockEvents.slice(0, 5));
-  const [cameraOnline] = useState(true);
+  const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
+  const [recentEvents, setRecentEvents] = useState<SecurityEvent[]>([]);
+  const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Auto-clear toast
-  useEffect(() => {
-    if (toast) {
-      const t = setTimeout(() => setToast(null), 3000);
-      return () => clearTimeout(t);
+  const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
+    setToast({ msg, kind });
+  }, []);
+
+  const loadDashboard = useCallback(async () => {
+    try {
+      const [eventsRes, statusRes] = await Promise.all([
+        api.getEvents(),
+        api.getStatus().catch(() => null),
+      ]);
+
+      setRecentEvents(eventsRes.events || []);
+      if (statusRes) setStatus(statusRes);
+    } catch (error) {
+      console.error('Failed to load dashboard', error);
+      showToast('Không thể tải dữ liệu giám sát', 'error');
+    } finally {
+      setIsLoading(false);
     }
+  }, [showToast]);
+
+  useEffect(() => {
+    void Promise.resolve().then(loadDashboard);
+
+    const interval = window.setInterval(async () => {
+      try {
+        const statusRes = await api.getStatus();
+        setStatus(statusRes);
+      } catch {
+        setStatus((current) => current ? { ...current, mqttConnected: false } : current);
+      }
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 3000);
+    return () => window.clearTimeout(t);
   }, [toast]);
 
-  const showToast = (msg: string, kind: 'success' | 'error' | 'warn' = 'success') =>
-    setToast({ msg, kind });
+  const latestAlert = useMemo(
+    () => recentEvents.find((event) => event.severity === 'danger' || event.severity === 'warning'),
+    [recentEvents]
+  );
+
+  const cameraEvent = useMemo(
+    () => recentEvents.find((event) => Boolean(event.thumbnailUrl)),
+    [recentEvents]
+  );
+
+  const stats = useMemo(() => [
+    {
+      label: 'MQTT',
+      value: status?.mqttConnected ? 'Online' : 'Offline',
+      tone: status?.mqttConnected ? 'success' : 'danger',
+    },
+    {
+      label: 'Cửa',
+      value: status?.doorOpen ? 'Đang mở' : 'Đã khóa',
+      tone: status?.doorOpen ? 'warning' : 'success',
+    },
+    {
+      label: 'Chuyển động',
+      value: status?.motionDetected ? 'Có tín hiệu' : 'Yên tĩnh',
+      tone: status?.motionDetected ? 'warning' : 'neutral',
+    },
+    {
+      label: 'Môi trường',
+      value: status?.temperatureC !== undefined ? `${status.temperatureC.toFixed(1)}°C` : '--',
+      tone: 'neutral',
+    },
+  ], [status]);
 
   const handleUnlockDoor = useCallback(async () => {
     setDoorLoading(true);
@@ -45,15 +113,15 @@ export default function DashboardPage() {
       await api.unlockDoor();
       setDoorSuccess(true);
       showToast('Đã mở cửa thành công', 'success');
-      setTimeout(() => {
-        setDoorSuccess(false);
-      }, 3000);
+      window.setTimeout(() => setDoorSuccess(false), 3000);
+      const nextStatus = await api.getStatus().catch(() => null);
+      if (nextStatus) setStatus(nextStatus);
     } catch {
-      showToast('Không thể mở cửa, kiểm tra kết nối', 'error');
+      showToast('Không thể mở cửa, kiểm tra kết nối thiết bị', 'error');
     } finally {
       setDoorLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   const handleAlarm = useCallback(async () => {
     setAlarmLoading(true);
@@ -61,29 +129,22 @@ export default function DashboardPage() {
       const next = !alarmActive;
       await api.triggerAlarm(next);
       setAlarmActive(next);
-      if (next) {
-        showToast('Đã kích hoạt báo động', 'warn');
-      } else {
-        showToast('Đã tắt báo động', 'success');
-      }
+      showToast(next ? 'Đã bật báo động' : 'Đã tắt báo động', next ? 'warn' : 'success');
     } catch {
-      showToast('Lỗi kích hoạt báo động', 'error');
+      showToast('Không thể thay đổi trạng thái báo động', 'error');
     } finally {
       setAlarmLoading(false);
     }
-  }, [alarmActive]);
+  }, [alarmActive, showToast]);
 
-  const latestAlert = recentEvents.find(e => e.severity === 'danger' || e.severity === 'warning');
-
-  const toastBg: Record<string, string> = {
+  const toastBg: Record<ToastKind, string> = {
     success: 'var(--accent-success)',
     error: 'var(--accent-danger)',
     warn: 'var(--accent-warning)',
   };
 
   return (
-    <div>
-      {/* ── Toast ── */}
+    <div className="dashboard-page">
       {toast && (
         <div className="toast" style={{ background: toastBg[toast.kind] }}>
           {toast.kind === 'success' && <CheckFilledIcon size={16} />}
@@ -93,182 +154,177 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <header className="dashboard-header">
+      <header className="page-header">
         <div>
-          <p className="text-caption" style={{ margin: '0 0 2px', opacity: 0.75 }}>{formatDate()}</p>
-          <h1 className="text-heading-1" style={{ margin: 0, lineHeight: 1.1 }}>{getGreeting()},</h1>
-          <h2 className="text-heading-2" style={{ margin: '2px 0 0', fontWeight: 700 }}>
-            {user?.first_name || 'Quản trị viên'}
-          </h2>
+          <p className="eyebrow">{formatDate()}</p>
+          <h1 className="text-heading-1">{getGreeting()}, {user?.first_name || 'Quản trị viên'}</h1>
         </div>
+        <span className={`connection-chip ${status?.mqttConnected ? 'is-online' : 'is-offline'}`}>
+          <WifiFilledIcon size={15} />
+          {status?.mqttConnected ? 'Đang kết nối' : 'Mất kết nối'}
+        </span>
       </header>
 
-      <div className="dashboard-grid" style={{ marginTop: '16px' }}>
-        {/* Left Column */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          
-          {/* SYSTEM STATUS BENTO CARD */}
-          <div className="bento-card system-status-card">
-            <div className="status-indicator">
-              <div className={`status-ring ${alarmActive ? 'ring-danger' : 'ring-success'}`}>
-                <ShieldFilledIcon size={48} className={`status-shield ${alarmActive ? 'text-danger' : 'text-success'}`} />
+      <section className="dashboard-shell">
+        <div className="control-column">
+          <div className={`security-hero ${alarmActive ? 'is-alerting' : ''}`}>
+            <div className="security-hero-main">
+              <div className="security-mark">
+                <ShieldFilledIcon size={42} />
+              </div>
+              <div>
+                <span className="eyebrow">Trạng thái hệ thống</span>
+                <h2>{alarmActive ? 'Đang báo động' : status?.mqttConnected ? 'An toàn' : 'Cần kiểm tra'}</h2>
+                <p>
+                  {status?.lastUpdate
+                    ? `Cập nhật ${formatTimeAgo(status.lastUpdate)}`
+                    : isLoading ? 'Đang đồng bộ dữ liệu thiết bị' : 'Chưa có tín hiệu cập nhật'}
+                </p>
               </div>
             </div>
-            <div className="status-details">
-              <h3 style={{ margin: '0 0 4px', fontSize: '1.2rem', fontWeight: 700, color: 'white' }}>
-                {alarmActive ? 'HỆ THỐNG CẢNH BÁO' : 'HỆ THỐNG AN TOÀN'}
-              </h3>
-              <p style={{ margin: 0, fontSize: '0.85rem', color: 'rgba(255,255,255,0.8)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <WifiFilledIcon size={14} /> Trực tuyến • Mọi cảm biến hoạt động tốt
-              </p>
+
+            <div className="stat-grid">
+              {stats.map((item) => (
+                <div className="stat-tile" data-tone={item.tone} key={item.label}>
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Quick Actions */}
-          <div className="quick-actions" id="quick-actions">
-            {/* Mở cửa */}
+          <div className="quick-actions">
             <button
-              className="quick-action-btn"
-              style={{
-                background: doorSuccess
-                  ? 'linear-gradient(135deg, #1a9460 0%, #27ae72 100%)'
-                  : 'var(--gradient-card)',
-                boxShadow: doorSuccess ? '0 4px 14px rgba(15,127,95,0.32)' : 'var(--shadow-card)',
-                color: doorSuccess ? 'white' : 'var(--text)',
-                border: '1px solid rgba(150, 150, 150, 0.1)'
-              }}
+              className={`action-button ${doorSuccess ? 'is-success' : ''}`}
               onClick={handleUnlockDoor}
               disabled={doorLoading}
               id="btn-unlock-door"
             >
               {doorLoading ? (
-                <div className="loading-spinner" style={{ borderColor: 'var(--hint)', borderTopColor: 'var(--accent-primary)' }} />
+                <div className="loading-spinner" />
               ) : doorSuccess ? (
-                <span className="quick-action-icon success-icon"><CheckFilledIcon size={28} /></span>
+                <CheckFilledIcon size={25} />
               ) : (
-                <span className="quick-action-icon" style={{ color: 'var(--accent-primary)' }}><LockOpenFilledIcon size={28} /></span>
+                <LockOpenFilledIcon size={25} />
               )}
-              <span>{doorSuccess ? 'Đã mở!' : 'Mở cửa'}</span>
+              <span>{doorSuccess ? 'Đã mở' : 'Mở cửa'}</span>
             </button>
 
-            {/* Báo động */}
             <button
-              className="quick-action-btn"
-              style={{
-                background: alarmActive
-                  ? 'linear-gradient(135deg, #c0392b 0%, #e84545 100%)'
-                  : 'var(--gradient-card)',
-                boxShadow: alarmActive
-                  ? '0 4px 14px rgba(192,57,43,0.35)'
-                  : 'var(--shadow-card)',
-                color: alarmActive ? 'white' : 'var(--text)',
-                border: '1px solid rgba(150, 150, 150, 0.1)',
-                animation: alarmActive ? 'alarm-active-glow 1.2s ease infinite' : undefined,
-              }}
+              className={`action-button danger-action ${alarmActive ? 'is-active' : ''}`}
               onClick={handleAlarm}
               disabled={alarmLoading}
               id="btn-alarm"
             >
               {alarmLoading ? (
-                <div className="loading-spinner" style={{ borderColor: 'var(--hint)', borderTopColor: 'var(--accent-danger)' }} />
+                <div className="loading-spinner" />
               ) : alarmActive ? (
-                <span className="quick-action-icon" style={{ animation: 'shake 0.4s ease infinite' }}>
-                  <AlarmOffFilledIcon size={28} />
-                </span>
+                <AlarmOffFilledIcon size={25} />
               ) : (
-                <span className="quick-action-icon" style={{ color: 'var(--accent-danger)' }}><AlarmOnFilledIcon size={28} /></span>
+                <AlarmOnFilledIcon size={25} />
               )}
-              <span>{alarmActive ? 'Tắt báo động' : 'Báo động'}</span>
+              <span>{alarmActive ? 'Tắt báo động' : 'Bật báo động'}</span>
             </button>
           </div>
 
-          {/* Camera feed */}
-          <div className="camera-card" id="camera-feed" style={{ borderRadius: '10px' }}>
+          {latestAlert && (
+            <Link href="/logs" className="critical-alert">
+              <span className="alert-card-icon">{getEventFilledIcon(latestAlert.type, { size: 22 })}</span>
+              <span>
+                <strong>{latestAlert.title}</strong>
+                <small>{latestAlert.description}</small>
+              </span>
+              <ChevronRightFilledIcon size={20} />
+            </Link>
+          )}
+        </div>
+
+        <div className="camera-panel">
+          <div className="camera-card">
             <div className="camera-live-indicator">
               <span className="camera-live-dot" /> LIVE
             </div>
             <div className="camera-badge">
-              <span className={`badge badge-pulse ${cameraOnline ? 'badge-success' : 'badge-danger'}`}>
-                {cameraOnline ? 'Đang quan sát' : 'Camera bị che'}
+              <span className={`badge badge-pulse ${status?.mqttConnected ? 'badge-success' : 'badge-danger'}`}>
+                {status?.mqttConnected ? 'Đang quan sát' : 'Chưa có tín hiệu'}
               </span>
             </div>
-            <div className="camera-placeholder">
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M23 7l-7 5 7 5V7z" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-              <span style={{ fontSize: '0.82rem', fontWeight: 500 }}>Live View</span>
+            {cameraEvent?.thumbnailUrl ? (
+              <Image
+                src={cameraEvent.thumbnailUrl}
+                alt={cameraEvent.title}
+                fill
+                sizes="(min-width: 768px) 42vw, 100vw"
+                className="camera-feed"
+                priority
+              />
+            ) : (
+              <div className="camera-placeholder">
+                <ShieldFilledIcon size={42} />
+                <span>EdgeGuard Live View</span>
+              </div>
+            )}
+          </div>
+
+          <div className="insight-strip">
+            <div>
+              <span>AI model</span>
+              <strong>{status?.modelLabel || 'normal'}</strong>
+            </div>
+            <div>
+              <span>Anomaly</span>
+              <strong>{status?.anomalyScore !== undefined ? `${Math.round(status.anomalyScore * 100)}%` : '--'}</strong>
+            </div>
+            <div>
+              <span>Độ ẩm</span>
+              <strong>{status?.humidityPct !== undefined ? `${Math.round(status.humidityPct)}%` : '--'}</strong>
             </div>
           </div>
-
         </div>
+      </section>
 
-        {/* Right Column: Recent Events */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          
-          {/* Latest alert card highlight */}
-          {latestAlert && (
-            <Link href="/logs" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="alert-card bento-card" id="recent-alert" style={{ background: 'var(--gradient-card)' }}>
-                <div className="alert-card-icon" style={{ background: 'rgba(232, 69, 69, 0.1)', color: 'var(--accent-danger)' }}>
-                  {getEventFilledIcon(latestAlert.type, { size: 22 })}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: '0.88rem', marginBottom: '2px' }}>{latestAlert.title}</div>
-                  <div className="text-caption" style={{ color: 'var(--text)' }}>{latestAlert.description}</div>
-                  <div className="text-caption" style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>{formatTimeAgo(latestAlert.timestamp)}</span>
-                    {latestAlert.aiConfidence && (
-                      <span className="event-confidence">AI {Math.round(latestAlert.aiConfidence * 100)}%</span>
-                    )}
-                  </div>
-                </div>
-                <ChevronRightFilledIcon size={20} style={{ color: 'var(--hint)', flexShrink: 0 }} />
-              </div>
-            </Link>
-          )}
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
-            <h3 className="text-heading-3" style={{ margin: 0 }}>Lịch sử hoạt động</h3>
-            <Link href="/logs" style={{ color: 'var(--link)', fontSize: '0.82rem', fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '2px' }}>
-              Xem tất cả <ChevronRightFilledIcon size={16} />
-            </Link>
-          </div>
-
-          <div className="stagger-children bento-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px' }}>
-            {recentEvents.map((event, i) => (
-              <div key={event.id} style={{ borderBottom: i < recentEvents.length - 1 ? '1px solid rgba(150,150,150,0.1)' : 'none', paddingBottom: i < recentEvents.length - 1 ? '12px' : '0' }}>
-                <div className="event-item" style={{ background: 'transparent', boxShadow: 'none', padding: 0 }}>
-                  <div className="event-thumbnail" style={{ width: 44, height: 44 }}>
-                    {event.thumbnailUrl ? (
-                      <Image
-                        src={event.thumbnailUrl}
-                        alt={event.title}
-                        width={44}
-                        height={44}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '8px' }}
-                      />
-                    ) : (
-                      getEventFilledIcon(event.type, { size: 20 })
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: '0.82rem', marginBottom: '1px' }}>{event.title}</div>
-                    <div className="text-caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {event.description}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', flexShrink: 0 }}>
-                    <span className="text-caption" style={{ fontSize: '0.68rem' }}>{formatTimeAgo(event.timestamp)}</span>
-                    {event.aiConfidence && (
-                      <span className="event-confidence">{Math.round(event.aiConfidence * 100)}%</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+      <section className="section-heading-row">
+        <div>
+          <h2 className="text-heading-3">Hoạt động gần đây</h2>
+          <p className="text-caption">{recentEvents.length} sự kiện mới nhất</p>
         </div>
+        <Link href="/logs" className="inline-link">
+          Xem tất cả <ChevronRightFilledIcon size={16} />
+        </Link>
+      </section>
+
+      <div className="recent-list stagger-children">
+        {isLoading ? (
+          <div className="empty-state">Đang tải dữ liệu giám sát...</div>
+        ) : recentEvents.length === 0 ? (
+          <div className="empty-state">Chưa có sự kiện nào được ghi nhận.</div>
+        ) : (
+          recentEvents.slice(0, 5).map((event) => (
+            <Link href="/logs" className="recent-event" key={event.id}>
+              <span className={`event-icon event-${event.severity}`}>
+                {event.thumbnailUrl ? (
+                  <Image
+                    src={event.thumbnailUrl}
+                    alt={event.title}
+                    width={46}
+                    height={46}
+                    className="event-thumb"
+                  />
+                ) : (
+                  getEventFilledIcon(event.type, { size: 21 })
+                )}
+              </span>
+              <span className="recent-event-copy">
+                <strong>{event.title}</strong>
+                <small>{event.description}</small>
+              </span>
+              <span className="recent-event-meta">
+                <small>{formatTimeAgo(event.timestamp)}</small>
+                {event.aiConfidence && <b>{Math.round(event.aiConfidence * 100)}%</b>}
+              </span>
+            </Link>
+          ))
+        )}
       </div>
     </div>
   );

@@ -11,8 +11,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'EdgeGuard - Hệ thống An ninh Thông minh',
-  description: 'Hệ thống AIoT An ninh Giám sát cửa ra vào - EdgeGuard Telegram Mini-App',
+  title: 'EdgeGuard - Hệ thống an ninh thông minh',
+  description: 'EdgeGuard Mini App giám sát cửa ra vào, RFID, camera AI và cảnh báo thời gian thực.',
   robots: 'noindex, nofollow',
 };
 
