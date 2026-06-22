@@ -2,13 +2,17 @@ import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
+const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
+    const body = await request.json().catch(() => ({ action: 'unlock' }));
+    const action = body.action === 'lock' ? 'lock' : 'unlock';
+
     const res = await fetch(`${BACKEND_URL}/api/mqtt/command`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: 'unlock', payload: { duration_ms: 5000 } }),
+      body: JSON.stringify({ command: action, payload: action === 'unlock' ? { duration_ms: 5000 } : {} }),
     });
 
     if (!res.ok) {
@@ -23,9 +27,14 @@ export async function POST() {
 
     if (isSupabaseConfigured) {
       await supabase.from('alerts').insert([{
-        device_id: process.env.MQTT_DEVICE_ID || 'device_001',
-        alert_type: 'system_event',
-        message: 'Người dùng mở cửa từ xa qua Mini App',
+        device_id: DEVICE_ID,
+        alert_type: action === 'unlock' ? 'door_unlocked' : 'door_locked',
+        message: action === 'unlock'
+          ? 'Người dùng mở cửa từ xa qua Mini App'
+          : 'Người dùng khóa cửa từ xa qua Mini App',
+        source: 'manual',
+        severity: 'info',
+        metadata: { action },
         resolved: true,
       }]);
     }

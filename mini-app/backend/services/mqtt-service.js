@@ -135,9 +135,12 @@ export function createMqttService({ onImageSaved } = {}) {
         supabaseService.insertAiLog({
           deviceId: config.mqtt.deviceId,
           label: parsed.label,
-          confidence: parsed.anomaly_score,
+          confidence: parsed.confidence ?? parsed.score ?? parsed.anomaly_score,
+          anomalyScore: parsed.anomaly_score,
+          objectCount: parsed.object_count ?? parsed.people_count ?? 0,
           imagePath: snapshot.latestImage?.base64,
           telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
+          metadata: parsed,
         });
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
@@ -157,23 +160,38 @@ export function createMqttService({ onImageSaved } = {}) {
           });
         }
       } else if (key === 'system' && parsed && parsed.rfid_scanned) {
-        // Optional: handle RFID scanned telemetry
-        supabaseService.validateRfid(parsed.rfid_scanned).then((isValid) => {
-          if (!isValid) {
-            supabaseService.insertAlert({
-              deviceId: config.mqtt.deviceId,
-              alertType: 'rfid_invalid',
-              message: `Thẻ RFID không hợp lệ: ${parsed.rfid_scanned}`,
-              thumbnailUrl: snapshot.latestImage?.base64,
-            });
-          } else {
-            supabaseService.insertAlert({
+        const tagId = parsed.rfid_scanned;
+
+        supabaseService.validateRfid(tagId).then(async (result) => {
+          if (result.ok) {
+            await supabaseService.insertAlert({
               deviceId: config.mqtt.deviceId,
               alertType: 'access_granted',
-              message: `Mở cửa thành công bằng thẻ: ${parsed.rfid_scanned}`,
+              message: `Mở cửa thành công bằng thẻ: ${tagId}`,
+              thumbnailUrl: snapshot.latestImage?.base64,
+              metadata: { tag_id: tagId, card_id: result.credentialId, holder_name: result.holderName },
+              resolved: true,
+            });
+            return;
+          }
+
+          const settings = await supabaseService.getDeviceSettings(config.mqtt.deviceId);
+          if (settings?.master_key_enabled) {
+            await supabaseService.recordPendingRfidScan({
+              deviceId: config.mqtt.deviceId,
+              tagId,
               thumbnailUrl: snapshot.latestImage?.base64,
             });
+            return;
           }
+
+          await supabaseService.insertAlert({
+            deviceId: config.mqtt.deviceId,
+            alertType: 'rfid_invalid',
+            message: `Thẻ RFID/NFC không hợp lệ: ${tagId}`,
+            thumbnailUrl: snapshot.latestImage?.base64,
+            metadata: { tag_id: tagId, reason: result.reason },
+          });
         });
       }
     }

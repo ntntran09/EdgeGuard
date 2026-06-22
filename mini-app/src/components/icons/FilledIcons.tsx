@@ -59,7 +59,7 @@ export function AlarmOnFilledIcon({ size = 24, ...props }: IconProps) {
 export function AlarmOffFilledIcon({ size = 24, ...props }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" {...props}>
-      <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm0-17c2.75 0 5 2.25 5 5v.17L4.83 22.83l-.08-.08L3 21l1-1v-9c0-3.07 1.63-5.64 4.5-6.32V4c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v.68c.17.04.34.1.5.17zM21 20.59 19.41 19l-1.41-1.41L4.83 4.42 3.41 3 2 4.41l2.54 2.54C4.19 7.66 4 8.31 4 9v5l-2 2v1h15.59l2 2L21 17.59V20.59z"/>
+      <path d="M20.49 19.07 4.93 3.51 3.51 4.93l2.21 2.21C5.26 8.06 5 9.11 5 10.25V15l-2 2v1h14.59l1.49 1.49 1.41-1.42ZM12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-7.18V10.25c0-3.1-1.66-5.67-4.5-6.35V3.5a2.5 2.5 0 0 0-5 0v.4c-.37.09-.73.22-1.07.39L19 14.82Z"/>
     </svg>
   );
 }
@@ -168,10 +168,18 @@ export function getEventFilledIcon(type: string, props?: Omit<IconProps, 'ref'>)
   switch (type) {
     case 'access_granted':    return <CheckCircleFilledIcon {...props} />;
     case 'access_denied':     return <BlockFilledIcon {...props} />;
+    case 'person_detected':   return <PersonFilledIcon {...props} />;
     case 'stranger_detected': return <PersonFilledIcon {...props} />;
+    case 'object_detected':   return <InventoryFilledIcon {...props} />;
     case 'object_left':       return <InventoryFilledIcon {...props} />;
+    case 'unknown_object':    return <InventoryFilledIcon {...props} />;
     case 'camera_blocked':    return <VideocamOffFilledIcon {...props} />;
+    case 'door_unlocked':     return <LockOpenFilledIcon {...props} />;
+    case 'door_locked':       return <LockFilledIcon {...props} />;
     case 'rfid_scan':         return <CreditCardFilledIcon {...props} />;
+    case 'rfid_invalid':      return <BlockFilledIcon {...props} />;
+    case 'rfid_added':        return <CreditCardFilledIcon {...props} />;
+    case 'rfid_deleted':      return <BlockFilledIcon {...props} />;
     default:                  return <LogFilledIcon {...props} />;
   }
 }

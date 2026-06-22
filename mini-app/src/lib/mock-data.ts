@@ -1,4 +1,4 @@
-import type { SecurityEvent, RfidCard, CameraStatus, SystemStatus, AlertConfig } from '@/types';
+import type { AlertConfig, CameraStatus, RfidCard, SecurityEvent, SystemStatus } from '@/types';
 
 export const mockEvents: SecurityEvent[] = [
   {
@@ -10,6 +10,7 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/stranger.png',
     aiConfidence: 0.92,
     severity: 'danger',
+    category: 'person',
   },
   {
     id: '2',
@@ -20,6 +21,7 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/access.png',
     severity: 'info',
     cardId: 'card-1',
+    category: 'door',
   },
   {
     id: '3',
@@ -30,6 +32,8 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/denied.png',
     aiConfidence: 0.98,
     severity: 'warning',
+    category: 'rfid',
+    isAdminOnly: true,
   },
   {
     id: '4',
@@ -40,6 +44,7 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/object.png',
     aiConfidence: 0.87,
     severity: 'warning',
+    category: 'object',
   },
   {
     id: '5',
@@ -50,6 +55,8 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/access.png',
     severity: 'info',
     cardId: 'card-2',
+    category: 'rfid',
+    isAdminOnly: true,
   },
   {
     id: '6',
@@ -60,6 +67,7 @@ export const mockEvents: SecurityEvent[] = [
     thumbnailUrl: '/thumbnails/blocked.png',
     aiConfidence: 0.95,
     severity: 'danger',
+    category: 'system',
   },
 ];
 
@@ -113,11 +121,22 @@ export const mockSystemStatus: SystemStatus = {
   modelLabel: 'normal',
   anomalyScore: 0.08,
   lastUpdate: new Date().toISOString(),
+  aiDetectionEnabled: false,
+  aiModelReady: false,
+  telegramEnabled: false,
+  telegramConfigured: false,
+  autoLockEnabled: true,
+  autoLockSeconds: 10,
 };
 
 export const defaultAlertConfig: AlertConfig = {
+  objectLeftAlertEnabled: true,
   objectLeftMaxSeconds: 60,
+  autoLockEnabled: true,
+  autoLockSeconds: 10,
   strangerAlertEnabled: true,
   cameraBlockedAlertEnabled: true,
+  telegramAlertEnabled: false,
+  aiDetectionEnabled: false,
   masterKeyEnabled: false,
 };

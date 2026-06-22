@@ -53,13 +53,22 @@ declare global {
 export type EventType =
   | 'access_granted'
   | 'access_denied'
+  | 'person_detected'
   | 'stranger_detected'
+  | 'object_detected'
   | 'object_left'
+  | 'unknown_object'
   | 'camera_blocked'
+  | 'door_unlocked'
+  | 'door_locked'
   | 'rfid_scan'
   | 'rfid_invalid'
+  | 'rfid_added'
+  | 'rfid_deleted'
   | 'system_event';
 export type EventSeverity = 'info' | 'warning' | 'danger';
+export type EventCategory = 'person' | 'object' | 'door' | 'rfid' | 'system';
+export type DeviceRole = 'admin' | 'user';
 
 export interface SecurityEvent {
   id: string;
@@ -71,6 +80,9 @@ export interface SecurityEvent {
   aiConfidence?: number;
   severity: EventSeverity;
   cardId?: string;
+  category?: EventCategory;
+  isAdminOnly?: boolean;
+  isViewed?: boolean;
 }
 
 export interface RfidCard {
@@ -80,6 +92,31 @@ export interface RfidCard {
   isActive: boolean;
   addedAt: string;
   lastUsedAt?: string;
+}
+
+export interface PendingRfidScan {
+  id: string;
+  cardUid: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  scanCount: number;
+}
+
+export interface TelegramDeviceUser {
+  id: string;
+  telegramId: string;
+  displayName: string;
+  role: DeviceRole;
+  isActive: boolean;
+  addedAt: string;
+}
+
+export interface KnownFace {
+  id: string;
+  displayName: string;
+  imageUrl?: string;
+  isActive: boolean;
+  addedAt: string;
 }
 
 export interface CameraStatus {
@@ -98,13 +135,25 @@ export interface SystemStatus {
   modelLabel?: string;
   anomalyScore?: number;
   lastUpdate?: string;
+  latestImageUrl?: string;
+  aiDetectionEnabled?: boolean;
+  aiModelReady?: boolean;
+  telegramEnabled?: boolean;
+  telegramConfigured?: boolean;
+  autoLockEnabled?: boolean;
+  autoLockSeconds?: number | null;
   error?: string;
 }
 
 export interface AlertConfig {
+  objectLeftAlertEnabled?: boolean;
   objectLeftMaxSeconds: number;
+  autoLockEnabled?: boolean;
+  autoLockSeconds?: number | null;
   strangerAlertEnabled: boolean;
   cameraBlockedAlertEnabled: boolean;
+  telegramAlertEnabled?: boolean;
+  aiDetectionEnabled?: boolean;
   masterKeyEnabled?: boolean;
 }
 

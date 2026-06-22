@@ -7,11 +7,13 @@ import { api } from '@/lib/api';
 import { BlockFilledIcon, CheckFilledIcon, getEventFilledIcon } from '@/components/icons/FilledIcons';
 import type { SecurityEvent } from '@/types';
 
-type FilterType = 'all' | 'ai' | 'rfid';
+type FilterType = 'all' | 'person' | 'object' | 'door' | 'rfid';
 
 const filters: { key: FilterType; label: string }[] = [
   { key: 'all', label: 'Tất cả' },
-  { key: 'ai', label: 'AI' },
+  { key: 'person', label: 'Người' },
+  { key: 'object', label: 'Vật thể' },
+  { key: 'door', label: 'Mở khóa/Cửa' },
   { key: 'rfid', label: 'RFID' },
 ];
 
@@ -31,10 +33,18 @@ function getSeverityBadgeClass(severity: string) {
   }
 }
 
+function canRenderImage(url?: string) {
+  if (!url) return false;
+  if (url.startsWith('data:image/') || url.startsWith('/')) return true;
+  return !url.includes('t.me/');
+}
+
 export default function LogsPage() {
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<SecurityEvent | null>(null);
+  const [showUnseenOnly, setShowUnseenOnly] = useState(false);
+  const [markAllLoading, setMarkAllLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,107 +79,170 @@ export default function LogsPage() {
     return () => { document.body.style.overflow = ''; };
   }, [selectedEvent]);
 
+  const unseenEvents = useMemo(() => events.filter((event) => !event.isViewed), [events]);
+  const visibleEvents = useMemo(() => showUnseenOnly ? unseenEvents : events, [events, showUnseenOnly, unseenEvents]);
+
   const summary = useMemo(() => {
-    const danger = events.filter((event) => event.severity === 'danger').length;
-    const warning = events.filter((event) => event.severity === 'warning').length;
-    return { danger, warning };
-  }, [events]);
+    const unseenDanger = unseenEvents.filter((event) => event.severity === 'danger').length;
+    const unseenWarning = unseenEvents.filter((event) => event.severity === 'warning').length;
+    return { unseenDanger, unseenWarning, unseen: unseenEvents.length };
+  }, [unseenEvents]);
+
+  const markViewed = async (event: SecurityEvent) => {
+    setSelectedEvent(event);
+    if (event.isViewed) return;
+
+    setEvents((prev) => prev.map((item) => item.id === event.id ? { ...item, isViewed: true } : item));
+    try {
+      await api.markEventViewed(event.id);
+    } catch (error) {
+      console.error('Failed to mark event viewed', error);
+    }
+  };
+
+  const markAllVisibleViewed = async () => {
+    const ids = unseenEvents.map((event) => event.id);
+    if (!ids.length) {
+      setShowUnseenOnly(false);
+      return;
+    }
+
+    setMarkAllLoading(true);
+    setEvents((prev) => prev.map((event) => ids.includes(event.id) ? { ...event, isViewed: true } : event));
+    try {
+      await api.markEventsViewed(ids);
+      setShowUnseenOnly(false);
+    } catch (error) {
+      console.error('Failed to mark all events viewed', error);
+    } finally {
+      setMarkAllLoading(false);
+    }
+  };
+
+  const renderEventCards = (items: SecurityEvent[]) => (
+    <div className="event-grid stagger-children">
+      {items.map((event) => {
+        const seen = Boolean(event.isViewed);
+        return (
+          <button
+            key={event.id}
+            className={`event-card-enhanced ${seen ? 'is-seen' : 'is-unseen'}`}
+            id={`event-${event.id}`}
+            onClick={() => markViewed(event)}
+          >
+            <div className="event-card-media">
+              {canRenderImage(event.thumbnailUrl) ? (
+                <Image
+                  src={event.thumbnailUrl!}
+                  alt={event.title}
+                  width={520}
+                  height={292}
+                  className="event-card-img"
+                  priority={event.id === events[0]?.id}
+                />
+              ) : (
+                <div className="event-card-image-placeholder">
+                  {getEventFilledIcon(event.type, { size: 34 })}
+                </div>
+              )}
+              <div className="event-card-image-overlay">
+                <span className={`badge ${getSeverityBadgeClass(event.severity)}`}>
+                  {getSeverityLabel(event.severity)}
+                </span>
+                {!seen && <span className="badge badge-info event-new-badge">Mới</span>}
+                {event.aiConfidence && (
+                  <span className="event-confidence dark-confidence">
+                    AI {Math.round(event.aiConfidence * 100)}%
+                  </span>
+                )}
+              </div>
+              <div className="event-card-timestamp-overlay">{formatTime(event.timestamp)}</div>
+            </div>
+
+            <div className="event-card-info">
+              <div className="event-title-row">
+                <span className={`event-icon event-${event.severity}`}>
+                  {getEventFilledIcon(event.type, { size: 20 })}
+                </span>
+                <div>
+                  <strong>{event.title}</strong>
+                  <small>{event.description}</small>
+                </div>
+              </div>
+              <span className="text-caption">{formatTimeAgo(event.timestamp)}</span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="logs-page">
-      <header className="page-header">
+      <header className="page-header logs-page-header">
         <div>
           <p className="eyebrow">Nhật ký an ninh</p>
           <h1 className="text-heading-1">Lịch sử sự kiện</h1>
         </div>
-        <div className="summary-pills">
-          <span className="badge badge-danger">{summary.danger} nguy hiểm</span>
-          <span className="badge badge-warning">{summary.warning} cảnh báo</span>
-        </div>
       </header>
 
-      <div className="toolbar-row">
-        <div className="segmented-control" id="filter-tags">
-          {filters.map((filter) => (
-            <button
-              key={filter.key}
-              className={activeFilter === filter.key ? 'active' : ''}
-              onClick={() => setActiveFilter(filter.key)}
-            >
-              {filter.label}
-            </button>
-          ))}
+      <section className="logs-controls-panel">
+        <div className="logs-filter-row">
+          <div className="segmented-control" id="filter-tags">
+            {filters.map((filter) => (
+              <button
+                key={filter.key}
+                className={activeFilter === filter.key ? 'active' : ''}
+                onClick={() => setActiveFilter(filter.key)}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <span className="text-caption">{events.length} sự kiện</span>
-      </div>
 
-      <div className="event-grid stagger-children">
-        {isLoading ? (
-          <div className="empty-state">Đang tải dữ liệu...</div>
-        ) : error ? (
-          <div className="empty-state is-error">{error}</div>
-        ) : events.length === 0 ? (
-          <div className="empty-state">Chưa có sự kiện nào trong nhóm này.</div>
-        ) : (
-          events.map((event) => (
+        <div className="event-count-row">
+          <span className="text-caption logs-count-label">{visibleEvents.length}/{events.length} sự kiện</span>
+          <div className="event-view-controls">
             <button
-              key={event.id}
-              className="event-card-enhanced"
-              id={`event-${event.id}`}
-              onClick={() => setSelectedEvent(event)}
+              className={`mini-btn ${showUnseenOnly ? 'active' : ''}`}
+              onClick={() => setShowUnseenOnly((current) => !current)}
             >
-              <div className="event-card-media">
-                {event.thumbnailUrl ? (
-                  <Image
-                    src={event.thumbnailUrl}
-                    alt={event.title}
-                    width={520}
-                    height={292}
-                    className="event-card-img"
-                    priority={event.id === events[0]?.id}
-                  />
-                ) : (
-                  <div className="event-card-image-placeholder">
-                    {getEventFilledIcon(event.type, { size: 34 })}
-                  </div>
-                )}
-                <div className="event-card-image-overlay">
-                  <span className={`badge ${getSeverityBadgeClass(event.severity)}`}>
-                    {getSeverityLabel(event.severity)}
-                  </span>
-                  {event.aiConfidence && (
-                    <span className="event-confidence dark-confidence">
-                      AI {Math.round(event.aiConfidence * 100)}%
-                    </span>
-                  )}
-                </div>
-                <div className="event-card-timestamp-overlay">{formatTime(event.timestamp)}</div>
-              </div>
-
-              <div className="event-card-info">
-                <div className="event-title-row">
-                  <span className={`event-icon event-${event.severity}`}>
-                    {getEventFilledIcon(event.type, { size: 20 })}
-                  </span>
-                  <div>
-                    <strong>{event.title}</strong>
-                    <small>{event.description}</small>
-                  </div>
-                </div>
-                <span className="text-caption">{formatTimeAgo(event.timestamp)}</span>
-              </div>
+              Sự kiện mới
             </button>
-          ))
-        )}
-      </div>
+            {showUnseenOnly && (
+              <button className="mini-btn" onClick={markAllVisibleViewed} disabled={markAllLoading}>
+                {markAllLoading ? 'Đang lưu...' : 'Xem tất cả'}
+              </button>
+            )}
+          </div>
+          <div className="summary-pills">
+            <span className="badge badge-info">{summary.unseen} chưa xem</span>
+            <span className="badge badge-danger">{summary.unseenDanger} nguy hiểm</span>
+            <span className="badge badge-warning">{summary.unseenWarning} cảnh báo</span>
+          </div>
+        </div>
+      </section>
+
+      {isLoading ? (
+        <div className="empty-state">Đang tải dữ liệu...</div>
+      ) : error ? (
+        <div className="empty-state is-error">{error}</div>
+      ) : events.length === 0 ? (
+        <div className="empty-state">Chưa có sự kiện nào trong nhóm này.</div>
+      ) : visibleEvents.length === 0 ? (
+        <div className="empty-state">Không còn sự kiện mới trong nhóm này.</div>
+      ) : (
+        renderEventCards(visibleEvents)
+      )}
 
       {selectedEvent && (
         <div className="modal-overlay" onClick={() => setSelectedEvent(null)}>
           <div className="modal-content detail-modal" onClick={(e) => e.stopPropagation()}>
-            {selectedEvent.thumbnailUrl && (
+            {canRenderImage(selectedEvent.thumbnailUrl) && (
               <div className="detail-modal-media">
                 <Image
-                  src={selectedEvent.thumbnailUrl}
+                  src={selectedEvent.thumbnailUrl!}
                   alt={selectedEvent.title}
                   fill
                   sizes="(min-width: 768px) 420px, 100vw"

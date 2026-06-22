@@ -1,170 +1,115 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { formatTimeAgo } from '@/lib/telegram';
+import Image from 'next/image';
 import { api } from '@/lib/api';
+import { formatTimeAgo } from '@/lib/telegram';
 import {
   AlarmOnFilledIcon,
   BlockFilledIcon,
+  ChevronRightFilledIcon,
   CreditCardFilledIcon,
   SettingsFilledIcon,
+  ShieldFilledIcon,
 } from '@/components/icons/FilledIcons';
-import type { AlertConfig, RfidCard } from '@/types';
+import type { AlertConfig, KnownFace, PendingRfidScan, RfidCard } from '@/types';
 
-const TIME_OPTIONS = [
-  { value: 30, label: '30s' },
-  { value: 60, label: '1 phút' },
-  { value: 120, label: '2 phút' },
-  { value: 300, label: '5 phút' },
-  { value: 600, label: '10 phút' },
-];
+type SettingsSection = 'menu' | 'system' | 'rfid' | 'faces';
 
-interface ToggleSwitchProps {
-  checked: boolean;
-  onChange: () => void;
-  label: string;
-}
-
-function ToggleSwitch({ checked, onChange, label }: ToggleSwitchProps) {
+function ToggleSwitch({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return (
-    <button
-      className={`toggle-switch ${checked ? 'is-on' : ''}`}
-      onClick={onChange}
-      aria-label={label}
-      aria-pressed={checked}
-    >
+    <button className={`toggle-switch ${checked ? 'is-on' : ''}`} onClick={onChange} aria-label={label} aria-pressed={checked}>
       <span />
     </button>
   );
 }
 
-interface RfidCardRowProps {
-  card: RfidCard;
-  onDelete: (id: string) => void;
-  onEdit: (card: RfidCard) => void;
-  onToggleActive: (id: string, currentStatus: boolean) => void;
-}
-
-function RfidCardRow({ card, onDelete, onEdit, onToggleActive }: RfidCardRowProps) {
+function NumberSetting({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
   return (
-    <div className="rfid-card-row">
-      <div className="rfid-icon">
-        <CreditCardFilledIcon size={22} />
-      </div>
-      <div className="rfid-card-copy">
-        <div>
-          <strong>{card.name}</strong>
-          <span className={`badge ${card.isActive ? 'badge-success' : 'badge-danger'}`}>
-            {card.isActive ? 'Hoạt động' : 'Đã tắt'}
-          </span>
-        </div>
-        <small>{card.cardUid}</small>
-        {card.lastUsedAt && <small>Sử dụng {formatTimeAgo(card.lastUsedAt)}</small>}
-      </div>
-      <div className="row-actions">
-        <button className="mini-btn" onClick={() => onEdit(card)}>Sửa</button>
-        <button className="mini-btn" onClick={() => onToggleActive(card.id, card.isActive)}>
-          {card.isActive ? 'Tắt' : 'Bật'}
-        </button>
-        <button className="mini-btn danger" onClick={() => onDelete(card.id)}>Xóa</button>
-      </div>
-    </div>
+    <label className={`setting-number-row ${disabled ? 'is-disabled' : ''}`}>
+      <span>{label}</span>
+      <input
+        type="number"
+        min={1}
+        max={3600}
+        step={1}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Math.max(1, Number(event.target.value) || 1))}
+      />
+    </label>
   );
 }
 
 export default function SettingsPage() {
+  const [section, setSection] = useState<SettingsSection>('menu');
   const [cards, setCards] = useState<RfidCard[]>([]);
+  const [pending, setPending] = useState<PendingRfidScan[]>([]);
+  const [faces, setFaces] = useState<KnownFace[]>([]);
   const [alertConfig, setAlertConfig] = useState<AlertConfig>({
+    objectLeftAlertEnabled: true,
     objectLeftMaxSeconds: 60,
-    strangerAlertEnabled: false,
+    autoLockEnabled: true,
+    autoLockSeconds: 10,
+    strangerAlertEnabled: true,
     cameraBlockedAlertEnabled: true,
     masterKeyEnabled: false,
   });
   const [isLoading, setIsLoading] = useState(true);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [editCardData, setEditCardData] = useState<RfidCard | null>(null);
-  const [warningModal, setWarningModal] = useState<{ type: 'delete' | 'inactivate'; id: string; extra?: boolean } | null>(null);
-  const [formUid, setFormUid] = useState('');
-  const [formName, setFormName] = useState('');
-  const [toast, setToast] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [lastCheckedTime, setLastCheckedTime] = useState(() => Date.now());
-  const [newScannedUid, setNewScannedUid] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [warningModal, setWarningModal] = useState<{ type: 'delete' | 'inactivate'; id: string; extra?: boolean } | null>(null);
+  const [newFaceName, setNewFaceName] = useState('');
+  const [newFaceImageUrl, setNewFaceImageUrl] = useState('');
 
   const activeCards = useMemo(() => cards.filter((card) => card.isActive).length, [cards]);
-
-  useEffect(() => {
-    Promise.all([api.getCards(), api.getSettings()])
-      .then(([cardsRes, settingsRes]) => {
-        setCards(cardsRes.cards || []);
-        if (settingsRes.settings) setAlertConfig(settingsRes.settings);
-      })
-      .catch((err) => console.error('Failed to load settings', err))
-      .finally(() => setIsLoading(false));
-  }, []);
-
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-
-    if (alertConfig.masterKeyEnabled && !newScannedUid) {
-      interval = setInterval(async () => {
-        try {
-          const res = await api.getEvents('rfid');
-          const recentEvent = res.events?.find((event) => {
-            const eventTime = new Date(event.timestamp).getTime();
-            return eventTime > lastCheckedTime &&
-              (event.type === 'rfid_invalid' || event.type === 'access_denied' || event.description.includes('RFID'));
-          });
-
-          if (!recentEvent) return;
-
-          setLastCheckedTime(new Date(recentEvent.timestamp).getTime());
-          const uidMatch = recentEvent.description.match(/([A-Fa-f0-9]{2}:){3,}[A-Fa-f0-9]{2}/) ||
-            recentEvent.description.match(/[A-Fa-f0-9]{8,}/);
-          const uid = uidMatch ? uidMatch[0] : recentEvent.cardId;
-
-          if (uid) setNewScannedUid(uid);
-        } catch (err) {
-          console.error('Polling error', err);
-        }
-      }, 3000);
-    }
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [alertConfig.masterKeyEnabled, lastCheckedTime, newScannedUid]);
-
-  useEffect(() => {
-    const hasModal = showAddModal || editCardData || warningModal || newScannedUid;
-    document.body.style.overflow = hasModal ? 'hidden' : '';
-    return () => { document.body.style.overflow = ''; };
-  }, [showAddModal, editCardData, warningModal, newScannedUid]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const closeCardModal = () => {
-    setShowAddModal(false);
-    setEditCardData(null);
-    setFormUid('');
-    setFormName('');
-  };
+  const loadSettings = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [cardsRes, settingsRes, facesRes] = await Promise.all([
+        api.getCards(),
+        api.getSettings(),
+        api.getFaces(),
+      ]);
 
-  const openAddModal = () => {
-    setFormUid('');
-    setFormName('');
-    setEditCardData(null);
-    setShowAddModal(true);
-  };
+      setCards(cardsRes.cards || []);
+      setPending(cardsRes.pending || []);
+      setFaces(facesRes.faces || []);
+      if (settingsRes.settings) {
+        setAlertConfig((prev) => ({
+          ...prev,
+          ...settingsRes.settings,
+          autoLockEnabled: settingsRes.settings.autoLockEnabled ?? (settingsRes.settings.autoLockSeconds !== null),
+          objectLeftAlertEnabled: settingsRes.settings.objectLeftAlertEnabled ?? true,
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to load settings', error);
+      showToast('Không thể tải cài đặt');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [showToast]);
 
-  const openEditModal = (card: RfidCard) => {
-    setFormUid(card.cardUid);
-    setFormName(card.name);
-    setEditCardData(card);
-  };
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
 
   const updateSetting = async <K extends keyof AlertConfig>(key: K, value: AlertConfig[K]) => {
     setAlertConfig((prev) => ({ ...prev, [key]: value }));
@@ -175,6 +120,33 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAcceptPending = async (scan: PendingRfidScan) => {
+    setActionLoading(true);
+    try {
+      const res = await api.acceptPendingCard(scan.id, `Thẻ ${scan.cardUid}`);
+      if (res.card) setCards((prev) => [res.card, ...prev]);
+      setPending((prev) => prev.filter((item) => item.id !== scan.id));
+      showToast('Đã thêm thẻ RFID/NFC');
+    } catch {
+      showToast('Không thể thêm thẻ');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeclinePending = async (scan: PendingRfidScan) => {
+    setActionLoading(true);
+    try {
+      await api.declinePendingCard(scan.id);
+      setPending((prev) => prev.filter((item) => item.id !== scan.id));
+      showToast('Đã từ chối thẻ');
+    } catch {
+      showToast('Không thể từ chối thẻ');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleConfirmAction = async () => {
     if (!warningModal) return;
     setActionLoading(true);
@@ -182,16 +154,12 @@ export default function SettingsPage() {
       if (warningModal.type === 'delete') {
         await api.deleteCard(warningModal.id);
         setCards((prev) => prev.filter((card) => card.id !== warningModal.id));
-        showToast('Đã xóa thẻ');
       } else {
-        const newStatus = !warningModal.extra;
-        const res = await api.editCard(warningModal.id, { isActive: newStatus });
-        if (res.card) {
-          setCards((prev) => prev.map((card) => card.id === warningModal.id ? res.card : card));
-          showToast(`Đã ${newStatus ? 'bật' : 'tắt'} thẻ`);
-        }
+        const res = await api.editCard(warningModal.id, { isActive: !warningModal.extra });
+        if (res.card) setCards((prev) => prev.map((card) => card.id === warningModal.id ? res.card : card));
       }
       setWarningModal(null);
+      showToast('Đã cập nhật thẻ');
     } catch {
       showToast('Có lỗi xảy ra');
     } finally {
@@ -199,243 +167,222 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSaveCard = async () => {
-    if (!formUid.trim() || !formName.trim()) {
-      showToast('Vui lòng nhập đầy đủ thông tin');
-      return;
-    }
-
+  const handleAddFace = async () => {
+    if (!newFaceName.trim()) return showToast('Vui lòng nhập tên gương mặt');
     setActionLoading(true);
     try {
-      if (editCardData) {
-        const res = await api.editCard(editCardData.id, {
-          cardUid: formUid.trim(),
-          name: formName.trim(),
-        });
-        if (res.card) {
-          setCards((prev) => prev.map((card) => card.id === res.card.id ? res.card : card));
-          closeCardModal();
-          showToast('Đã cập nhật thẻ');
-        }
-      } else {
-        const res = await api.addCard(formUid.trim(), formName.trim());
-        if (res.card) {
-          setCards((prev) => [res.card, ...prev]);
-          closeCardModal();
-          showToast('Đã thêm thẻ mới');
-        }
-      }
+      const res = await api.addFace(newFaceName.trim(), newFaceImageUrl.trim() || undefined);
+      if (res.face) setFaces((prev) => [res.face, ...prev]);
+      setNewFaceName('');
+      setNewFaceImageUrl('');
+      showToast('Đã thêm gương mặt quen');
     } catch {
-      showToast('Không thể lưu thẻ');
+      showToast('Không thể thêm gương mặt');
     } finally {
       setActionLoading(false);
     }
   };
 
-  const handleAcceptScannedCard = async () => {
-    if (!newScannedUid) return;
+  if (isLoading) return <div className="empty-state">Đang tải cài đặt...</div>;
 
-    setActionLoading(true);
-    try {
-      const res = await api.addCard(newScannedUid, 'Thẻ mới');
-      if (res.card) {
-        setCards((prev) => [res.card, ...prev]);
-        setNewScannedUid(null);
-        showToast('Đã thêm thẻ mới');
-      }
-    } catch {
-      showToast('Thẻ đã tồn tại hoặc không thể thêm');
-    } finally {
-      setActionLoading(false);
-    }
+  const titleMap: Record<SettingsSection, string> = {
+    menu: 'Cài đặt',
+    system: 'Hệ thống',
+    rfid: 'RFID/NFC',
+    faces: 'Gương mặt quen',
   };
-
-  const selectedTimeOption = TIME_OPTIONS.find((option) => option.value === alertConfig.objectLeftMaxSeconds) || TIME_OPTIONS[1];
-
-  if (isLoading) {
-    return <div className="empty-state">Đang tải cài đặt...</div>;
-  }
 
   return (
     <div className="settings-page">
       {toast && <div className="toast">{toast}</div>}
 
-      <header className="page-header">
+      <header className={`page-header settings-page-header ${section !== 'menu' ? 'has-back' : ''}`}>
+        {section !== 'menu' && (
+          <button className="settings-back-button" onClick={() => setSection('menu')} aria-label="Quay lại">
+            <ChevronRightFilledIcon size={24} />
+          </button>
+        )}
         <div>
           <p className="eyebrow">Quản trị thiết bị</p>
-          <h1 className="text-heading-1">Cài đặt</h1>
+          <h1 className="text-heading-1">{titleMap[section]}</h1>
         </div>
-        <button className="pill-btn pill-btn-primary" onClick={openAddModal}>
-          <CreditCardFilledIcon size={18} /> Thêm thẻ
-        </button>
       </header>
 
-      <section className="settings-summary">
-        <div className="summary-card">
-          <span>Tổng thẻ</span>
-          <strong>{cards.length}</strong>
-        </div>
-        <div className="summary-card">
-          <span>Đang hoạt động</span>
-          <strong>{activeCards}</strong>
-        </div>
-        <div className="summary-card">
-          <span>Master Key</span>
-          <strong>{alertConfig.masterKeyEnabled ? 'Bật' : 'Tắt'}</strong>
-        </div>
-      </section>
-
-      <section className="settings-layout">
-        <div className="settings-panel">
-          <div className="panel-heading">
-            <div>
-              <h2 className="text-heading-3">Thẻ RFID/NFC</h2>
-              <p className="text-caption">Danh sách quyền truy cập</p>
-            </div>
-            <span className="badge badge-info">{cards.length} thẻ</span>
-          </div>
-
-          <div className="rfid-list">
-            {cards.length === 0 ? (
-              <div className="empty-state">Chưa có thẻ nào.</div>
-            ) : (
-              cards.map((card) => (
-                <RfidCardRow
-                  key={card.id}
-                  card={card}
-                  onDelete={(id) => setWarningModal({ type: 'delete', id })}
-                  onEdit={openEditModal}
-                  onToggleActive={(id, currentStatus) => setWarningModal({ type: 'inactivate', id, extra: currentStatus })}
-                />
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="settings-panel">
-          <div className="panel-heading">
-            <div>
-              <h2 className="text-heading-3">Cấu hình hệ thống</h2>
-              <p className="text-caption">Cảnh báo AI và RFID</p>
-            </div>
-            <SettingsFilledIcon size={22} />
-          </div>
-
-          <div className="setting-block">
-            <div className="setting-block-title">
-              <span>Vật thể bị bỏ lại</span>
-              <span className="badge badge-info">{selectedTimeOption.label}</span>
-            </div>
-            <div className="segmented-control segmented-wrap">
-              {TIME_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  className={alertConfig.objectLeftMaxSeconds === option.value ? 'active' : ''}
-                  onClick={() => updateSetting('objectLeftMaxSeconds', option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="setting-row">
-            <div>
-              <strong>Cảnh báo người lạ</strong>
-              <small>AI phát hiện người chưa xác định</small>
-            </div>
-            <ToggleSwitch
-              checked={alertConfig.strangerAlertEnabled}
-              onChange={() => updateSetting('strangerAlertEnabled', !alertConfig.strangerAlertEnabled)}
-              label="Cảnh báo người lạ"
-            />
-          </div>
-
-          <div className="setting-row">
-            <div>
-              <strong>Camera bị che</strong>
-              <small>Cảnh báo khi tầm nhìn bị cản trở</small>
-            </div>
-            <ToggleSwitch
-              checked={alertConfig.cameraBlockedAlertEnabled}
-              onChange={() => updateSetting('cameraBlockedAlertEnabled', !alertConfig.cameraBlockedAlertEnabled)}
-              label="Cảnh báo camera bị che"
-            />
-          </div>
-
-          <div className="setting-row">
-            <div>
-              <strong>Master Key RFID</strong>
-              <small>Nhận thẻ mới từ sự kiện quét RFID</small>
-            </div>
-            <ToggleSwitch
-              checked={Boolean(alertConfig.masterKeyEnabled)}
-              onChange={() => {
-                updateSetting('masterKeyEnabled', !alertConfig.masterKeyEnabled);
-                setLastCheckedTime(Date.now());
-              }}
-              label="Master Key RFID"
-            />
-          </div>
-        </div>
-      </section>
-
-      {newScannedUid && (
-        <div className="modal-overlay">
-          <div className="modal-content compact-modal">
-            <div className="modal-icon success">
-              <CreditCardFilledIcon size={28} />
-            </div>
-            <h3>Phát hiện thẻ mới</h3>
-            <p><strong>{newScannedUid}</strong></p>
-            <div className="modal-actions">
-              <button className="pill-btn pill-btn-secondary" onClick={() => setNewScannedUid(null)}>
-                Bỏ qua
-              </button>
-              <button className="pill-btn pill-btn-primary" onClick={handleAcceptScannedCard} disabled={actionLoading}>
-                {actionLoading ? <div className="loading-spinner" /> : 'Chấp nhận'}
-              </button>
-            </div>
-          </div>
+      {section === 'menu' && (
+        <div className="settings-menu-grid">
+          <button className="settings-menu-card" onClick={() => setSection('system')}>
+            <SettingsFilledIcon size={24} />
+            <span><strong>Hệ thống</strong><small>Auto-lock, cảnh báo AI và camera</small></span>
+            <ChevronRightFilledIcon size={18} />
+          </button>
+          <button className="settings-menu-card" onClick={() => setSection('rfid')}>
+            <CreditCardFilledIcon size={24} />
+            <span><strong>RFID/NFC</strong><small>{activeCards}/{cards.length} thẻ hoạt động{pending.length ? `, ${pending.length} chờ duyệt` : ''}</small></span>
+            <ChevronRightFilledIcon size={18} />
+          </button>
+          <button className="settings-menu-card" onClick={() => setSection('faces')}>
+            <ShieldFilledIcon size={24} />
+            <span><strong>Gương mặt quen</strong><small>{faces.length} hồ sơ nhận diện</small></span>
+            <ChevronRightFilledIcon size={18} />
+          </button>
         </div>
       )}
 
-      {(showAddModal || editCardData) && (
-        <div className="modal-overlay" onClick={closeCardModal}>
-          <div className="modal-content form-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-handle" />
-            <h3>{editCardData ? 'Sửa thẻ RFID' : 'Thêm thẻ RFID'}</h3>
-
-            <label>
-              <span>Mã thẻ UID</span>
-              <input
-                type="text"
-                value={formUid}
-                onChange={(e) => setFormUid(e.target.value)}
-                placeholder="A3:F2:8B:01"
-              />
-            </label>
-
-            <label>
-              <span>Tên chủ thẻ</span>
-              <input
-                type="text"
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder="Nguyễn Văn A"
-              />
-            </label>
-
-            <div className="modal-actions">
-              <button className="pill-btn pill-btn-secondary" onClick={closeCardModal}>
-                Hủy
-              </button>
-              <button className="pill-btn pill-btn-primary" onClick={handleSaveCard} disabled={actionLoading}>
-                {actionLoading ? <div className="loading-spinner" /> : 'Lưu'}
-              </button>
+      {section === 'system' && (
+        <section className="settings-detail-panel">
+          <div className="setting-row">
+            <div>
+              <strong>Tự động khóa cửa</strong>
+              <small>Bật để hệ thống tự khóa sau số giây đã cấu hình.</small>
             </div>
+            <ToggleSwitch
+              checked={Boolean(alertConfig.autoLockEnabled)}
+              onChange={() => updateSetting('autoLockEnabled', !alertConfig.autoLockEnabled)}
+              label="Tự động khóa cửa"
+            />
           </div>
-        </div>
+          <NumberSetting
+            label="Thời gian chờ (giây)"
+            value={alertConfig.autoLockSeconds || 10}
+            disabled={!alertConfig.autoLockEnabled}
+            onChange={(value) => updateSetting('autoLockSeconds', value)}
+          />
+
+          <div className="setting-row">
+            <div>
+              <strong>Vật thể bị bỏ lại</strong>
+              <small>Bật cảnh báo khi AI thấy vật thể nằm lại quá thời gian cho phép.</small>
+            </div>
+            <ToggleSwitch
+              checked={Boolean(alertConfig.objectLeftAlertEnabled)}
+              onChange={() => updateSetting('objectLeftAlertEnabled', !alertConfig.objectLeftAlertEnabled)}
+              label="Cảnh báo vật thể bị bỏ lại"
+            />
+          </div>
+          <NumberSetting
+            label="Ngưỡng cảnh báo (giây)"
+            value={alertConfig.objectLeftMaxSeconds}
+            disabled={!alertConfig.objectLeftAlertEnabled}
+            onChange={(value) => updateSetting('objectLeftMaxSeconds', value)}
+          />
+
+          <div className="setting-row">
+            <div><strong>Cảnh báo người lạ</strong><small>AI phát hiện người chưa xác định.</small></div>
+            <ToggleSwitch checked={alertConfig.strangerAlertEnabled} onChange={() => updateSetting('strangerAlertEnabled', !alertConfig.strangerAlertEnabled)} label="Cảnh báo người lạ" />
+          </div>
+          <div className="setting-row">
+            <div><strong>Camera bị che</strong><small>Cảnh báo khi tầm nhìn bị cản trở.</small></div>
+            <ToggleSwitch checked={alertConfig.cameraBlockedAlertEnabled} onChange={() => updateSetting('cameraBlockedAlertEnabled', !alertConfig.cameraBlockedAlertEnabled)} label="Cảnh báo camera bị che" />
+          </div>
+        </section>
+      )}
+
+      {section === 'rfid' && (
+        <section className="settings-detail-panel">
+          <div className="setting-row">
+            <div>
+              <strong>Master Key RFID/NFC</strong>
+              <small>Bật Master Key để scan thẻ lạ, thẻ sẽ hiện trong danh sách chờ duyệt bên dưới.</small>
+            </div>
+            <ToggleSwitch
+              checked={Boolean(alertConfig.masterKeyEnabled)}
+              onChange={() => updateSetting('masterKeyEnabled', !alertConfig.masterKeyEnabled)}
+              label="Master Key RFID/NFC"
+            />
+          </div>
+
+          {pending.length > 0 && (
+            <>
+              <div className="panel-heading">
+                <div>
+                  <h2 className="text-heading-3">Thẻ chờ duyệt</h2>
+                  <p className="text-caption">Chỉ hiện khi ESP32/NFC scan thẻ lạ trong Master Key mode</p>
+                </div>
+              </div>
+              <div className="rfid-list">
+                {pending.map((scan) => (
+                  <div className="rfid-card-row pending-rfid-row" key={scan.id}>
+                    <div className="rfid-icon"><CreditCardFilledIcon size={22} /></div>
+                    <div className="rfid-card-copy">
+                      <div><strong>{scan.cardUid}</strong><span className="badge badge-warning">Chờ duyệt</span></div>
+                      <small>Quét {scan.scanCount} lần, lần cuối {formatTimeAgo(scan.lastSeenAt)}</small>
+                    </div>
+                    <div className="row-actions">
+                      <button className="mini-btn" onClick={() => handleAcceptPending(scan)} disabled={actionLoading}>Accept</button>
+                      <button className="mini-btn danger" onClick={() => handleDeclinePending(scan)} disabled={actionLoading}>Decline</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="panel-heading">
+            <div>
+              <h2 className="text-heading-3">Thẻ đã cấp quyền</h2>
+              <p className="text-caption">Danh sách RFID/NFC được phép mở cửa</p>
+            </div>
+            <span className="badge badge-info">{cards.length} thẻ</span>
+          </div>
+          <div className="rfid-list">
+            {cards.length === 0 ? <div className="empty-state">Chưa có thẻ nào.</div> : cards.map((card) => (
+              <div className="rfid-card-row" key={card.id}>
+                <div className="rfid-icon"><CreditCardFilledIcon size={22} /></div>
+                <div className="rfid-card-copy">
+                  <div><strong>{card.name}</strong><span className={`badge ${card.isActive ? 'badge-success' : 'badge-danger'}`}>{card.isActive ? 'Hoạt động' : 'Đã tắt'}</span></div>
+                  <small>{card.cardUid}</small>
+                  {card.lastUsedAt && <small>Sử dụng {formatTimeAgo(card.lastUsedAt)}</small>}
+                </div>
+                <div className="row-actions">
+                  <button className="mini-btn" onClick={() => setWarningModal({ type: 'inactivate', id: card.id, extra: card.isActive })}>{card.isActive ? 'Tắt' : 'Bật'}</button>
+                  <button className="mini-btn danger" onClick={() => setWarningModal({ type: 'delete', id: card.id })}>Xóa</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {section === 'faces' && (
+        <section className="settings-detail-panel">
+          <div className="setting-block form-modal">
+            <label>
+              <span>Tên người quen</span>
+              <input value={newFaceName} onChange={(e) => setNewFaceName(e.target.value)} placeholder="Nguyễn Văn A" />
+            </label>
+            <label>
+              <span>URL ảnh tham chiếu</span>
+              <input value={newFaceImageUrl} onChange={(e) => setNewFaceImageUrl(e.target.value)} placeholder="https://..." />
+            </label>
+            <button className="pill-btn pill-btn-primary" onClick={handleAddFace} disabled={actionLoading}>Thêm gương mặt</button>
+          </div>
+          <div className="face-grid">
+            {faces.length === 0 ? <div className="empty-state">Chưa có gương mặt quen nào.</div> : faces.map((face) => (
+              <div className="face-card" key={face.id}>
+                {face.imageUrl ? <Image src={face.imageUrl} alt={face.displayName} width={72} height={72} /> : <ShieldFilledIcon size={28} />}
+                <span><strong>{face.displayName}</strong><small>Thêm {formatTimeAgo(face.addedAt)}</small></span>
+                <button
+                  className="mini-btn danger"
+                  onClick={async () => {
+                    setActionLoading(true);
+                    try {
+                      await api.deleteFace(face.id);
+                      setFaces((prev) => prev.filter((item) => item.id !== face.id));
+                      showToast('Đã xóa gương mặt');
+                    } catch {
+                      showToast('Không thể xóa gương mặt');
+                    } finally {
+                      setActionLoading(false);
+                    }
+                  }}
+                  disabled={actionLoading}
+                >
+                  Xóa
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {warningModal && (
@@ -444,19 +391,11 @@ export default function SettingsPage() {
             <div className={`modal-icon ${warningModal.type === 'delete' ? 'danger' : 'warning'}`}>
               {warningModal.type === 'delete' ? <BlockFilledIcon size={28} /> : <AlarmOnFilledIcon size={28} />}
             </div>
-            <h3>{warningModal.type === 'delete' ? 'Xóa thẻ RFID' : 'Đổi trạng thái thẻ'}</h3>
-            <p>
-              {warningModal.type === 'delete'
-                ? 'Thẻ sẽ bị xóa khỏi danh sách truy cập.'
-                : `Thẻ sẽ được ${warningModal.extra ? 'tắt' : 'bật'} quyền truy cập.`}
-            </p>
+            <h3>{warningModal.type === 'delete' ? 'Xóa thẻ RFID/NFC' : 'Đổi trạng thái thẻ'}</h3>
+            <p>{warningModal.type === 'delete' ? 'Thẻ sẽ bị xóa khỏi danh sách truy cập.' : `Thẻ sẽ được ${warningModal.extra ? 'tắt' : 'bật'} quyền truy cập.`}</p>
             <div className="modal-actions">
-              <button className="pill-btn pill-btn-secondary" onClick={() => setWarningModal(null)}>
-                Hủy
-              </button>
-              <button className="pill-btn pill-btn-danger" onClick={handleConfirmAction} disabled={actionLoading}>
-                {actionLoading ? <div className="loading-spinner" /> : 'Xác nhận'}
-              </button>
+              <button className="pill-btn pill-btn-secondary" onClick={() => setWarningModal(null)}>Hủy</button>
+              <button className="pill-btn pill-btn-danger" onClick={handleConfirmAction} disabled={actionLoading}>{actionLoading ? <div className="loading-spinner" /> : 'Xác nhận'}</button>
             </div>
           </div>
         </div>

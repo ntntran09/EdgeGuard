@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { mockCards } from '@/lib/mock-data';
-import type { RfidCard } from '@/types';
-
-const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { DEVICE_ID, requireAdmin } from '@/lib/server-auth';
+import type { PendingRfidScan, RfidCard } from '@/types';
 
 interface RfidCredentialRow {
   id: string;
@@ -14,106 +13,167 @@ interface RfidCredentialRow {
   last_used_at?: string | null;
 }
 
-async function logToAlerts(message: string, alertType = 'system_event') {
+interface PendingRfidRow {
+  id: string;
+  tag_id: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  scan_count: number;
+}
+
+async function logToAlerts(message: string, alertType = 'system_event', metadata: Record<string, unknown> = {}) {
   if (!isSupabaseConfigured) return;
 
   await supabase.from('alerts').insert([{
     device_id: DEVICE_ID,
     alert_type: alertType,
     message,
+    source: 'rfid',
+    severity: 'info',
+    metadata,
     resolved: true,
   }]);
 }
 
-function mapCard(c: RfidCredentialRow): RfidCard {
+function mapCard(card: RfidCredentialRow): RfidCard {
   return {
-    id: c.id,
-    cardUid: c.tag_id,
-    name: c.name || 'Chưa đặt tên',
-    isActive: c.is_active,
-    addedAt: c.added_at,
-    lastUsedAt: c.last_used_at ?? undefined,
+    id: card.id,
+    cardUid: card.tag_id,
+    name: card.name || 'Chưa đặt tên',
+    isActive: card.is_active,
+    addedAt: card.added_at,
+    lastUsedAt: card.last_used_at ?? undefined,
   };
 }
 
-export async function GET() {
+function mapPending(row: PendingRfidRow): PendingRfidScan {
+  return {
+    id: row.id,
+    cardUid: row.tag_id,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    scanCount: row.scan_count,
+  };
+}
+
+export async function GET(request: Request) {
+  const requester = await requireAdmin(request);
+  if (!requester.ok) {
+    return NextResponse.json({ cards: [], pending: [] }, { status: 403 });
+  }
+
   if (!isSupabaseConfigured) {
-    return NextResponse.json({ cards: mockCards });
+    return NextResponse.json({ cards: mockCards, pending: [] });
   }
 
-  const { data, error } = await supabase
-    .from('rfid_credentials')
-    .select('*')
-    .order('added_at', { ascending: false });
+  const [cardsResult, pendingResult] = await Promise.all([
+    supabase
+      .from('rfid_credentials')
+      .select('*')
+      .eq('device_id', DEVICE_ID)
+      .order('added_at', { ascending: false }),
+    supabase
+      .from('pending_rfid_scans')
+      .select('*')
+      .eq('device_id', DEVICE_ID)
+      .eq('status', 'pending')
+      .order('last_seen_at', { ascending: false }),
+  ]);
 
-  if (error) {
-    return NextResponse.json({ cards: mockCards });
+  if (cardsResult.error || pendingResult.error) {
+    console.error('[API /cards] GET Error:', cardsResult.error || pendingResult.error);
+    return NextResponse.json({ cards: mockCards, pending: [] });
   }
 
-  return NextResponse.json({ cards: data.map(mapCard) });
+  return NextResponse.json({
+    cards: (cardsResult.data || []).map(mapCard),
+    pending: (pendingResult.data || []).map(mapPending),
+  });
 }
 
 export async function POST(request: Request) {
-  try {
-    const { cardUid, name } = await request.json();
+  const requester = await requireAdmin(request);
+  if (!requester.ok) {
+    return NextResponse.json({ ok: false, error: 'Chỉ admin mới được duyệt thẻ RFID/NFC' }, { status: 403 });
+  }
 
-    if (!cardUid || !name) {
-      return NextResponse.json({ ok: false, error: 'cardUid và name là bắt buộc' }, { status: 422 });
+  try {
+    const { pendingId, name, action } = await request.json();
+
+    if (!pendingId || !['accept', 'decline'].includes(action)) {
+      return NextResponse.json({ ok: false, error: 'pendingId và action là bắt buộc' }, { status: 422 });
     }
 
     if (!isSupabaseConfigured) {
+      if (action === 'decline') return NextResponse.json({ ok: true });
+
       return NextResponse.json({
         ok: true,
         card: {
           id: crypto.randomUUID(),
-          cardUid,
-          name,
+          cardUid: 'PENDING:DEMO',
+          name: name || 'Thẻ mới',
           isActive: true,
           addedAt: new Date().toISOString(),
         },
       }, { status: 201 });
     }
 
-    const { data: existing } = await supabase
-      .from('rfid_credentials')
-      .select('id, is_active')
-      .eq('tag_id', cardUid)
+    const { data: pending, error: pendingError } = await supabase
+      .from('pending_rfid_scans')
+      .select('*')
+      .eq('device_id', DEVICE_ID)
+      .eq('id', pendingId)
+      .eq('status', 'pending')
       .single();
 
-    if (existing) {
-      if (existing.is_active) {
-        return NextResponse.json({ ok: false, error: 'Thẻ này đã tồn tại và đang hoạt động' }, { status: 409 });
-      }
-
-      const { data, error } = await supabase
-        .from('rfid_credentials')
-        .update({ is_active: true, name })
-        .eq('tag_id', cardUid)
-        .select()
-        .single();
-
-      if (error) throw error;
-      await logToAlerts(`Đã kích hoạt lại thẻ ${cardUid} (${name})`);
-      return NextResponse.json({ ok: true, card: mapCard(data) }, { status: 201 });
+    if (pendingError || !pending) {
+      return NextResponse.json({ ok: false, error: 'Không tìm thấy thẻ đang chờ duyệt' }, { status: 404 });
     }
 
-    const { data, error } = await supabase
+    const review = {
+      status: action === 'accept' ? 'accepted' : 'declined',
+      reviewed_by_telegram_id: requester.telegramId,
+      reviewed_at: new Date().toISOString(),
+    };
+
+    if (action === 'decline') {
+      await supabase.from('pending_rfid_scans').update(review).eq('id', pendingId);
+      await logToAlerts(`Đã từ chối thẻ RFID/NFC ${pending.tag_id}`, 'rfid_deleted', { tag_id: pending.tag_id });
+      return NextResponse.json({ ok: true });
+    }
+
+    const { data: card, error: cardError } = await supabase
       .from('rfid_credentials')
-      .insert([{ tag_id: cardUid, name, is_active: true }])
+      .upsert({
+        device_id: DEVICE_ID,
+        tag_id: pending.tag_id,
+        name: name || `Thẻ ${pending.tag_id}`,
+        is_active: true,
+      }, { onConflict: 'device_id,tag_id' })
       .select()
       .single();
 
-    if (error) throw error;
-    await logToAlerts(`Đã thêm thẻ mới ${cardUid} (${name})`);
-    return NextResponse.json({ ok: true, card: mapCard(data) }, { status: 201 });
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Dữ liệu không hợp lệ' }, { status: 400 });
+    if (cardError) throw cardError;
+
+    await supabase.from('pending_rfid_scans').update(review).eq('id', pendingId);
+    await logToAlerts(`Đã thêm thẻ RFID/NFC ${pending.tag_id} (${card.name})`, 'rfid_added', { tag_id: pending.tag_id, card_id: card.id });
+
+    return NextResponse.json({ ok: true, card: mapCard(card) }, { status: 201 });
+  } catch (error) {
+    console.error('[API /cards] POST Error:', error);
+    return NextResponse.json({ ok: false, error: 'Không thể xử lý thẻ đang chờ duyệt' }, { status: 400 });
   }
 }
 
 export async function PUT(request: Request) {
+  const requester = await requireAdmin(request);
+  if (!requester.ok) {
+    return NextResponse.json({ ok: false, error: 'Chỉ admin mới được cập nhật thẻ' }, { status: 403 });
+  }
+
   try {
-    const { id, name, isActive, cardUid } = await request.json();
+    const { id, name, isActive } = await request.json();
 
     if (!id) {
       return NextResponse.json({ ok: false, error: 'id là bắt buộc' }, { status: 422 });
@@ -125,7 +185,6 @@ export async function PUT(request: Request) {
         ...(existing || mockCards[0]),
         id,
         name: name ?? existing?.name ?? 'Chưa đặt tên',
-        cardUid: cardUid ?? existing?.cardUid ?? 'UNKNOWN',
         isActive: isActive ?? existing?.isActive ?? true,
       };
       return NextResponse.json({ ok: true, card });
@@ -134,30 +193,31 @@ export async function PUT(request: Request) {
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
     if (isActive !== undefined) updates.is_active = isActive;
-    if (cardUid !== undefined) updates.tag_id = cardUid;
 
     const { data, error } = await supabase
       .from('rfid_credentials')
       .update(updates)
+      .eq('device_id', DEVICE_ID)
       .eq('id', id)
       .select()
       .single();
 
     if (error) throw error;
 
-    if (isActive !== undefined) {
-      await logToAlerts(`Đã ${isActive ? 'bật' : 'tắt'} thẻ ${data.tag_id} (${data.name})`);
-    } else if (name !== undefined) {
-      await logToAlerts(`Đã cập nhật thẻ ${data.tag_id} thành "${name}"`);
-    }
-
+    await logToAlerts(`Đã cập nhật thẻ RFID/NFC ${data.tag_id} (${data.name})`, 'rfid_added', { tag_id: data.tag_id, card_id: data.id });
     return NextResponse.json({ ok: true, card: mapCard(data) });
-  } catch {
+  } catch (error) {
+    console.error('[API /cards] PUT Error:', error);
     return NextResponse.json({ ok: false, error: 'Cập nhật thất bại' }, { status: 400 });
   }
 }
 
 export async function DELETE(request: Request) {
+  const requester = await requireAdmin(request);
+  if (!requester.ok) {
+    return NextResponse.json({ ok: false, error: 'Chỉ admin mới được xóa thẻ' }, { status: 403 });
+  }
+
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 
@@ -172,12 +232,14 @@ export async function DELETE(request: Request) {
   const { data: cardData } = await supabase
     .from('rfid_credentials')
     .select('tag_id, name')
+    .eq('device_id', DEVICE_ID)
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
   const { error } = await supabase
     .from('rfid_credentials')
     .delete()
+    .eq('device_id', DEVICE_ID)
     .eq('id', id);
 
   if (error) {
@@ -185,7 +247,7 @@ export async function DELETE(request: Request) {
   }
 
   if (cardData) {
-    await logToAlerts(`Đã xóa thẻ ${cardData.tag_id} (${cardData.name})`);
+    await logToAlerts(`Đã xóa thẻ RFID/NFC ${cardData.tag_id} (${cardData.name})`, 'rfid_deleted', { tag_id: cardData.tag_id });
   }
 
   return NextResponse.json({ ok: true, message: 'Đã xóa thẻ vĩnh viễn' });
