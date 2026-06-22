@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
+import { getExampleElapsedSeconds, getExampleEvents, getExampleFlow, isExampleAlerting, isExampleDoorOpen } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
+
+export const dynamic = 'force-dynamic';
 
 function integrationStatus() {
   return {
@@ -15,6 +18,34 @@ function integrationStatus() {
 }
 
 export async function GET() {
+  const exampleFlow = getExampleFlow();
+  if (exampleFlow) {
+    const events = getExampleEvents() || [];
+    const latestDanger = events.find((event) => event.severity === 'danger' || event.severity === 'warning');
+
+    return NextResponse.json({
+      mqttConnected: true,
+      doorOpen: isExampleDoorOpen(),
+      motionDetected: events.length > 0,
+      temperatureC: 28.4,
+      humidityPct: 64,
+      modelLabel: latestDanger ? latestDanger.type : 'normal',
+      anomalyScore: isExampleAlerting() ? 0.91 : 0.08,
+      lastUpdate: new Date().toISOString(),
+      latestImageUrl: exampleFlow.videoUrl,
+      autoLockEnabled: true,
+      autoLockSeconds: 5,
+      aiDetectionEnabled: true,
+      aiModelReady: true,
+      telegramEnabled: true,
+      telegramConfigured: true,
+      exampleMode: true,
+      exampleFlow: exampleFlow.key,
+      exampleLabel: exampleFlow.label,
+      exampleElapsedSeconds: Math.floor(getExampleElapsedSeconds()),
+    });
+  }
+
   try {
     const [res, settingsResult] = await Promise.all([
       fetch(`${BACKEND_URL}/api/mqtt/status`, {

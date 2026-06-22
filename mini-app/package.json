@@ -5,6 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
+    "example_1": "node scripts/run-example.mjs example_1",
+    "example_2": "node scripts/run-example.mjs example_2",
+    "example_3": "node scripts/run-example.mjs example_3",
+    "example_4": "node scripts/run-example.mjs example_4",
+    "example_configure_rfid": "node scripts/run-example.mjs configure_rfid",
+    "example_blocked_camera": "node scripts/run-example.mjs blocked_camera",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
     "lint": "eslint"

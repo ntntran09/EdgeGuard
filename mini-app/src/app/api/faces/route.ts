@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getExampleFlow } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { DEVICE_ID, requireAdmin } from '@/lib/server-auth';
 import type { KnownFace } from '@/types';
@@ -24,6 +25,17 @@ function mapFace(row: KnownFaceRow): KnownFace {
 export async function GET(request: Request) {
   const requester = await requireAdmin(request);
   if (!requester.ok) return NextResponse.json({ faces: [] }, { status: 403 });
+
+  if (getExampleFlow()) {
+    return NextResponse.json({
+      faces: [{
+        id: 'demo-face-1',
+        displayName: 'Nguoi dung quen',
+        isActive: true,
+        addedAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 7).toISOString(),
+      }],
+    });
+  }
 
   if (!isSupabaseConfigured) return NextResponse.json({ faces: [] });
 

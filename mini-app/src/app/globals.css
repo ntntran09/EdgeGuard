@@ -1532,6 +1532,11 @@ body {
   color: var(--accent-danger);
 }
 
+.mini-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .setting-block,
 .setting-row {
   padding: 16px;
@@ -1744,6 +1749,17 @@ body {
 .empty-state.is-error {
   color: var(--accent-danger);
   background: rgba(232, 69, 69, 0.08);
+}
+
+.rfid-config-note {
+  padding: 12px 14px;
+  color: var(--hint);
+  text-align: center;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  background: var(--gradient-card);
+  border: 1px dashed rgba(150, 150, 150, 0.2);
+  border-radius: 8px;
 }
 
 .detail-modal-media {

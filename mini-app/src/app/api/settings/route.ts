@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
+import { getExampleFlow } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { defaultAlertConfig } from '@/lib/mock-data';
+import { getRuntimeSettings, updateRuntimeSettings } from '@/lib/runtime-settings';
 import { requireAdmin } from '@/lib/server-auth';
 import type { AlertConfig } from '@/types';
 
@@ -8,8 +10,27 @@ const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
 
 export async function GET() {
+  const exampleFlow = getExampleFlow();
+
+  if (exampleFlow) {
+    return NextResponse.json({
+      settings: {
+        ...defaultAlertConfig,
+        objectLeftAlertEnabled: true,
+        objectLeftMaxSeconds: 5,
+        autoLockEnabled: true,
+        autoLockSeconds: 5,
+        strangerAlertEnabled: true,
+        cameraBlockedAlertEnabled: true,
+        telegramAlertEnabled: true,
+        aiDetectionEnabled: true,
+        rfidCardConfigurationEnabled: exampleFlow.key === 'configure_rfid',
+      },
+    });
+  }
+
   if (!isSupabaseConfigured) {
-    return NextResponse.json({ settings: defaultAlertConfig });
+    return NextResponse.json({ settings: getRuntimeSettings(defaultAlertConfig) });
   }
 
   const { data, error } = await supabase
@@ -35,7 +56,7 @@ export async function GET() {
     cameraBlockedAlertEnabled: data.camera_blocked_alert_enabled,
     telegramAlertEnabled: data.telegram_alert_enabled || false,
     aiDetectionEnabled: data.ai_detection_enabled || false,
-    masterKeyEnabled: data.master_key_enabled || false,
+    rfidCardConfigurationEnabled: data.master_key_enabled || false,
   };
 
   return NextResponse.json({ settings });
@@ -51,6 +72,7 @@ export async function POST(request: Request) {
     const body: Partial<AlertConfig> = await request.json();
 
     if (!isSupabaseConfigured) {
+      updateRuntimeSettings(body);
       return NextResponse.json({ ok: true });
     }
 
@@ -65,7 +87,7 @@ export async function POST(request: Request) {
       ...(body.cameraBlockedAlertEnabled !== undefined && { camera_blocked_alert_enabled: body.cameraBlockedAlertEnabled }),
       ...(body.telegramAlertEnabled !== undefined && { telegram_alert_enabled: body.telegramAlertEnabled }),
       ...(body.aiDetectionEnabled !== undefined && { ai_detection_enabled: body.aiDetectionEnabled }),
-      ...(body.masterKeyEnabled !== undefined && { master_key_enabled: body.masterKeyEnabled }),
+      ...(body.rfidCardConfigurationEnabled !== undefined && { master_key_enabled: body.rfidCardConfigurationEnabled }),
       updated_at: new Date().toISOString(),
     };
 

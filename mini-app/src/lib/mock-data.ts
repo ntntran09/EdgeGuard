@@ -138,5 +138,5 @@ export const defaultAlertConfig: AlertConfig = {
   cameraBlockedAlertEnabled: true,
   telegramAlertEnabled: false,
   aiDetectionEnabled: false,
-  masterKeyEnabled: false,
+  rfidCardConfigurationEnabled: false,
 };

@@ -154,7 +154,7 @@ export interface AlertConfig {
   cameraBlockedAlertEnabled: boolean;
   telegramAlertEnabled?: boolean;
   aiDetectionEnabled?: boolean;
-  masterKeyEnabled?: boolean;
+  rfidCardConfigurationEnabled?: boolean;
 }
 
 export type MascotState = 'idle' | 'alert' | 'happy' | 'sleep';

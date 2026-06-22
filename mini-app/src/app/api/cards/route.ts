@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { mockCards } from '@/lib/mock-data';
+import { getExampleFlow } from '@/lib/example-flow';
+import { defaultAlertConfig, mockCards } from '@/lib/mock-data';
+import { getRuntimeSettings } from '@/lib/runtime-settings';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { DEVICE_ID, requireAdmin } from '@/lib/server-auth';
 import type { PendingRfidScan, RfidCard } from '@/types';
@@ -56,10 +58,63 @@ function mapPending(row: PendingRfidRow): PendingRfidScan {
   };
 }
 
+function getExamplePendingScans(): PendingRfidScan[] {
+  const now = Date.now();
+
+  return [{
+    id: 'pending-configure-rfid',
+    cardUid: 'C9:71:4D:20',
+    firstSeenAt: new Date(now - 90_000).toISOString(),
+    lastSeenAt: new Date(now - 10_000).toISOString(),
+    scanCount: 2,
+  }];
+}
+
+async function isRfidCardConfigurationEnabled() {
+  const exampleFlow = getExampleFlow();
+  if (exampleFlow) return exampleFlow.key === 'configure_rfid';
+
+  if (!isSupabaseConfigured) {
+    return Boolean(getRuntimeSettings(defaultAlertConfig).rfidCardConfigurationEnabled);
+  }
+
+  const { data, error } = await supabase
+    .from('device_settings')
+    .select('master_key_enabled')
+    .eq('device_id', DEVICE_ID)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[API /cards] Failed to read RFID/NFC card configuration setting:', error);
+    return false;
+  }
+
+  return Boolean(data?.master_key_enabled);
+}
+
+function rfidCardConfigurationRequiredResponse() {
+  return NextResponse.json({
+    ok: false,
+    error: 'Vui lòng bật cấu hình thẻ RFID/NFC trước khi thêm, xóa, vô hiệu hóa hoặc hiệu hóa thẻ',
+  }, { status: 409 });
+}
+
 export async function GET(request: Request) {
   const requester = await requireAdmin(request);
   if (!requester.ok) {
     return NextResponse.json({ cards: [], pending: [] }, { status: 403 });
+  }
+
+  const exampleFlow = getExampleFlow();
+
+  if (exampleFlow) {
+    return NextResponse.json({
+      cards: mockCards.map((card, index) => ({
+        ...card,
+        lastUsedAt: index === 0 ? new Date().toISOString() : card.lastUsedAt,
+      })),
+      pending: exampleFlow.key === 'configure_rfid' ? getExamplePendingScans() : [],
+    });
   }
 
   if (!isSupabaseConfigured) {
@@ -104,14 +159,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: 'pendingId và action là bắt buộc' }, { status: 422 });
     }
 
-    if (!isSupabaseConfigured) {
+    if (!(await isRfidCardConfigurationEnabled())) {
+      return rfidCardConfigurationRequiredResponse();
+    }
+
+    if (getExampleFlow() || !isSupabaseConfigured) {
       if (action === 'decline') return NextResponse.json({ ok: true });
 
       return NextResponse.json({
         ok: true,
         card: {
           id: crypto.randomUUID(),
-          cardUid: 'PENDING:DEMO',
+          cardUid: pendingId === 'pending-configure-rfid' ? 'C9:71:4D:20' : 'PENDING:DEMO',
           name: name || 'Thẻ mới',
           isActive: true,
           addedAt: new Date().toISOString(),
@@ -179,7 +238,11 @@ export async function PUT(request: Request) {
       return NextResponse.json({ ok: false, error: 'id là bắt buộc' }, { status: 422 });
     }
 
-    if (!isSupabaseConfigured) {
+    if (!(await isRfidCardConfigurationEnabled())) {
+      return rfidCardConfigurationRequiredResponse();
+    }
+
+    if (getExampleFlow() || !isSupabaseConfigured) {
       const existing = mockCards.find((card) => card.id === id);
       const card = {
         ...(existing || mockCards[0]),
@@ -225,7 +288,11 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ ok: false, error: 'id là bắt buộc' }, { status: 422 });
   }
 
-  if (!isSupabaseConfigured) {
+  if (!(await isRfidCardConfigurationEnabled())) {
+    return rfidCardConfigurationRequiredResponse();
+  }
+
+  if (getExampleFlow() || !isSupabaseConfigured) {
     return NextResponse.json({ ok: true, message: 'Đã xóa thẻ' });
   }
 

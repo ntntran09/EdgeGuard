@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getExampleFlow } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
@@ -8,6 +9,16 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({ active: true }));
     const active = body.active ?? true;
+
+    if (getExampleFlow()) {
+      return NextResponse.json({
+        ok: true,
+        demo: true,
+        command: 'alarm',
+        active,
+        published: true,
+      });
+    }
 
     const res = await fetch(`${BACKEND_URL}/api/mqtt/command`, {
       method: 'POST',

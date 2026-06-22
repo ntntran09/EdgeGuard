@@ -1,12 +1,15 @@
 import { NextResponse } from 'next/server';
 import { mockEvents } from '@/lib/mock-data';
+import { getExampleEvents } from '@/lib/example-flow';
 import { getRequester } from '@/lib/server-auth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import type { EventCategory, EventSeverity, EventType, SecurityEvent } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 
-const rfidTypes = ['rfid_scan', 'rfid_invalid', 'rfid_added', 'rfid_deleted'];
+export const dynamic = 'force-dynamic';
+
+const rfidTypes = ['rfid_scan', 'rfid_invalid', 'rfid_added', 'rfid_deleted', 'access_granted', 'access_denied'];
 const filterMap: Record<string, string[]> = {
   person: ['person_detected', 'stranger_detected'],
   stranger: ['stranger_detected'],
@@ -113,6 +116,12 @@ export async function GET(request: Request) {
   const filter = searchParams.get('filter');
   const requester = await getRequester(request);
   const isAdmin = requester.role === 'admin';
+  const exampleEvents = getExampleEvents();
+
+  if (exampleEvents) {
+    const events = applyFilter(exampleEvents, filter).filter((event) => isAdmin || !event.isAdminOnly);
+    return NextResponse.json({ events });
+  }
 
   if (!isSupabaseConfigured) {
     const events = applyFilter(mockEvents, filter).filter((event) => isAdmin || !event.isAdminOnly);

@@ -33,7 +33,11 @@ nextApp.prepare().then(async () => {
     },
   });
 
-  mqttService.start();
+  if (process.env.EXAMPLE_FLOW) {
+    console.log(`[Unified] Example flow "${process.env.EXAMPLE_FLOW}" active, skipping real MQTT connection`);
+  } else {
+    mqttService.start();
+  }
 
   const app = express();
   const jsonParser = express.json({ limit: `${config.images.maxBytes + 1024}b` });

@@ -26,6 +26,11 @@ function canShowCameraSource(url?: string) {
   return url.startsWith('data:image/') || url.startsWith('/') || !url.includes('t.me/');
 }
 
+function isVideoSource(url?: string) {
+  if (!url) return false;
+  return /\.(mp4|webm|ogg)(\?|$)/i.test(url);
+}
+
 export default function DashboardPage() {
   const { user, hapticFeedback } = useTelegram();
   const [doorLoading, setDoorLoading] = useState(false);
@@ -74,9 +79,14 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    void loadDashboard();
+    const timerId = window.setTimeout(() => {
+      void loadDashboard();
+    }, 0);
     const interval = window.setInterval(loadDashboard, 5000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearTimeout(timerId);
+      window.clearInterval(interval);
+    };
   }, [loadDashboard]);
 
   useEffect(() => {
@@ -219,7 +229,18 @@ export default function DashboardPage() {
             <span className={`badge camera-badge ${cameraSource ? 'badge-success' : 'badge-warning'}`}>
               {cameraSource ? 'LIVE' : 'NO SIGNAL'}
             </span>
-            {canShowCameraSource(cameraSource) ? (
+            {isVideoSource(cameraSource) ? (
+              <video
+                key={cameraSource}
+                className="camera-feed"
+                src={cameraSource}
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="auto"
+              />
+            ) : canShowCameraSource(cameraSource) ? (
               <img className="camera-feed" src={cameraSource} alt="Camera chính đang quan sát cửa ra vào" />
             ) : (
               <div className="camera-placeholder">

@@ -63,7 +63,7 @@ export default function SettingsPage() {
     autoLockSeconds: 10,
     strangerAlertEnabled: true,
     cameraBlockedAlertEnabled: true,
-    masterKeyEnabled: false,
+    rfidCardConfigurationEnabled: false,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -73,6 +73,7 @@ export default function SettingsPage() {
   const [newFaceImageUrl, setNewFaceImageUrl] = useState('');
 
   const activeCards = useMemo(() => cards.filter((card) => card.isActive).length, [cards]);
+  const isRfidCardConfigEnabled = Boolean(alertConfig.rfidCardConfigurationEnabled);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -108,7 +109,11 @@ export default function SettingsPage() {
   }, [showToast]);
 
   useEffect(() => {
-    void loadSettings();
+    const timerId = window.setTimeout(() => {
+      void loadSettings();
+    }, 0);
+
+    return () => window.clearTimeout(timerId);
   }, [loadSettings]);
 
   const updateSetting = async <K extends keyof AlertConfig>(key: K, value: AlertConfig[K]) => {
@@ -121,6 +126,11 @@ export default function SettingsPage() {
   };
 
   const handleAcceptPending = async (scan: PendingRfidScan) => {
+    if (!isRfidCardConfigEnabled) {
+      showToast('Vui lòng bật cấu hình thẻ RFID/NFC trước');
+      return;
+    }
+
     setActionLoading(true);
     try {
       const res = await api.acceptPendingCard(scan.id, `Thẻ ${scan.cardUid}`);
@@ -135,6 +145,11 @@ export default function SettingsPage() {
   };
 
   const handleDeclinePending = async (scan: PendingRfidScan) => {
+    if (!isRfidCardConfigEnabled) {
+      showToast('Vui lòng bật cấu hình thẻ RFID/NFC trước');
+      return;
+    }
+
     setActionLoading(true);
     try {
       await api.declinePendingCard(scan.id);
@@ -149,6 +164,12 @@ export default function SettingsPage() {
 
   const handleConfirmAction = async () => {
     if (!warningModal) return;
+    if (!isRfidCardConfigEnabled) {
+      setWarningModal(null);
+      showToast('Vui lòng bật cấu hình thẻ RFID/NFC trước');
+      return;
+    }
+
     setActionLoading(true);
     try {
       if (warningModal.type === 'delete') {
@@ -281,22 +302,26 @@ export default function SettingsPage() {
         <section className="settings-detail-panel">
           <div className="setting-row">
             <div>
-              <strong>Master Key RFID/NFC</strong>
-              <small>Bật Master Key để scan thẻ lạ, thẻ sẽ hiện trong danh sách chờ duyệt bên dưới.</small>
+              <strong>Cấu hình thẻ RFID/NFC</strong>
+              <small>Bật chế độ này để thêm, xóa, vô hiệu hóa hoặc hiệu hóa thẻ RFID/NFC.</small>
             </div>
             <ToggleSwitch
-              checked={Boolean(alertConfig.masterKeyEnabled)}
-              onChange={() => updateSetting('masterKeyEnabled', !alertConfig.masterKeyEnabled)}
-              label="Master Key RFID/NFC"
+              checked={isRfidCardConfigEnabled}
+              onChange={() => updateSetting('rfidCardConfigurationEnabled', !alertConfig.rfidCardConfigurationEnabled)}
+              label="Cấu hình thẻ RFID/NFC"
             />
           </div>
+
+          {!isRfidCardConfigEnabled && (
+            <div className="rfid-config-note">Bật cấu hình thẻ RFID/NFC để thao tác với danh sách thẻ.</div>
+          )}
 
           {pending.length > 0 && (
             <>
               <div className="panel-heading">
                 <div>
                   <h2 className="text-heading-3">Thẻ chờ duyệt</h2>
-                  <p className="text-caption">Chỉ hiện khi ESP32/NFC scan thẻ lạ trong Master Key mode</p>
+                  <p className="text-caption">Chỉ xử lý được khi chế độ cấu hình thẻ RFID/NFC đang bật</p>
                 </div>
               </div>
               <div className="rfid-list">
@@ -308,8 +333,8 @@ export default function SettingsPage() {
                       <small>Quét {scan.scanCount} lần, lần cuối {formatTimeAgo(scan.lastSeenAt)}</small>
                     </div>
                     <div className="row-actions">
-                      <button className="mini-btn" onClick={() => handleAcceptPending(scan)} disabled={actionLoading}>Accept</button>
-                      <button className="mini-btn danger" onClick={() => handleDeclinePending(scan)} disabled={actionLoading}>Decline</button>
+                      <button className="mini-btn" onClick={() => handleAcceptPending(scan)} disabled={actionLoading || !isRfidCardConfigEnabled}>Duyệt</button>
+                      <button className="mini-btn danger" onClick={() => handleDeclinePending(scan)} disabled={actionLoading || !isRfidCardConfigEnabled}>Từ chối</button>
                     </div>
                   </div>
                 ))}
@@ -334,8 +359,8 @@ export default function SettingsPage() {
                   {card.lastUsedAt && <small>Sử dụng {formatTimeAgo(card.lastUsedAt)}</small>}
                 </div>
                 <div className="row-actions">
-                  <button className="mini-btn" onClick={() => setWarningModal({ type: 'inactivate', id: card.id, extra: card.isActive })}>{card.isActive ? 'Tắt' : 'Bật'}</button>
-                  <button className="mini-btn danger" onClick={() => setWarningModal({ type: 'delete', id: card.id })}>Xóa</button>
+                  <button className="mini-btn" onClick={() => setWarningModal({ type: 'inactivate', id: card.id, extra: card.isActive })} disabled={!isRfidCardConfigEnabled}>{card.isActive ? 'Tắt' : 'Bật'}</button>
+                  <button className="mini-btn danger" onClick={() => setWarningModal({ type: 'delete', id: card.id })} disabled={!isRfidCardConfigEnabled}>Xóa</button>
                 </div>
               </div>
             ))}
