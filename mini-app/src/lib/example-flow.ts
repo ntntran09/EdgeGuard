@@ -1,6 +1,6 @@
 import type { EventCategory, EventSeverity, EventType, SecurityEvent } from '@/types';
 
-type ExampleFlowKey = 'open_rfid' | 'configure_rfid' | 'stranger' | 'suspicious_object' | 'blocked_camera';
+type ExampleFlowKey = 'open_rfid' | 'configure_rfid' | 'configure_faces' | 'stranger' | 'suspicious_object' | 'blocked_camera';
 
 interface ExampleEvent {
   offsetSeconds: number;
@@ -116,6 +116,40 @@ export const exampleFlows: Record<ExampleFlowKey, ExampleFlow> = {
         cardId: 'C9:71:4D:20',
         thumbnailUrl: '/video/open_rfid/thumb-access-granted.jpg',
         isAdminOnly: true,
+      },
+    ],
+  },
+  configure_faces: {
+    key: 'configure_faces',
+    label: 'Face configuration demo',
+    videoUrl: '/video/stranger/stranger-browser.mp4',
+    durationSeconds: 12,
+    events: [
+      {
+        offsetSeconds: 1,
+        type: 'system_event',
+        title: 'Cấu hình gương mặt quen',
+        description: 'Admin mở danh sách gương mặt quen với hai hồ sơ mẫu đã có sẵn',
+        severity: 'info',
+        category: 'system',
+      },
+      {
+        offsetSeconds: 4,
+        type: 'person_detected',
+        title: 'Nhận diện gương mặt quen',
+        description: 'Camera đối chiếu gương mặt với danh sách mẫu trong luồng demo',
+        severity: 'info',
+        category: 'person',
+        aiConfidence: 0.91,
+        thumbnailUrl: '/video/stranger/thumb-person.jpg',
+      },
+      {
+        offsetSeconds: 8,
+        type: 'system_event',
+        title: 'Thêm gương mặt trong demo',
+        description: 'Ảnh được xử lý trong chế độ example và không ghi vào Supabase',
+        severity: 'info',
+        category: 'system',
       },
     ],
   },

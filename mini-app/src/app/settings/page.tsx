@@ -15,6 +15,7 @@ import {
 import type { AlertConfig, KnownFace, PendingRfidScan, RfidCard } from '@/types';
 
 type SettingsSection = 'menu' | 'system' | 'rfid' | 'faces';
+const MAX_FACE_IMAGE_BYTES = 2.5 * 1024 * 1024;
 
 function ToggleSwitch({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return (
@@ -51,6 +52,15 @@ function NumberSetting({
   );
 }
 
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Cannot read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>('menu');
   const [cards, setCards] = useState<RfidCard[]>([]);
@@ -70,7 +80,9 @@ export default function SettingsPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [warningModal, setWarningModal] = useState<{ type: 'delete' | 'inactivate'; id: string; extra?: boolean } | null>(null);
   const [newFaceName, setNewFaceName] = useState('');
-  const [newFaceImageUrl, setNewFaceImageUrl] = useState('');
+  const [newFaceImageBase64, setNewFaceImageBase64] = useState('');
+  const [newFaceImageName, setNewFaceImageName] = useState('');
+  const [faceUploadInputKey, setFaceUploadInputKey] = useState(0);
 
   const activeCards = useMemo(() => cards.filter((card) => card.isActive).length, [cards]);
   const isRfidCardConfigEnabled = Boolean(alertConfig.rfidCardConfigurationEnabled);
@@ -188,14 +200,44 @@ export default function SettingsPage() {
     }
   };
 
+  const handleFaceImageChange = async (file?: File) => {
+    if (!file) {
+      setNewFaceImageBase64('');
+      setNewFaceImageName('');
+      setFaceUploadInputKey((key) => key + 1);
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      showToast('Vui lòng chọn file ảnh');
+      return;
+    }
+
+    if (file.size > MAX_FACE_IMAGE_BYTES) {
+      showToast('Ảnh quá lớn, vui lòng chọn ảnh nhỏ hơn 2.5MB');
+      return;
+    }
+
+    try {
+      const imageBase64 = await readFileAsDataUrl(file);
+      setNewFaceImageBase64(imageBase64);
+      setNewFaceImageName(file.name);
+    } catch {
+      showToast('Không thể đọc file ảnh');
+    }
+  };
+
   const handleAddFace = async () => {
     if (!newFaceName.trim()) return showToast('Vui lòng nhập tên gương mặt');
+    if (!newFaceImageBase64) return showToast('Vui lòng chọn ảnh gương mặt');
     setActionLoading(true);
     try {
-      const res = await api.addFace(newFaceName.trim(), newFaceImageUrl.trim() || undefined);
+      const res = await api.addFace(newFaceName.trim(), newFaceImageBase64);
       if (res.face) setFaces((prev) => [res.face, ...prev]);
       setNewFaceName('');
-      setNewFaceImageUrl('');
+      setNewFaceImageBase64('');
+      setNewFaceImageName('');
+      setFaceUploadInputKey((key) => key + 1);
       showToast('Đã thêm gương mặt quen');
     } catch {
       showToast('Không thể thêm gương mặt');
@@ -375,16 +417,38 @@ export default function SettingsPage() {
               <span>Tên người quen</span>
               <input value={newFaceName} onChange={(e) => setNewFaceName(e.target.value)} placeholder="Nguyễn Văn A" />
             </label>
-            <label>
-              <span>URL ảnh tham chiếu</span>
-              <input value={newFaceImageUrl} onChange={(e) => setNewFaceImageUrl(e.target.value)} placeholder="https://..." />
+            <label className="face-upload-field">
+              <span>Ảnh gương mặt</span>
+              <input
+                key={faceUploadInputKey}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => void handleFaceImageChange(e.target.files?.[0])}
+              />
+              <small>{newFaceImageName || 'Chọn ảnh PNG, JPG hoặc WebP'}</small>
             </label>
+            {newFaceImageBase64 && (
+              <div className="face-upload-preview">
+                <Image src={newFaceImageBase64} alt="Ảnh gương mặt đã chọn" width={72} height={72} />
+                <button
+                  className="mini-btn"
+                  type="button"
+                  onClick={() => {
+                    setNewFaceImageBase64('');
+                    setNewFaceImageName('');
+                    setFaceUploadInputKey((key) => key + 1);
+                  }}
+                >
+                  Đổi ảnh
+                </button>
+              </div>
+            )}
             <button className="pill-btn pill-btn-primary" onClick={handleAddFace} disabled={actionLoading}>Thêm gương mặt</button>
           </div>
           <div className="face-grid">
             {faces.length === 0 ? <div className="empty-state">Chưa có gương mặt quen nào.</div> : faces.map((face) => (
               <div className="face-card" key={face.id}>
-                {face.imageUrl ? <Image src={face.imageUrl} alt={face.displayName} width={72} height={72} /> : <ShieldFilledIcon size={28} />}
+                {face.imageBase64 ? <Image src={face.imageBase64} alt={face.displayName} width={72} height={72} /> : <ShieldFilledIcon size={28} />}
                 <span><strong>{face.displayName}</strong><small>Thêm {formatTimeAgo(face.addedAt)}</small></span>
                 <button
                   className="mini-btn danger"

@@ -2546,6 +2546,39 @@ input {
   gap: 10px;
 }
 
+.face-upload-field input[type="file"] {
+  width: 100%;
+  padding: 10px;
+  border: 1px dashed rgba(20, 130, 79, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+}
+
+.face-upload-field small {
+  display: block;
+  margin-top: 6px;
+  color: var(--hint);
+  font-size: 0.78rem;
+}
+
+.face-upload-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(20, 130, 79, 0.08);
+}
+
+.face-upload-preview img {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
 .face-card {
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr) auto;

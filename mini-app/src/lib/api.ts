@@ -115,10 +115,10 @@ export const api = {
   deleteUser: (id: string) =>
     fetchApi(`/api/users?id=${id}`, { method: 'DELETE' }),
   getFaces: () => fetchApi<{ faces: import('@/types').KnownFace[] }>('/api/faces'),
-  addFace: (displayName: string, imageUrl?: string) =>
+  addFace: (displayName: string, imageBase64?: string) =>
     fetchApi<{ face: import('@/types').KnownFace }>('/api/faces', {
       method: 'POST',
-      body: JSON.stringify({ displayName, imageUrl }),
+      body: JSON.stringify({ displayName, imageBase64 }),
     }),
   deleteFace: (id: string) =>
     fetchApi(`/api/faces?id=${id}`, { method: 'DELETE' }),

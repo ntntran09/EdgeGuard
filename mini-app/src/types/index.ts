@@ -114,7 +114,7 @@ export interface TelegramDeviceUser {
 export interface KnownFace {
   id: string;
   displayName: string;
-  imageUrl?: string;
+  imageBase64?: string;
   isActive: boolean;
   addedAt: string;
 }

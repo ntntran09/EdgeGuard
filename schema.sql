@@ -130,7 +130,7 @@ create table if not exists public.known_faces (
   id uuid primary key default gen_random_uuid(),
   device_id text not null default 'device_001',
   display_name text not null,
-  image_url text,
+  image_base64 text,
   embedding jsonb,
   is_active boolean not null default true,
   added_at timestamptz not null default now(),
@@ -191,6 +191,14 @@ alter table public.security_event_views add column if not exists device_id text 
 alter table public.security_event_views add column if not exists telegram_id text not null default 'dev';
 alter table public.security_event_views add column if not exists event_id text;
 alter table public.security_event_views add column if not exists viewed_at timestamptz not null default now();
+
+alter table public.known_faces add column if not exists image_base64 text;
+update public.known_faces
+set image_base64 = image_url
+where image_base64 is null
+  and image_url is not null
+  and image_url like 'data:image/%;base64,%';
+alter table public.known_faces drop column if exists image_url;
 
 -- Fast dashboard and log queries.
 create index if not exists idx_alerts_device_timestamp on public.alerts (device_id, timestamp desc);
