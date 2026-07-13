@@ -71,7 +71,8 @@ void mqtt_connect() {
     Serial.println("[MQTT] Connecting...");
     String clientId = "EdgeGuard-" + String(MQTT_DEVICE_ID) + "-" + String(random(0xffff), HEX);
 
-    if (mqttClient.connect(clientId.c_str())) {
+    String willTopic = mqtt_topic("/status");
+    if (mqttClient.connect(clientId.c_str(), willTopic.c_str(), 0, true, "offline")) {
       Serial.println("[MQTT] Connected");
       mqtt_subscribeTopics();
       mqtt_publishStatus("online", true);

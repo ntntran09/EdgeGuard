@@ -45,6 +45,7 @@ Hardware to server:
 {base}/telemetry/security
 {base}/telemetry/power
 {base}/telemetry/system
+{base}/telemetry/nfc
 ```
 
 Image topics:
@@ -128,7 +129,11 @@ Server to hardware:
 {base}/command/reboot
 {base}/command/config
 {base}/command/scan
+{base}/command/buzzer
+{base}/command/servo
 ```
+
+Payload chi tiết cho buzzer, servo, PN532 và camera ESP32-CAM được mô tả tại [`hardware/MQTT-PERIPHERALS.md`](hardware/MQTT-PERIPHERALS.md).
 
 Generic command payload:
 
