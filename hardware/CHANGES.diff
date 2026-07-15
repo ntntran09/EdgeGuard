@@ -1,0 +1,496 @@
+diff -ruN /mnt/data/pn532_work/hardware/EdgeGuardDevice/libs.h /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/libs.h
+--- /mnt/data/pn532_work/hardware/EdgeGuardDevice/libs.h	2026-07-15 12:50:03.000000000 +0000
++++ /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/libs.h	2026-07-15 13:08:21.476988730 +0000
+@@ -1,14 +1,24 @@
+-#ifndef EDGEGUARD_LIBS_H
+-#define EDGEGUARD_LIBS_H
+-
+-#include <Arduino.h>
+-#include <ArduinoJson.h>
+-#include <WiFi.h>
+-#include <Wire.h>
+-#include <PubSubClient.h>
+-#include <ESP32Servo.h>
+-#include <PN532_I2C.h>
+-#include <PN532.h>
+-#include "esp_camera.h"
+-
+-#endif
++#ifndef EDGEGUARD_LIBS_H
++#define EDGEGUARD_LIBS_H
++
++#include <Arduino.h>
++#include <ArduinoJson.h>
++#include <WiFi.h>
++#include <Wire.h>
++#include <PubSubClient.h>
++#include <ESP32Servo.h>
++
++// The supplied PN532-Arduino ZIP conditionally compiles each transport.
++// For Arduino IDE builds, its own examples enable I2C and include the
++// transport implementation directly. Without these two lines the sketch
++// can compile headers but fail at link time with missing PN532_I2C methods.
++#ifndef NFC_INTERFACE_I2C
++#define NFC_INTERFACE_I2C
++#endif
++#include <PN532_I2C.h>
++#include <PN532_I2C.cpp>
++#include <PN532.h>
++
++#include "esp_camera.h"
++
++#endif
+diff -ruN /mnt/data/pn532_work/hardware/EdgeGuardDevice/mqtt.h /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/mqtt.h
+--- /mnt/data/pn532_work/hardware/EdgeGuardDevice/mqtt.h	2026-07-15 12:50:03.000000000 +0000
++++ /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/mqtt.h	2026-07-15 13:08:21.490082720 +0000
+@@ -1,109 +1,139 @@
+-#ifndef EDGEGUARD_MQTT_H
+-#define EDGEGUARD_MQTT_H
+-
+-#include "libs.h"
+-#include "config.h"
+-
+-WiFiClient wifiClient;
+-PubSubClient mqttClient(wifiClient);
+-
+-extern void device_handleCommand(String topic, String payload);
+-
+-String mqtt_topic(String suffix) {
+-  return String(MQTT_TOPIC_BASE) + suffix;
+-}
+-
+-void mqtt_wifiConnect() {
+-  if (WiFi.status() == WL_CONNECTED) {
+-    return;
+-  }
+-
+-  Serial.print("[WiFi] Connecting to ");
+-  Serial.println(WIFI_SSID);
+-
+-  WiFi.mode(WIFI_STA);
+-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+-
+-  while (WiFi.status() != WL_CONNECTED) {
+-    delay(500);
+-    Serial.print(".");
+-  }
+-
+-  Serial.println();
+-  Serial.print("[WiFi] Connected, IP: ");
+-  Serial.println(WiFi.localIP());
+-}
+-
+-void mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
+-  char payload[512];
+-  size_t size = serializeJson(doc, payload);
+-  mqttClient.publish(mqtt_topic(suffix).c_str(), reinterpret_cast<const uint8_t *>(payload), size, retain);
+-}
+-
+-void mqtt_publishStatus(const char *status, bool retain = true) {
+-  mqttClient.publish(mqtt_topic("/status").c_str(), status, retain);
+-}
+-
+-void mqtt_subscribeTopics() {
+-  String commandTopic = mqtt_topic("/command/#");
+-  mqttClient.subscribe(commandTopic.c_str(), 0);
+-  Serial.print("[MQTT] Subscribed to ");
+-  Serial.println(commandTopic);
+-}
+-
+-void mqtt_callback(char *topic, byte *message, unsigned int length) {
+-  String payload;
+-
+-  for (unsigned int i = 0; i < length; i++) {
+-    payload += (char)message[i];
+-  }
+-
+-  Serial.print("[MQTT] Message on ");
+-  Serial.print(topic);
+-  Serial.print(": ");
+-  Serial.println(payload);
+-
+-  device_handleCommand(String(topic), payload);
+-}
+-
+-void mqtt_connect() {
+-  while (!mqttClient.connected()) {
+-    Serial.println("[MQTT] Connecting...");
+-    String clientId = "EdgeGuard-" + String(MQTT_DEVICE_ID) + "-" + String(random(0xffff), HEX);
+-
+-    String willTopic = mqtt_topic("/status");
+-    if (mqttClient.connect(clientId.c_str(), willTopic.c_str(), 0, true, "offline")) {
+-      Serial.println("[MQTT] Connected");
+-      mqtt_subscribeTopics();
+-      mqtt_publishStatus("online", true);
+-    } else {
+-      Serial.print("[MQTT] Failed, rc=");
+-      Serial.print(mqttClient.state());
+-      Serial.println(". Retrying in 5 seconds.");
+-      delay(5000);
+-    }
+-  }
+-}
+-
+-void mqtt_setup() {
+-  mqtt_wifiConnect();
+-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+-  mqttClient.setCallback(mqtt_callback);
+-  mqttClient.setKeepAlive(90);
+-  mqttClient.setBufferSize(1024);
+-  mqtt_connect();
+-}
+-
+-void mqtt_loop() {
+-  if (WiFi.status() != WL_CONNECTED) {
+-    mqtt_wifiConnect();
+-  }
+-
+-  if (!mqttClient.connected()) {
+-    mqtt_connect();
+-  }
+-
+-  mqttClient.loop();
+-}
+-
+-#endif
++#ifndef EDGEGUARD_MQTT_H
++#define EDGEGUARD_MQTT_H
++
++#include "libs.h"
++#include "config.h"
++
++WiFiClient wifiClient;
++PubSubClient mqttClient(wifiClient);
++
++extern void device_handleCommand(String topic, String payload);
++
++const unsigned long WIFI_RETRY_MS = 10000;
++const unsigned long MQTT_RETRY_MS = 5000;
++unsigned long lastWifiAttempt = 0;
++unsigned long lastMqttAttempt = 0;
++wl_status_t previousWifiStatus = WL_NO_SHIELD;
++
++String mqtt_topic(String suffix) {
++  return String(MQTT_TOPIC_BASE) + suffix;
++}
++
++void mqtt_startWifi() {
++  Serial.print("[WiFi] Connecting to ");
++  Serial.println(WIFI_SSID);
++  WiFi.mode(WIFI_STA);
++  WiFi.persistent(false);
++  WiFi.setAutoReconnect(true);
++  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
++  lastWifiAttempt = millis();
++}
++
++void mqtt_serviceWifi() {
++  wl_status_t status = WiFi.status();
++
++  if (status != previousWifiStatus) {
++    if (status == WL_CONNECTED) {
++      Serial.print("[WiFi] Connected, IP: ");
++      Serial.println(WiFi.localIP());
++      lastMqttAttempt = 0;  // allow an immediate MQTT attempt
++    } else if (previousWifiStatus == WL_CONNECTED) {
++      Serial.println("[WiFi] Disconnected");
++    }
++    previousWifiStatus = status;
++  }
++
++  if (status == WL_CONNECTED) return;
++
++  unsigned long now = millis();
++  if (now - lastWifiAttempt >= WIFI_RETRY_MS) {
++    Serial.println("[WiFi] Retrying connection");
++    WiFi.disconnect();
++    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
++    lastWifiAttempt = now;
++  }
++}
++
++bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
++  if (!mqttClient.connected()) return false;
++
++  char payload[512];
++  size_t size = serializeJson(doc, payload, sizeof(payload));
++  if (size == 0 || size >= sizeof(payload)) {
++    Serial.println("[MQTT] JSON payload is too large");
++    return false;
++  }
++
++  return mqttClient.publish(
++    mqtt_topic(suffix).c_str(),
++    reinterpret_cast<const uint8_t *>(payload),
++    size,
++    retain
++  );
++}
++
++void mqtt_publishStatus(const char *status, bool retain = true) {
++  if (mqttClient.connected()) {
++    mqttClient.publish(mqtt_topic("/status").c_str(), status, retain);
++  }
++}
++
++void mqtt_subscribeTopics() {
++  String commandTopic = mqtt_topic("/command/#");
++  mqttClient.subscribe(commandTopic.c_str(), 0);
++  Serial.print("[MQTT] Subscribed to ");
++  Serial.println(commandTopic);
++}
++
++void mqtt_callback(char *topic, byte *message, unsigned int length) {
++  String payload;
++  payload.reserve(length);
++
++  for (unsigned int i = 0; i < length; i++) {
++    payload += static_cast<char>(message[i]);
++  }
++
++  Serial.print("[MQTT] Message on ");
++  Serial.print(topic);
++  Serial.print(": ");
++  Serial.println(payload);
++
++  device_handleCommand(String(topic), payload);
++}
++
++void mqtt_tryConnect() {
++  if (WiFi.status() != WL_CONNECTED || mqttClient.connected()) return;
++
++  unsigned long now = millis();
++  if (lastMqttAttempt != 0 && now - lastMqttAttempt < MQTT_RETRY_MS) return;
++  lastMqttAttempt = now;
++
++  Serial.println("[MQTT] Connecting...");
++  String clientId = "EdgeGuard-" + String(MQTT_DEVICE_ID) + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
++  String willTopic = mqtt_topic("/status");
++
++  if (mqttClient.connect(clientId.c_str(), willTopic.c_str(), 0, true, "offline")) {
++    Serial.println("[MQTT] Connected");
++    mqtt_subscribeTopics();
++    mqtt_publishStatus("online", true);
++  } else {
++    Serial.printf("[MQTT] Failed, rc=%d; retrying later\n", mqttClient.state());
++  }
++}
++
++void mqtt_setup() {
++  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
++  mqttClient.setCallback(mqtt_callback);
++  mqttClient.setKeepAlive(90);
++  mqttClient.setSocketTimeout(5);
++  mqttClient.setBufferSize(1024);
++  mqtt_startWifi();
++}
++
++void mqtt_loop() {
++  mqtt_serviceWifi();
++  mqtt_tryConnect();
++  if (mqttClient.connected()) mqttClient.loop();
++}
++
++#endif
+diff -ruN /mnt/data/pn532_work/hardware/EdgeGuardDevice/pn532_reader.h /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/pn532_reader.h
+--- /mnt/data/pn532_work/hardware/EdgeGuardDevice/pn532_reader.h	2026-07-15 12:50:03.000000000 +0000
++++ /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/pn532_reader.h	2026-07-15 13:08:21.504302006 +0000
+@@ -1,52 +1,90 @@
+-#ifndef EDGEGUARD_PN532_READER_H
+-#define EDGEGUARD_PN532_READER_H
+-
+-#include "libs.h"
+-#include "config.h"
+-#include "mqtt.h"
+-
+-PN532_I2C pn532Interface(Wire);
+-PN532 nfc(pn532Interface);
+-bool pn532Ready = false;
+-unsigned long lastNfcPublish = 0;
+-String lastNfcUid;
+-
+-void pn532_setup() {
+-  Wire.begin(PN532_SDA_PIN, PN532_SCL_PIN);
+-  nfc.begin();
+-  uint32_t version = nfc.getFirmwareVersion();
+-  if (!version) {
+-    Serial.println("[PN532] Not found; check I2C mode and wiring");
+-    return;
+-  }
+-  nfc.SAMConfig();
+-  pn532Ready = true;
+-  Serial.printf("[PN532] Ready, firmware %d.%d\n", (version >> 16) & 0xff, (version >> 8) & 0xff);
+-}
+-
+-void pn532_loop() {
+-  if (!pn532Ready || !mqttClient.connected()) return;
+-  uint8_t uid[7] = {0};
+-  uint8_t uidLength = 0;
+-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 50)) return;
+-
+-  String uidHex;
+-  for (uint8_t i = 0; i < uidLength; i++) {
+-    if (uid[i] < 0x10) uidHex += "0";
+-    uidHex += String(uid[i], HEX);
+-  }
+-  uidHex.toUpperCase();
+-  if (uidHex == lastNfcUid && millis() - lastNfcPublish < NFC_REPEAT_DELAY_MS) return;
+-
+-  StaticJsonDocument<192> doc;
+-  doc["uid"] = uidHex;
+-  doc["uid_length"] = uidLength;
+-  doc["technology"] = "ISO14443A";
+-  doc["read_at_ms"] = millis();
+-  mqtt_publishJson("/telemetry/nfc", doc);
+-  lastNfcUid = uidHex;
+-  lastNfcPublish = millis();
+-  Serial.printf("[PN532] UID: %s\n", uidHex.c_str());
+-}
+-
+-#endif
++#ifndef EDGEGUARD_PN532_READER_H
++#define EDGEGUARD_PN532_READER_H
++
++#include "libs.h"
++#include "config.h"
++#include "mqtt.h"
++
++PN532_I2C pn532Interface(Wire);
++PN532 nfc(pn532Interface);
++bool pn532Ready = false;
++unsigned long lastNfcSeenAt = 0;
++String lastNfcUid;
++
++void pn532_setup() {
++  // Initialize Wire on the ESP32-CAM free pins before nfc.begin().
++  // PN532_I2C::begin() calls Wire.begin() again; on ESP32 an already-started
++  // bus keeps these pins.
++  if (!Wire.begin(PN532_SDA_PIN, PN532_SCL_PIN)) {
++    Serial.println("[PN532] Failed to start I2C bus");
++    return;
++  }
++  Wire.setClock(100000);
++
++  nfc.begin();
++  uint32_t version = nfc.getFirmwareVersion();
++  if (!version) {
++    Serial.println("[PN532] Not found; verify I2C mode, address 0x24, power and wiring");
++    return;
++  }
++
++  // Avoid an indefinitely long passive-target poll.
++  if (!nfc.setPassiveActivationRetries(0x01)) {
++    Serial.println("[PN532] Warning: could not set passive activation retries");
++  }
++  if (!nfc.SAMConfig()) {
++    Serial.println("[PN532] SAMConfig failed");
++    return;
++  }
++
++  pn532Ready = true;
++  Serial.printf(
++    "[PN532] Ready, chip PN5%02X, firmware %u.%u\n",
++    (version >> 24) & 0xFF,
++    (version >> 16) & 0xFF,
++    (version >> 8) & 0xFF
++  );
++}
++
++void pn532_loop() {
++  if (!pn532Ready) return;
++
++  uint8_t uid[7] = {0};
++  uint8_t uidLength = 0;
++  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 50)) return;
++  if (uidLength == 0 || uidLength > sizeof(uid)) {
++    Serial.printf("[PN532] Invalid UID length: %u\n", uidLength);
++    return;
++  }
++
++  String uidHex;
++  uidHex.reserve(uidLength * 2);
++  for (uint8_t i = 0; i < uidLength; i++) {
++    if (uid[i] < 0x10) uidHex += '0';
++    uidHex += String(uid[i], HEX);
++  }
++  uidHex.toUpperCase();
++
++  unsigned long now = millis();
++  if (uidHex == lastNfcUid && now - lastNfcSeenAt < NFC_REPEAT_DELAY_MS) return;
++
++  Serial.printf("[PN532] UID: %s\n", uidHex.c_str());
++
++  if (mqttClient.connected()) {
++    StaticJsonDocument<192> doc;
++    doc["uid"] = uidHex;
++    doc["uid_length"] = uidLength;
++    doc["technology"] = "ISO14443A";
++    doc["uptime_ms"] = now;
++    if (!mqtt_publishJson("/telemetry/nfc", doc)) {
++      Serial.println("[PN532] MQTT publish failed");
++    }
++  } else {
++    Serial.println("[PN532] MQTT offline; UID not published");
++  }
++
++  lastNfcUid = uidHex;
++  lastNfcSeenAt = now;
++}
++
++#endif
+diff -ruN /mnt/data/pn532_work/hardware/EdgeGuardDevice/sensors.h /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/sensors.h
+--- /mnt/data/pn532_work/hardware/EdgeGuardDevice/sensors.h	2026-07-15 12:50:03.000000000 +0000
++++ /mnt/data/EdgeGuardDevice_fixed/EdgeGuardDevice/sensors.h	2026-07-15 13:08:21.518292619 +0000
+@@ -1,24 +1,28 @@
+-#ifndef EDGEGUARD_SENSORS_H
+-#define EDGEGUARD_SENSORS_H
+-
+-#include "libs.h"
+-#include "config.h"
+-#include "mqtt.h"
+-
+-unsigned long lastSystemPublish = 0;
+-
+-void sensors_setup() { Serial.println("[System] Telemetry initialized"); }
+-
+-void sensors_loop() {
+-  unsigned long now = millis();
+-  if (!publish_system_metrics || now - lastSystemPublish < SYSTEM_INTERVAL_MS) return;
+-  lastSystemPublish = now;
+-  StaticJsonDocument<256> doc;
+-  doc["uptime_ms"] = now;
+-  doc["rssi_dbm"] = WiFi.RSSI();
+-  doc["free_heap"] = ESP.getFreeHeap();
+-  doc["psram_free"] = ESP.getFreePsram();
+-  mqtt_publishJson("/telemetry/system", doc);
+-}
+-
+-#endif
++#ifndef EDGEGUARD_SENSORS_H
++#define EDGEGUARD_SENSORS_H
++
++#include "libs.h"
++#include "config.h"
++#include "mqtt.h"
++
++unsigned long lastSystemPublish = 0;
++
++void sensors_setup() { Serial.println("[System] Telemetry initialized"); }
++
++void sensors_loop() {
++  unsigned long now = millis();
++  if (!publish_system_metrics || !mqttClient.connected()) return;
++  if (now - lastSystemPublish < SYSTEM_INTERVAL_MS) return;
++
++  StaticJsonDocument<256> doc;
++  doc["uptime_ms"] = now;
++  doc["rssi_dbm"] = WiFi.RSSI();
++  doc["free_heap"] = ESP.getFreeHeap();
++  doc["psram_free"] = ESP.getFreePsram();
++
++  if (mqtt_publishJson("/telemetry/system", doc)) {
++    lastSystemPublish = now;
++  }
++}
++
++#endif

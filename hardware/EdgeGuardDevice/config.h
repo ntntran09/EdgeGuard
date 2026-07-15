@@ -2,8 +2,8 @@
 #define EDGEGUARD_CONFIG_H
 
 // Network settings.
-const char *WIFI_SSID = "EdgeGuard";
-const char *WIFI_PASSWORD = "edgeguard-password";
+const char *WIFI_SSID = "The Simple Cafe L1";
+const char *WIFI_PASSWORD = "simpleisthebest";
 const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_DEVICE_ID = "device_001";

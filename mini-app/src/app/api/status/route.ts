@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { getExampleElapsedSeconds, getExampleEvents, getExampleFlow, isExampleAlerting, isExampleDoorOpen } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
@@ -18,34 +17,6 @@ function integrationStatus() {
 }
 
 export async function GET() {
-  const exampleFlow = getExampleFlow();
-  if (exampleFlow) {
-    const events = getExampleEvents() || [];
-    const latestDanger = events.find((event) => event.severity === 'danger' || event.severity === 'warning');
-
-    return NextResponse.json({
-      mqttConnected: true,
-      doorOpen: isExampleDoorOpen(),
-      motionDetected: events.length > 0,
-      temperatureC: 28.4,
-      humidityPct: 64,
-      modelLabel: latestDanger ? latestDanger.type : 'normal',
-      anomalyScore: isExampleAlerting() ? 0.91 : 0.08,
-      lastUpdate: new Date().toISOString(),
-      latestImageUrl: exampleFlow.videoUrl,
-      autoLockEnabled: true,
-      autoLockSeconds: 5,
-      aiDetectionEnabled: true,
-      aiModelReady: true,
-      telegramEnabled: true,
-      telegramConfigured: true,
-      exampleMode: true,
-      exampleFlow: exampleFlow.key,
-      exampleLabel: exampleFlow.label,
-      exampleElapsedSeconds: Math.floor(getExampleElapsedSeconds()),
-    });
-  }
-
   try {
     const [res, settingsResult] = await Promise.all([
       fetch(`${BACKEND_URL}/api/mqtt/status`, {
@@ -57,13 +28,20 @@ export async function GET() {
             .select('auto_lock_enabled, auto_lock_seconds')
             .eq('device_id', DEVICE_ID)
             .maybeSingle()
-        : Promise.resolve({ data: null }),
+        : Promise.resolve({ data: null, error: null }),
     ]);
 
     if (!res.ok) {
       return NextResponse.json(
         { ok: false, error: 'Backend unavailable' },
         { status: 502 }
+      );
+    }
+
+    if (settingsResult.error) {
+      return NextResponse.json(
+        { ok: false, error: settingsResult.error.message },
+        { status: 400 }
       );
     }
 
@@ -89,14 +67,8 @@ export async function GET() {
   } catch (error) {
     console.error('[API /status] Error:', error);
     return NextResponse.json(
-      {
-        mqttConnected: false,
-        doorOpen: false,
-        motionDetected: false,
-        error: 'Cannot reach backend',
-        ...integrationStatus(),
-      },
-      { status: 200 }
+      { ok: false, error: 'Cannot reach backend', ...integrationStatus() },
+      { status: 502 }
     );
   }
 }

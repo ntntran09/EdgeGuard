@@ -15,7 +15,6 @@ import {
 } from '@/components/icons/FilledIcons';
 import { useTelegram } from '@/hooks/useTelegram';
 import { api } from '@/lib/api';
-import { mockEvents, mockSystemStatus } from '@/lib/mock-data';
 import { formatDate, formatTimeAgo, getGreeting } from '@/lib/telegram';
 import type { SecurityEvent, SystemStatus } from '@/types';
 
@@ -39,11 +38,15 @@ export default function DashboardPage() {
   const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [isDemoMode, setIsDemoMode] = useState(false);
-
-  const activeStatus = status || mockSystemStatus;
+  const activeStatus: SystemStatus = status || {
+    mqttConnected: false,
+    doorOpen: false,
+    motionDetected: false,
+    autoLockEnabled: false,
+    autoLockSeconds: null,
+  };
   const doorOpen = Boolean(activeStatus.doorOpen);
-  const recentEvents = events.length ? events : mockEvents;
+  const recentEvents = events;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
   const isSafe = activeStatus.mqttConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
   const cameraSource =
@@ -52,10 +55,10 @@ export default function DashboardPage() {
     activeStatus.latestImageUrl;
 
   const statusCopy = useMemo(() => {
-    if (!activeStatus.mqttConnected) return isDemoMode ? 'Demo mode' : 'Thiết bị offline';
+    if (!activeStatus.mqttConnected) return 'Thiet bi offline';
     if (!isSafe) return 'Cần kiểm tra';
     return 'Hệ thống an toàn';
-  }, [activeStatus.mqttConnected, isDemoMode, isSafe]);
+  }, [activeStatus.mqttConnected, isSafe]);
 
   const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
     setToast({ msg, kind });
@@ -69,12 +72,10 @@ export default function DashboardPage() {
       ]);
       setEvents(eventsRes.events || []);
       setStatus(statusRes);
-      setIsDemoMode(Boolean(statusRes.error));
     } catch (error) {
       console.error('Failed to load dashboard', error);
-      setEvents(mockEvents);
-      setStatus(mockSystemStatus);
-      setIsDemoMode(true);
+      setEvents([]);
+      setStatus(null);
     }
   }, []);
 

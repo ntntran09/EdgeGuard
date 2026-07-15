@@ -2,6 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 import { config } from '../config.js';
 
 let supabase = null;
+let storageBucketReady = false;
+const imageUploadCache = new Map();
+
+function normalizeTagId(value) {
+  if (value === null || value === undefined) return null;
+  const tagId = String(value).trim().toUpperCase().replace(/[^0-9A-F]/g, '');
+  return tagId.length ? tagId : null;
+}
 
 if (config.supabase.url && config.supabase.serviceKey) {
   supabase = createClient(config.supabase.url, config.supabase.serviceKey);
@@ -9,10 +17,118 @@ if (config.supabase.url && config.supabase.serviceKey) {
   console.warn('[Supabase] Missing SUPABASE_URL or SUPABASE_SERVICE_KEY. Supabase logging is disabled.');
 }
 
+function parseDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') return null;
+  const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
+  if (!match) return null;
+
+  return {
+    contentType: match[1],
+    buffer: Buffer.from(match[2], 'base64'),
+  };
+}
+
+function extensionForContentType(contentType) {
+  switch (contentType) {
+    case 'image/png': return 'png';
+    case 'image/webp': return 'webp';
+    case 'image/gif': return 'gif';
+    case 'image/bmp': return 'bmp';
+    case 'image/jpeg':
+    case 'image/jpg':
+    default:
+      return 'jpg';
+  }
+}
+
+async function ensureStorageBucket() {
+  if (!supabase || storageBucketReady) return;
+
+  const bucket = config.supabase.imageBucket;
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) throw listError;
+
+  if (!buckets?.some((item) => item.name === bucket)) {
+    const { error } = await supabase.storage.createBucket(bucket, {
+      public: true,
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'],
+      fileSizeLimit: config.images.maxBytes,
+    });
+    if (error && !/already exists/i.test(error.message)) throw error;
+  }
+
+  storageBucketReady = true;
+}
+
+async function uploadImageToStorage({ deviceId, imagePath, metadata }) {
+  if (!supabase) return null;
+  if (imageUploadCache.has(imagePath)) return imageUploadCache.get(imagePath);
+
+  const parsed = parseDataUrl(imagePath);
+  if (!parsed || parsed.buffer.length === 0) return null;
+
+  await ensureStorageBucket();
+
+  const extension = extensionForContentType(parsed.contentType);
+  const now = new Date();
+  const safeDeviceId = String(deviceId || config.mqtt.deviceId || 'device')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'device';
+  const objectPath = [
+    safeDeviceId,
+    now.toISOString().slice(0, 10),
+    `${now.toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}.${extension}`,
+  ].join('/');
+
+  const { error } = await supabase.storage
+    .from(config.supabase.imageBucket)
+    .upload(objectPath, parsed.buffer, {
+      contentType: parsed.contentType,
+      upsert: false,
+      metadata: metadata || {},
+    });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage
+    .from(config.supabase.imageBucket)
+    .getPublicUrl(objectPath);
+
+  const result = {
+    bucket: config.supabase.imageBucket,
+    path: objectPath,
+    publicUrl: data.publicUrl,
+    contentType: parsed.contentType,
+    bytes: parsed.buffer.length,
+  };
+  imageUploadCache.set(imagePath, result);
+  return result;
+}
+
 export const supabaseService = {
   async prepareImageReference({ deviceId, imagePath, telegramMsgLink, metadata }) {
     if (!supabase || !imagePath) {
       return { thumbnailUrl: telegramMsgLink || imagePath, telegramMsgLink, imageMetadata: metadata || {} };
+    }
+
+    try {
+      const storedImage = await uploadImageToStorage({ deviceId, imagePath, metadata });
+      if (storedImage) {
+        return {
+          thumbnailUrl: storedImage.publicUrl,
+          telegramMsgLink,
+          imageMetadata: {
+            ...(metadata || {}),
+            image_storage_mode: 'supabase_storage',
+            image_bucket: storedImage.bucket,
+            image_path: storedImage.path,
+            image_content_type: storedImage.contentType,
+            image_bytes: storedImage.bytes,
+          },
+        };
+      }
+    } catch (error) {
+      console.error('[Supabase] Error uploading image to storage:', error);
     }
 
     if (telegramMsgLink) {
@@ -40,7 +156,7 @@ export const supabaseService = {
       return {
         thumbnailUrl: imagePath,
         telegramMsgLink,
-        imageMetadata: { ...(metadata || {}), image_storage_mode: 'database_failed' },
+        imageMetadata: { ...(metadata || {}), image_storage_mode: 'storage_failed' },
       };
     }
 
@@ -151,10 +267,12 @@ export const supabaseService = {
 
   async recordPendingRfidScan({ deviceId, tagId, thumbnailUrl }) {
     if (!supabase) return null;
+    const normalizedTagId = normalizeTagId(tagId);
+    if (!normalizedTagId) return null;
 
     const { data, error } = await supabase.rpc('record_pending_rfid_scan', {
       p_device_id: deviceId,
-      p_tag_id: tagId,
+      p_tag_id: normalizedTagId,
     });
 
     if (error) {
@@ -169,20 +287,70 @@ export const supabaseService = {
       thumbnailUrl,
       severity: 'warning',
       source: 'rfid',
-      metadata: { tag_id: tagId, pending_id: data },
+      metadata: { tag_id: normalizedTagId, raw_tag_id: tagId, pending_id: data },
       resolved: false,
     });
 
     return data;
   },
 
+  async recordRfidAccessGranted({ deviceId, tagId, reason = 'test_allow_all' }) {
+    if (!supabase) return { ok: true, reason: 'supabase_disabled' };
+    const normalizedTagId = normalizeTagId(tagId);
+    if (!normalizedTagId) return { ok: false, reason: 'invalid_tag' };
+
+    const { data: credential, error: credentialError } = await supabase
+      .from('rfid_credentials')
+      .select('id,name')
+      .eq('device_id', deviceId)
+      .eq('tag_id', normalizedTagId)
+      .maybeSingle();
+
+    if (credentialError) {
+      console.error('[Supabase] Error loading RFID credential:', credentialError);
+    }
+
+    if (credential?.id) {
+      const { error: updateError } = await supabase
+        .from('rfid_credentials')
+        .update({ last_used_at: new Date().toISOString() })
+        .eq('id', credential.id);
+
+      if (updateError) {
+        console.error('[Supabase] Error updating RFID last_used_at:', updateError);
+      }
+    }
+
+    const { error } = await supabase.from('access_logs').insert([{
+      device_id: deviceId,
+      tag_id: normalizedTagId,
+      credential_id: credential?.id || null,
+      decision: 'granted',
+      reason,
+    }]);
+
+    if (error) {
+      console.error('[Supabase] Error inserting RFID access log:', error);
+      return { ok: false, reason: 'database_error' };
+    }
+
+    return {
+      ok: true,
+      credentialId: credential?.id,
+      holderName: credential?.name,
+      reason,
+    };
+  },
+
   async validateRfid(tagId) {
     if (!supabase) return { ok: false, reason: 'supabase_disabled' };
+    const normalizedTagId = normalizeTagId(tagId);
+    if (!normalizedTagId) return { ok: false, reason: 'invalid_tag' };
 
     const deviceId = config.mqtt.deviceId;
     const { data, error } = await supabase.rpc('validate_rfid_access', {
       p_device_id: deviceId,
-      p_tag_id: tagId,
+      p_tag_id: normalizedTagId,
     });
 
     if (error) {

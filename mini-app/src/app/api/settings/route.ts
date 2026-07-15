@@ -1,46 +1,38 @@
 import { NextResponse } from 'next/server';
-import { getExampleFlow } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { defaultAlertConfig } from '@/lib/mock-data';
-import { getRuntimeSettings, updateRuntimeSettings } from '@/lib/runtime-settings';
 import { requireAdmin } from '@/lib/server-auth';
 import type { AlertConfig } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
 
+const defaultAlertConfig: AlertConfig = {
+  objectLeftAlertEnabled: true,
+  objectLeftMaxSeconds: 60,
+  autoLockEnabled: true,
+  autoLockSeconds: DEFAULT_AUTO_LOCK_SECONDS,
+  strangerAlertEnabled: true,
+  cameraBlockedAlertEnabled: true,
+  telegramAlertEnabled: false,
+  aiDetectionEnabled: false,
+  rfidCardConfigurationEnabled: false,
+};
+
+function databaseRequired() {
+  return NextResponse.json({ ok: false, error: 'Supabase is not configured' }, { status: 503 });
+}
+
 export async function GET() {
-  const exampleFlow = getExampleFlow();
-
-  if (exampleFlow) {
-    return NextResponse.json({
-      settings: {
-        ...defaultAlertConfig,
-        objectLeftAlertEnabled: true,
-        objectLeftMaxSeconds: 5,
-        autoLockEnabled: true,
-        autoLockSeconds: 5,
-        strangerAlertEnabled: true,
-        cameraBlockedAlertEnabled: true,
-        telegramAlertEnabled: true,
-        aiDetectionEnabled: true,
-        rfidCardConfigurationEnabled: exampleFlow.key === 'configure_rfid',
-      },
-    });
-  }
-
-  if (!isSupabaseConfigured) {
-    return NextResponse.json({ settings: getRuntimeSettings(defaultAlertConfig) });
-  }
+  if (!isSupabaseConfigured) return databaseRequired();
 
   const { data, error } = await supabase
     .from('device_settings')
     .select('*')
     .eq('device_id', DEVICE_ID)
-    .single();
+    .maybeSingle();
 
-  if (error && error.code !== 'PGRST116') {
-    return NextResponse.json({ settings: defaultAlertConfig });
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
   }
 
   if (!data) {
@@ -66,16 +58,12 @@ export async function POST(request: Request) {
   try {
     const requester = await requireAdmin(request);
     if (!requester.ok) {
-      return NextResponse.json({ ok: false, error: 'Chỉ admin mới được cập nhật cài đặt' }, { status: 403 });
+      return NextResponse.json({ ok: false, error: 'Admin only' }, { status: 403 });
     }
+
+    if (!isSupabaseConfigured) return databaseRequired();
 
     const body: Partial<AlertConfig> = await request.json();
-
-    if (!isSupabaseConfigured) {
-      updateRuntimeSettings(body);
-      return NextResponse.json({ ok: true });
-    }
-
     const updates = {
       device_id: DEVICE_ID,
       ...(body.objectLeftAlertEnabled !== undefined && { object_left_alert_enabled: body.objectLeftAlertEnabled }),
@@ -96,13 +84,11 @@ export async function POST(request: Request) {
       .upsert(updates, { onConflict: 'device_id' });
 
     if (error) {
-      console.log('[API /settings] POST Supabase Error:', error.message);
-      return NextResponse.json({ ok: false, error: 'Database error' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
     }
 
     return NextResponse.json({ ok: true });
   } catch {
-    console.log('[API /settings] POST parsing Error');
-    return NextResponse.json({ ok: false, error: 'Dữ liệu không hợp lệ' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: 'Invalid settings payload' }, { status: 400 });
   }
 }

@@ -3,15 +3,24 @@ import { fileURLToPath } from 'node:url';
 
 import dotenv from 'dotenv';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const serverRoot = path.resolve(__dirname, '..');
+const workspaceRoot = path.resolve(serverRoot, '..');
+
+dotenv.config({ path: path.join(workspaceRoot, '.env') });
+dotenv.config({ path: path.join(serverRoot, '.env'), override: true });
+dotenv.config({ path: path.join(serverRoot, '.env.local'), override: true });
 
 function numberFromEnv(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function booleanFromEnv(name, fallback = false) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
 export const config = {
@@ -19,6 +28,7 @@ export const config = {
   supabase: {
     url: process.env.SUPABASE_URL,
     serviceKey: process.env.SUPABASE_SERVICE_KEY,
+    imageBucket: process.env.SUPABASE_IMAGE_BUCKET ?? 'event-images',
   },
   mqtt: {
     url: process.env.MQTT_URL,
@@ -38,6 +48,14 @@ export const config = {
     enabled: process.env.TELEGRAM_ENABLED === 'true',
     botToken: process.env.TELEGRAM_BOT_TOKEN,
     chatId: process.env.TELEGRAM_CHAT_ID,
+  },
+  access: {
+    allowAllRfid: booleanFromEnv('RFID_ALLOW_ALL', false),
+    unlockAngle: numberFromEnv('RFID_UNLOCK_ANGLE', 90),
+    lockAngle: numberFromEnv('RFID_LOCK_ANGLE', 0),
+    unlockMs: numberFromEnv('RFID_UNLOCK_MS', 3000),
+    buzzerMs: numberFromEnv('RFID_BUZZER_MS', 300),
+    buzzerHz: numberFromEnv('RFID_BUZZER_HZ', 2200),
   },
 };
 

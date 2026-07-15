@@ -10,6 +10,7 @@ const TELEMETRY_KEYS = {
   security: '/telemetry/security',
   power: '/telemetry/power',
   system: '/telemetry/system',
+  nfc: '/telemetry/nfc',
   modelInference: '/model/inference',
 };
 
@@ -25,6 +26,12 @@ function parsePayload(payload) {
   } catch {
     return { raw, parsed: raw };
   }
+}
+
+function normalizeTagId(value) {
+  if (value === null || value === undefined) return null;
+  const tagId = String(value).trim().toUpperCase().replace(/[^0-9A-F]/g, '');
+  return tagId.length ? tagId : null;
 }
 
 function summarizeTelemetry(summary, key, parsed) {
@@ -49,11 +56,32 @@ function summarizeTelemetry(summary, key, parsed) {
     return;
   }
 
+  if (key === 'system') {
+    if (typeof parsed.pn532_ready === 'boolean') {
+      summary.pn532Ready = parsed.pn532_ready;
+    }
+    const lastNfcUid = normalizeTagId(parsed.last_nfc_uid);
+    if (lastNfcUid) {
+      summary.latestRfidUid = lastNfcUid;
+      summary.latestRfidSeenAt = new Date().toISOString();
+    }
+    return;
+  }
+
   if (key === 'modelInference') {
     if (typeof parsed.label === 'string') {
       summary.modelLabel = parsed.label;
     }
     summary.anomalyScore = Number(parsed.anomaly_score) || summary.anomalyScore;
+    return;
+  }
+
+  if (key === 'nfc') {
+    const tagId = normalizeTagId(parsed.uid ?? parsed.tag_id ?? parsed.card_uid);
+    if (tagId) {
+      summary.latestRfidUid = tagId;
+      summary.latestRfidSeenAt = new Date().toISOString();
+    }
   }
 }
 
@@ -101,6 +129,35 @@ export function createMqttService({ onImageSaved } = {}) {
     });
   }
 
+  async function publishDeviceCommand(command, payload = {}) {
+    return publish(`${topics.commandBase}/${command}`, JSON.stringify({
+      requested_at: new Date().toISOString(),
+      source: 'backend',
+      payload,
+    }));
+  }
+
+  async function pulseAccessActuators(tagId) {
+    try {
+      await Promise.all([
+        publishDeviceCommand('servo', { angle: config.access.unlockAngle, tag_id: tagId }),
+        publishDeviceCommand('buzzer', {
+          enabled: true,
+          duration_ms: config.access.buzzerMs,
+          frequency_hz: config.access.buzzerHz,
+          tag_id: tagId,
+        }),
+      ]);
+
+      setTimeout(() => {
+        publishDeviceCommand('servo', { angle: config.access.lockAngle, tag_id: tagId })
+          .catch((error) => console.error('[MQTT] Failed to reset servo after RFID access', error));
+      }, config.access.unlockMs);
+    } catch (error) {
+      console.error('[MQTT] Failed to trigger access actuators', error);
+    }
+  }
+
   async function handleImageMessage(topic, payload) {
     const metadata = {
       topic,
@@ -117,6 +174,78 @@ export function createMqttService({ onImageSaved } = {}) {
     if (onImageSaved) {
       await onImageSaved(image);
     }
+  }
+
+  async function handleRfidScan(tagId, metadata = {}) {
+    const normalizedTagId = normalizeTagId(tagId);
+    if (!normalizedTagId) return;
+
+    const scanMetadata = {
+      ...metadata,
+      tag_id: normalizedTagId,
+      raw_tag_id: tagId,
+    };
+
+    const result = config.access.allowAllRfid
+      ? await supabaseService.recordRfidAccessGranted({
+          deviceId: config.mqtt.deviceId,
+          tagId: normalizedTagId,
+          reason: 'test_allow_all',
+        })
+      : await supabaseService.validateRfid(normalizedTagId);
+
+    await supabaseService.insertAlert({
+      deviceId: config.mqtt.deviceId,
+      alertType: 'rfid_scan',
+      message: `Da quet the RFID/NFC: ${normalizedTagId}`,
+      thumbnailUrl: snapshot.latestImage?.base64,
+      severity: 'info',
+      source: 'rfid',
+      metadata: { ...scanMetadata, access_test_mode: config.access.allowAllRfid },
+      resolved: true,
+    });
+
+    if (result.ok) {
+      await pulseAccessActuators(normalizedTagId);
+      await supabaseService.insertAlert({
+        deviceId: config.mqtt.deviceId,
+        alertType: 'access_granted',
+        message: `Mo cua thanh cong bang the: ${normalizedTagId}`,
+        thumbnailUrl: snapshot.latestImage?.base64,
+        metadata: {
+          ...scanMetadata,
+          access_test_mode: config.access.allowAllRfid,
+          card_id: result.credentialId,
+          holder_name: result.holderName,
+          reason: result.reason,
+          servo_angle: config.access.unlockAngle,
+          servo_reset_angle: config.access.lockAngle,
+          servo_reset_after_ms: config.access.unlockMs,
+        },
+        resolved: true,
+      });
+      return;
+    }
+
+    if (!config.access.allowAllRfid) {
+      const settings = await supabaseService.getDeviceSettings(config.mqtt.deviceId);
+      if (settings?.master_key_enabled) {
+        await supabaseService.recordPendingRfidScan({
+          deviceId: config.mqtt.deviceId,
+          tagId: normalizedTagId,
+          thumbnailUrl: snapshot.latestImage?.base64,
+        });
+        return;
+      }
+    }
+
+    await supabaseService.insertAlert({
+      deviceId: config.mqtt.deviceId,
+      alertType: 'rfid_invalid',
+      message: `The RFID/NFC khong hop le: ${normalizedTagId}`,
+      thumbnailUrl: snapshot.latestImage?.base64,
+      metadata: { ...scanMetadata, reason: result.reason },
+    });
   }
 
   function handleTelemetryMessage(topic, payload) {
@@ -147,7 +276,7 @@ export function createMqttService({ onImageSaved } = {}) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'motion',
-            message: 'Phát hiện chuyển động (Cảm biến)',
+            message: 'Phat hien chuyen dong (cam bien)',
             thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
@@ -155,43 +284,25 @@ export function createMqttService({ onImageSaved } = {}) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'door_open',
-            message: 'Cửa đã được mở (Cảm biến)',
+            message: 'Cua da duoc mo (cam bien)',
             thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
+      } else if (key === 'nfc' && parsed && typeof parsed === 'object') {
+        handleRfidScan(parsed.uid ?? parsed.tag_id ?? parsed.card_uid, {
+          source_topic: topic,
+          technology: parsed.technology,
+          uid_length: parsed.uid_length,
+          uptime_ms: parsed.uptime_ms,
+        }).catch((error) => {
+          console.error('[MQTT] Failed to handle RFID/NFC scan', error);
+        });
       } else if (key === 'system' && parsed && parsed.rfid_scanned) {
-        const tagId = parsed.rfid_scanned;
-
-        supabaseService.validateRfid(tagId).then(async (result) => {
-          if (result.ok) {
-            await supabaseService.insertAlert({
-              deviceId: config.mqtt.deviceId,
-              alertType: 'access_granted',
-              message: `Mở cửa thành công bằng thẻ: ${tagId}`,
-              thumbnailUrl: snapshot.latestImage?.base64,
-              metadata: { tag_id: tagId, card_id: result.credentialId, holder_name: result.holderName },
-              resolved: true,
-            });
-            return;
-          }
-
-          const settings = await supabaseService.getDeviceSettings(config.mqtt.deviceId);
-          if (settings?.master_key_enabled) {
-            await supabaseService.recordPendingRfidScan({
-              deviceId: config.mqtt.deviceId,
-              tagId,
-              thumbnailUrl: snapshot.latestImage?.base64,
-            });
-            return;
-          }
-
-          await supabaseService.insertAlert({
-            deviceId: config.mqtt.deviceId,
-            alertType: 'rfid_invalid',
-            message: `Thẻ RFID/NFC không hợp lệ: ${tagId}`,
-            thumbnailUrl: snapshot.latestImage?.base64,
-            metadata: { tag_id: tagId, reason: result.reason },
-          });
+        handleRfidScan(parsed.rfid_scanned, {
+          source_topic: topic,
+          legacy_field: 'rfid_scanned',
+        }).catch((error) => {
+          console.error('[MQTT] Failed to handle legacy RFID scan', error);
         });
       }
     }
@@ -279,11 +390,7 @@ export function createMqttService({ onImageSaved } = {}) {
         throw new Error('command must contain only letters, numbers, underscores, or hyphens.');
       }
 
-      return publish(`${topics.commandBase}/${safeCommand}`, JSON.stringify({
-        requested_at: new Date().toISOString(),
-        source: 'api',
-        payload,
-      }));
+      return publishDeviceCommand(safeCommand, payload);
     },
     publishConfig(payload) {
       return publish(topics.config, JSON.stringify({

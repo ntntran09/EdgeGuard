@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { getExampleFlow } from '@/lib/example-flow';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
@@ -9,16 +8,6 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({ active: true }));
     const active = body.active ?? true;
-
-    if (getExampleFlow()) {
-      return NextResponse.json({
-        ok: true,
-        demo: true,
-        command: 'alarm',
-        active,
-        published: true,
-      });
-    }
 
     const res = await fetch(`${BACKEND_URL}/api/mqtt/command`, {
       method: 'POST',
@@ -43,7 +32,7 @@ export async function POST(request: Request) {
       await supabase.from('alerts').insert([{
         device_id: DEVICE_ID,
         alert_type: 'system_event',
-        message: `Người dùng đã ${active ? 'bật' : 'tắt'} chuông báo động`,
+        message: `Nguoi dung da ${active ? 'bat' : 'tat'} chuong bao dong`,
         source: 'manual',
         severity: active ? 'warning' : 'info',
         resolved: !active,
@@ -54,7 +43,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error('[API /alarm] Error:', error);
     return NextResponse.json(
-      { ok: false, error: 'Không thể kích hoạt báo động. Vui lòng thử lại.' },
+      { ok: false, error: 'Cannot change alarm state' },
       { status: 502 }
     );
   }

@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server';
-import { mockEvents } from '@/lib/mock-data';
-import { getExampleEvents } from '@/lib/example-flow';
 import { getRequester } from '@/lib/server-auth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import type { EventCategory, EventSeverity, EventType, SecurityEvent } from '@/types';
@@ -37,10 +35,8 @@ interface SecurityEventRow {
   metadata?: Record<string, unknown> | null;
 }
 
-function applyFilter(events: SecurityEvent[], filter: string | null) {
-  if (!filter || filter === 'all') return events;
-  if (filterMap[filter]) return events.filter((event) => filterMap[filter].includes(event.type));
-  return events;
+function databaseRequired() {
+  return NextResponse.json({ ok: false, error: 'Supabase is not configured', events: [] }, { status: 503 });
 }
 
 function normalizeImagePath(path?: string | null) {
@@ -52,35 +48,35 @@ function normalizeImagePath(path?: string | null) {
 function copyForEvent(type: string, description?: string | null) {
   switch (type) {
     case 'access_granted':
-      return { type: 'access_granted' as EventType, title: 'Mở khóa bằng RFID', severity: 'info' as EventSeverity };
+      return { type: 'access_granted' as EventType, title: 'Mo khoa bang RFID', severity: 'info' as EventSeverity };
     case 'door_unlocked':
-      return { type: 'door_unlocked' as EventType, title: 'Mở khóa cửa', severity: 'info' as EventSeverity };
+      return { type: 'door_unlocked' as EventType, title: 'Mo khoa cua', severity: 'info' as EventSeverity };
     case 'door_locked':
-      return { type: 'door_locked' as EventType, title: 'Khóa cửa', severity: 'info' as EventSeverity };
+      return { type: 'door_locked' as EventType, title: 'Khoa cua', severity: 'info' as EventSeverity };
     case 'access_denied':
     case 'rfid_invalid':
-      return { type: 'access_denied' as EventType, title: 'Truy cập bị từ chối', severity: 'danger' as EventSeverity };
+      return { type: 'access_denied' as EventType, title: 'Truy cap bi tu choi', severity: 'danger' as EventSeverity };
     case 'rfid_added':
-      return { type: 'rfid_added' as EventType, title: 'Thêm thẻ RFID/NFC', severity: 'info' as EventSeverity };
+      return { type: 'rfid_added' as EventType, title: 'Them the RFID/NFC', severity: 'info' as EventSeverity };
     case 'rfid_deleted':
-      return { type: 'rfid_deleted' as EventType, title: 'Xóa/Từ chối thẻ RFID/NFC', severity: 'warning' as EventSeverity };
+      return { type: 'rfid_deleted' as EventType, title: 'Xoa/Tu choi the RFID/NFC', severity: 'warning' as EventSeverity };
     case 'rfid_scan':
-      return { type: 'rfid_scan' as EventType, title: 'Quét thẻ RFID', severity: 'info' as EventSeverity };
+      return { type: 'rfid_scan' as EventType, title: 'Quet the RFID/NFC', severity: 'info' as EventSeverity };
     case 'person_detected':
-      return { type: 'person_detected' as EventType, title: 'Phát hiện người', severity: 'info' as EventSeverity };
+      return { type: 'person_detected' as EventType, title: 'Phat hien nguoi', severity: 'info' as EventSeverity };
     case 'object_detected':
-      return { type: 'object_detected' as EventType, title: 'Phát hiện vật thể', severity: 'info' as EventSeverity };
+      return { type: 'object_detected' as EventType, title: 'Phat hien vat the', severity: 'info' as EventSeverity };
     case 'object_left':
     case 'unknown_object':
-      return { type: 'object_left' as EventType, title: 'Vật thể bị bỏ lại', severity: 'warning' as EventSeverity };
+      return { type: 'object_left' as EventType, title: 'Vat the bi bo lai', severity: 'warning' as EventSeverity };
     case 'camera_blocked':
-      return { type: 'camera_blocked' as EventType, title: 'Camera bị che', severity: 'danger' as EventSeverity };
+      return { type: 'camera_blocked' as EventType, title: 'Camera bi che', severity: 'danger' as EventSeverity };
     case 'stranger_detected':
-      return { type: 'stranger_detected' as EventType, title: 'Phát hiện người lạ', severity: 'danger' as EventSeverity };
+      return { type: 'stranger_detected' as EventType, title: 'Phat hien nguoi la', severity: 'danger' as EventSeverity };
     default:
       return {
         type: 'system_event' as EventType,
-        title: description?.slice(0, 42) || 'Sự kiện hệ thống',
+        title: description?.slice(0, 42) || 'Su kien he thong',
         severity: 'info' as EventSeverity,
       };
   }
@@ -112,21 +108,12 @@ function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityE
 }
 
 export async function GET(request: Request) {
+  if (!isSupabaseConfigured) return databaseRequired();
+
   const { searchParams } = new URL(request.url);
   const filter = searchParams.get('filter');
   const requester = await getRequester(request);
   const isAdmin = requester.role === 'admin';
-  const exampleEvents = getExampleEvents();
-
-  if (exampleEvents) {
-    const events = applyFilter(exampleEvents, filter).filter((event) => isAdmin || !event.isAdminOnly);
-    return NextResponse.json({ events });
-  }
-
-  if (!isSupabaseConfigured) {
-    const events = applyFilter(mockEvents, filter).filter((event) => isAdmin || !event.isAdminOnly);
-    return NextResponse.json({ events });
-  }
 
   try {
     let query = supabase
@@ -143,7 +130,6 @@ export async function GET(request: Request) {
     if (!isAdmin) query = query.eq('is_admin_only', false);
 
     const { data, error } = await query;
-
     if (error) throw error;
 
     const rows = data || [];
@@ -167,12 +153,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ events: rows.map((row) => mapRow(row, viewedIds)) });
   } catch (error) {
     console.error('[API /events] GET Error:', error);
-    return NextResponse.json({ events: applyFilter(mockEvents, filter) });
+    return NextResponse.json({ ok: false, error: 'Cannot load events', events: [] }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    if (!isSupabaseConfigured) return databaseRequired();
+
     const requester = await getRequester(request);
     const { eventId, eventIds } = await request.json();
     const ids = Array.isArray(eventIds)
@@ -183,10 +171,6 @@ export async function POST(request: Request) {
 
     if (ids.length === 0) {
       return NextResponse.json({ ok: false, error: 'eventId or eventIds is required' }, { status: 422 });
-    }
-
-    if (!isSupabaseConfigured) {
-      return NextResponse.json({ ok: true });
     }
 
     const viewerId = requester.telegramId || 'dev';
