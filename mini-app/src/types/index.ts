@@ -114,7 +114,7 @@ export interface TelegramDeviceUser {
 export interface KnownFace {
   id: string;
   displayName: string;
-  imageBase64?: string;
+  imageUrl?: string;
   isActive: boolean;
   addedAt: string;
 }
@@ -136,6 +136,10 @@ export interface SystemStatus {
   anomalyScore?: number;
   lastUpdate?: string;
   latestImageUrl?: string;
+  cameraReady?: boolean;
+  cameraLastFrameAt?: string;
+  cameraLastFrameBytes?: number;
+  cameraPublishFailures?: number;
   aiDetectionEnabled?: boolean;
   aiModelReady?: boolean;
   telegramEnabled?: boolean;

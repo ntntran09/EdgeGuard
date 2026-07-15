@@ -275,7 +275,7 @@ export default function SettingsPage() {
         <div className="settings-menu-grid">
           <button className="settings-menu-card" onClick={() => setSection('system')}>
             <SettingsFilledIcon size={24} />
-            <span><strong>Hệ thống</strong><small>Auto-lock, cảnh báo AI và camera</small></span>
+            <span><strong>Hệ thống</strong><small>Tự động khóa, cảnh báo AI và camera</small></span>
             <ChevronRightFilledIcon size={18} />
           </button>
           <button className="settings-menu-card" onClick={() => setSection('rfid')}>
@@ -345,7 +345,7 @@ export default function SettingsPage() {
           <div className="setting-row">
             <div>
               <strong>Cấu hình thẻ RFID/NFC</strong>
-              <small>Bật chế độ này để thêm, xóa, vô hiệu hóa hoặc hiệu hóa thẻ RFID/NFC.</small>
+              <small>Bật chế độ này để thêm, xóa, vô hiệu hóa hoặc kích hoạt thẻ RFID/NFC.</small>
             </div>
             <ToggleSwitch
               checked={isRfidCardConfigEnabled}
@@ -448,7 +448,7 @@ export default function SettingsPage() {
           <div className="face-grid">
             {faces.length === 0 ? <div className="empty-state">Chưa có gương mặt quen nào.</div> : faces.map((face) => (
               <div className="face-card" key={face.id}>
-                {face.imageBase64 ? <Image src={face.imageBase64} alt={face.displayName} width={72} height={72} /> : <ShieldFilledIcon size={28} />}
+                {face.imageUrl ? <Image src={face.imageUrl} alt={face.displayName} width={72} height={72} /> : <ShieldFilledIcon size={28} />}
                 <span><strong>{face.displayName}</strong><small>Thêm {formatTimeAgo(face.addedAt)}</small></span>
                 <button
                   className="mini-btn danger"

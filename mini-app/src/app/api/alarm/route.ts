@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { backendApiUrl } from '@/lib/backend-url';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 
 export async function POST(request: Request) {
@@ -9,12 +9,12 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({ active: true }));
     const active = body.active ?? true;
 
-    const res = await fetch(`${BACKEND_URL}/api/mqtt/command`, {
+    const res = await fetch(backendApiUrl('/api/mqtt/command'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         command: 'alarm',
-        payload: { active },
+        payload: { active, pattern: 'urgent' },
       }),
     });
 
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       await supabase.from('alerts').insert([{
         device_id: DEVICE_ID,
         alert_type: 'system_event',
-        message: `Nguoi dung da ${active ? 'bat' : 'tat'} chuong bao dong`,
+        message: `Người dùng đã ${active ? 'bật' : 'tắt'} chuông báo động`,
         source: 'manual',
         severity: active ? 'warning' : 'info',
         resolved: !active,

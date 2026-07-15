@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getRequester } from '@/lib/server-auth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { restoreVietnameseDiacritics } from '@/lib/vietnamese-copy';
 import type { EventCategory, EventSeverity, EventType, SecurityEvent } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
@@ -48,42 +49,43 @@ function normalizeImagePath(path?: string | null) {
 function copyForEvent(type: string, description?: string | null) {
   switch (type) {
     case 'access_granted':
-      return { type: 'access_granted' as EventType, title: 'Mo khoa bang RFID', severity: 'info' as EventSeverity };
+      return { type: 'access_granted' as EventType, title: 'Mở khóa bằng RFID', severity: 'info' as EventSeverity };
     case 'door_unlocked':
-      return { type: 'door_unlocked' as EventType, title: 'Mo khoa cua', severity: 'info' as EventSeverity };
+      return { type: 'door_unlocked' as EventType, title: 'Mở khóa cửa', severity: 'info' as EventSeverity };
     case 'door_locked':
-      return { type: 'door_locked' as EventType, title: 'Khoa cua', severity: 'info' as EventSeverity };
+      return { type: 'door_locked' as EventType, title: 'Khóa cửa', severity: 'info' as EventSeverity };
     case 'access_denied':
     case 'rfid_invalid':
-      return { type: 'access_denied' as EventType, title: 'Truy cap bi tu choi', severity: 'danger' as EventSeverity };
+      return { type: 'access_denied' as EventType, title: 'Truy cập bị từ chối', severity: 'danger' as EventSeverity };
     case 'rfid_added':
-      return { type: 'rfid_added' as EventType, title: 'Them the RFID/NFC', severity: 'info' as EventSeverity };
+      return { type: 'rfid_added' as EventType, title: 'Thêm thẻ RFID/NFC', severity: 'info' as EventSeverity };
     case 'rfid_deleted':
-      return { type: 'rfid_deleted' as EventType, title: 'Xoa/Tu choi the RFID/NFC', severity: 'warning' as EventSeverity };
+      return { type: 'rfid_deleted' as EventType, title: 'Xóa/Từ chối thẻ RFID/NFC', severity: 'warning' as EventSeverity };
     case 'rfid_scan':
-      return { type: 'rfid_scan' as EventType, title: 'Quet the RFID/NFC', severity: 'info' as EventSeverity };
+      return { type: 'rfid_scan' as EventType, title: 'Quét thẻ RFID/NFC', severity: 'info' as EventSeverity };
     case 'person_detected':
-      return { type: 'person_detected' as EventType, title: 'Phat hien nguoi', severity: 'info' as EventSeverity };
+      return { type: 'person_detected' as EventType, title: 'Phát hiện người', severity: 'info' as EventSeverity };
     case 'object_detected':
-      return { type: 'object_detected' as EventType, title: 'Phat hien vat the', severity: 'info' as EventSeverity };
+      return { type: 'object_detected' as EventType, title: 'Phát hiện vật thể', severity: 'info' as EventSeverity };
     case 'object_left':
     case 'unknown_object':
-      return { type: 'object_left' as EventType, title: 'Vat the bi bo lai', severity: 'warning' as EventSeverity };
+      return { type: 'object_left' as EventType, title: 'Vật thể bị bỏ lại', severity: 'warning' as EventSeverity };
     case 'camera_blocked':
-      return { type: 'camera_blocked' as EventType, title: 'Camera bi che', severity: 'danger' as EventSeverity };
+      return { type: 'camera_blocked' as EventType, title: 'Camera bị che', severity: 'danger' as EventSeverity };
     case 'stranger_detected':
-      return { type: 'stranger_detected' as EventType, title: 'Phat hien nguoi la', severity: 'danger' as EventSeverity };
+      return { type: 'stranger_detected' as EventType, title: 'Phát hiện người lạ', severity: 'danger' as EventSeverity };
     default:
       return {
         type: 'system_event' as EventType,
-        title: description?.slice(0, 42) || 'Su kien he thong',
+        title: description?.slice(0, 42) || 'Sự kiện hệ thống',
         severity: 'info' as EventSeverity,
       };
   }
 }
 
 function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityEvent {
-  const copy = copyForEvent(row.event_type, row.description);
+  const description = restoreVietnameseDiacritics(row.description);
+  const copy = copyForEvent(row.event_type, description);
   const metadata = row.metadata || {};
   const cardId = typeof metadata.card_id === 'string'
     ? metadata.card_id
@@ -95,7 +97,7 @@ function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityE
     id: row.id,
     type: copy.type,
     title: copy.title,
-    description: row.description || copy.title,
+    description: description || copy.title,
     timestamp: row.occurred_at,
     thumbnailUrl: normalizeImagePath(row.thumbnail_url),
     aiConfidence: row.ai_confidence ?? undefined,

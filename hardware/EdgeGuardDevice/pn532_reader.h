@@ -4,30 +4,32 @@
 #include "libs.h"
 #include "config.h"
 #include "mqtt.h"
+#include "device.h"
 
 PN532_I2C pn532Interface(Wire);
 PN532 nfc(pn532Interface);
 bool pn532Ready = false;
+unsigned long lastPn532InitAttempt = 0;
 unsigned long lastNfcSeenAt = 0;
+unsigned long lastNfcDetectionAt = 0;
 String lastNfcUid;
+String latchedNfcUid;
 
 void pn532_setup() {
-  // Initialize Wire on the ESP32-CAM free pins before nfc.begin().
-  // PN532_I2C::begin() calls Wire.begin() again; on ESP32 an already-started
-  // bus keeps these pins.
-  if (!Wire.begin(PN532_SDA_PIN, PN532_SCL_PIN)) {
+  pn532Ready = false;
+  lastPn532InitAttempt = millis();
+
+  // Select the custom ESP32-CAM pins before PN532_I2C calls Wire.begin().
+  if (!Wire.setPins(PN532_SDA_PIN, PN532_SCL_PIN)) {
+    Serial.println("[PN532] Failed to configure I2C pins");
+    return;
+  }
+
+  nfc.begin();
+  if (!Wire.setClock(100000)) {
     Serial.println("[PN532] Failed to start I2C bus");
     return;
   }
-  Wire.setClock(100000);
-
-  nfc.begin();
-  // Some PN532_I2C library versions call Wire.begin() without pins inside
-  // begin(), which can reset ESP32 I2C back to default SDA/SCL. Put the bus
-  // back on the wired ESP32-CAM pins before the first PN532 command.
-  Wire.begin(PN532_SDA_PIN, PN532_SCL_PIN);
-  Wire.setClock(100000);
-  delay(50);
 
   uint32_t version = nfc.getFirmwareVersion();
   if (!version) {
@@ -47,19 +49,36 @@ void pn532_setup() {
   pn532Ready = true;
   Serial.printf(
     "[PN532] Ready, chip PN5%02X, firmware %u.%u\n",
-    (version >> 24) & 0xFF,
-    (version >> 16) & 0xFF,
-    (version >> 8) & 0xFF
+    static_cast<unsigned int>((version >> 24) & 0xFF),
+    static_cast<unsigned int>((version >> 16) & 0xFF),
+    static_cast<unsigned int>((version >> 8) & 0xFF)
   );
 }
 
 void pn532_loop() {
-  if (!pn532Ready) return;
+  if (!pn532Ready) {
+    if (millis() - lastPn532InitAttempt >= PN532_INIT_RETRY_MS) {
+      Serial.println("[PN532] Retrying initialization");
+      Wire.end();
+      pn532_setup();
+    }
+    return;
+  }
 
   uint8_t uid[7] = {0};
   uint8_t uidLength = 0;
-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 50)) return;
-  if (uidLength == 0 || uidLength > sizeof(uid)) {
+  if (!nfc.readPassiveTargetID(
+        PN532_MIFARE_ISO14443A,
+        uid,
+        &uidLength,
+        PN532_POLL_TIMEOUT_MS
+      )) {
+    if (latchedNfcUid.length() > 0 && millis() - lastNfcDetectionAt >= NFC_CARD_RELEASE_MS) {
+      latchedNfcUid = "";
+    }
+    return;
+  }
+  if (uidLength != 4 && uidLength != 7) {
     Serial.printf("[PN532] Invalid UID length: %u\n", uidLength);
     return;
   }
@@ -73,21 +92,40 @@ void pn532_loop() {
   uidHex.toUpperCase();
 
   unsigned long now = millis();
-  if (uidHex == lastNfcUid && now - lastNfcSeenAt < NFC_REPEAT_DELAY_MS) return;
+  lastNfcDetectionAt = now;
+  if (uidHex == latchedNfcUid) return;
+  latchedNfcUid = uidHex;
 
   Serial.printf("[PN532] UID: %s\n", uidHex.c_str());
+  actuators_playRfidReadTone();
 
-  if (mqttClient.connected()) {
-    StaticJsonDocument<192> doc;
+  // A cached active card must open immediately on the ESP32. Do not wait for
+  // Wi-Fi/MQTT state detection, which can remain stale during an outage.
+  bool localAccessGranted = device_unlockForCachedRfid(uidHex);
+  if (localAccessGranted) {
+    Serial.println("[PN532] Cached RFID access granted");
+  }
+
+  if (WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+    JsonDocument doc;
     doc["uid"] = uidHex;
     doc["uid_length"] = uidLength;
     doc["technology"] = "ISO14443A";
     doc["uptime_ms"] = now;
+    doc["local_access_granted"] = localAccessGranted;
+    doc["offline_rfid_count"] = deviceRfidAllowlistCount;
     if (!mqtt_publishJson("/telemetry/nfc", doc)) {
       Serial.println("[PN532] MQTT publish failed");
     }
-  } else {
-    Serial.println("[PN532] MQTT offline; UID not published");
+  } else if (!localAccessGranted) {
+    Serial.printf(
+      "[PN532] Offline RFID access denied; UID not in cache (%u card(s))\n",
+      static_cast<unsigned int>(deviceRfidAllowlistCount)
+    );
+  }
+
+  if (!localAccessGranted && WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+    Serial.println("[PN532] UID sent to backend for online validation");
   }
 
   lastNfcUid = uidHex;

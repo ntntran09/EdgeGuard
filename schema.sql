@@ -1,7 +1,23 @@
 -- EdgeGuard Supabase Schema
 -- Idempotent setup for AIoT door security monitoring.
 
+begin;
+
 create extension if not exists pgcrypto;
+
+-- One public bucket, separated by purpose-specific object prefixes.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'event-images',
+  'event-images',
+  true,
+  5242880,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp']::text[]
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
 
 -- Shared timestamp helper.
 create or replace function public.set_updated_at()
@@ -21,6 +37,10 @@ create table if not exists public.alerts (
   alert_type text not null,
   message text not null default '',
   thumbnail_url text,
+  image_bucket text,
+  image_path text,
+  image_mime_type text,
+  image_bytes bigint check (image_bytes is null or image_bytes >= 0),
   severity text not null default 'info'
     check (severity in ('info', 'warning', 'danger')),
   source text not null default 'system'
@@ -43,7 +63,11 @@ create table if not exists public.ai_logs (
   confidence numeric(5, 4) check (confidence is null or (confidence >= 0 and confidence <= 1)),
   anomaly_score numeric(5, 4) check (anomaly_score is null or (anomaly_score >= 0 and anomaly_score <= 1)),
   object_count integer not null default 0 check (object_count >= 0 and object_count <= 3),
-  image_path text,
+  image_path text, -- Public Storage URL used by the UI.
+  image_bucket text,
+  image_object_path text,
+  image_mime_type text,
+  image_bytes bigint check (image_bytes is null or image_bytes >= 0),
   telegram_msg_link text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
@@ -70,7 +94,7 @@ create table if not exists public.telegram_device_users (
   id uuid primary key default gen_random_uuid(),
   device_id text not null default 'device_001',
   telegram_id text not null,
-  display_name text not null default 'Telegram user',
+  display_name text not null default 'Người dùng Telegram',
   role text not null default 'user' check (role in ('admin', 'user')),
   is_active boolean not null default true,
   added_at timestamptz not null default now(),
@@ -83,7 +107,7 @@ create table if not exists public.rfid_credentials (
   id uuid primary key default gen_random_uuid(),
   device_id text not null default 'device_001',
   tag_id text not null,
-  name text not null default 'Chua dat ten',
+  name text not null default 'Chưa đặt tên',
   role text not null default 'resident'
     check (role in ('owner', 'admin', 'resident', 'guest')),
   is_active boolean not null default true,
@@ -106,22 +130,27 @@ create table if not exists public.pending_rfid_scans (
   reviewed_at timestamptz
 );
 
--- Optional database image storage. Telegram mode stores only telegram_file_id/link on logs.
+-- Optional normalized image references. Image bytes/base64 never belong in Postgres.
 create table if not exists public.event_images (
   id uuid primary key default gen_random_uuid(),
   device_id text not null,
-  storage_mode text not null check (storage_mode in ('telegram', 'database')),
+  storage_mode text not null check (storage_mode in ('telegram', 'supabase_storage')),
   telegram_file_id text,
   telegram_msg_link text,
+  storage_bucket text,
+  storage_path text,
+  public_url text,
   mime_type text,
-  image_bytes bytea,
-  image_base64 text,
+  image_size_bytes bigint check (image_size_bytes is null or image_size_bytes >= 0),
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   check (
     (storage_mode = 'telegram' and (telegram_file_id is not null or telegram_msg_link is not null))
     or
-    (storage_mode = 'database' and (image_bytes is not null or image_base64 is not null))
+    (storage_mode = 'supabase_storage'
+      and storage_bucket is not null
+      and storage_path is not null
+      and public_url is not null)
   )
 );
 
@@ -130,7 +159,11 @@ create table if not exists public.known_faces (
   id uuid primary key default gen_random_uuid(),
   device_id text not null default 'device_001',
   display_name text not null,
-  image_base64 text,
+  image_url text,
+  image_bucket text,
+  image_path text,
+  image_mime_type text,
+  image_bytes bigint check (image_bytes is null or image_bytes >= 0),
   embedding jsonb,
   is_active boolean not null default true,
   added_at timestamptz not null default now(),
@@ -166,10 +199,18 @@ alter table public.alerts add column if not exists telegram_msg_link text;
 alter table public.alerts add column if not exists created_at timestamptz not null default now();
 alter table public.alerts add column if not exists updated_at timestamptz not null default now();
 alter table public.alerts add column if not exists resolved_at timestamptz;
+alter table public.alerts add column if not exists image_bucket text;
+alter table public.alerts add column if not exists image_path text;
+alter table public.alerts add column if not exists image_mime_type text;
+alter table public.alerts add column if not exists image_bytes bigint;
 
 alter table public.ai_logs add column if not exists anomaly_score numeric(5, 4);
 alter table public.ai_logs add column if not exists object_count integer not null default 0;
 alter table public.ai_logs add column if not exists metadata jsonb not null default '{}'::jsonb;
+alter table public.ai_logs add column if not exists image_bucket text;
+alter table public.ai_logs add column if not exists image_object_path text;
+alter table public.ai_logs add column if not exists image_mime_type text;
+alter table public.ai_logs add column if not exists image_bytes bigint;
 
 alter table public.device_settings add column if not exists telegram_alert_enabled boolean not null default false;
 alter table public.device_settings add column if not exists ai_detection_enabled boolean not null default false;
@@ -186,27 +227,169 @@ alter table public.device_settings drop column if exists image_storage_mode;
 alter table public.rfid_credentials add column if not exists device_id text not null default 'device_001';
 alter table public.rfid_credentials add column if not exists role text not null default 'resident';
 alter table public.rfid_credentials add column if not exists updated_at timestamptz not null default now();
+alter table public.rfid_credentials alter column name set default 'Chưa đặt tên';
+update public.rfid_credentials
+set name = 'Chưa đặt tên'
+where name = 'Chua dat ten';
+
+alter table public.telegram_device_users alter column display_name set default 'Người dùng Telegram';
+update public.telegram_device_users
+set display_name = 'Người dùng Telegram'
+where display_name = 'Telegram user';
+
+-- Localize historical Mini App alert messages without changing identifiers.
+update public.alerts set message = replace(message, 'Nguoi dung da bat chuong bao dong', 'Người dùng đã bật chuông báo động')
+where position('Nguoi dung da bat chuong bao dong' in message) > 0;
+update public.alerts set message = replace(message, 'Nguoi dung da tat chuong bao dong', 'Người dùng đã tắt chuông báo động')
+where position('Nguoi dung da tat chuong bao dong' in message) > 0;
+update public.alerts set message = replace(message, 'Nguoi dung mo cua tu xa qua Mini App', 'Người dùng mở cửa từ xa qua Mini App')
+where position('Nguoi dung mo cua tu xa qua Mini App' in message) > 0;
+update public.alerts set message = replace(message, 'Nguoi dung khoa cua tu xa qua Mini App', 'Người dùng khóa cửa từ xa qua Mini App')
+where position('Nguoi dung khoa cua tu xa qua Mini App' in message) > 0;
+update public.alerts set message = replace(message, 'Da quet the RFID/NFC', 'Đã quét thẻ RFID/NFC')
+where position('Da quet the RFID/NFC' in message) > 0;
+update public.alerts set message = replace(message, 'Mo cua thanh cong bang the', 'Mở cửa thành công bằng thẻ')
+where position('Mo cua thanh cong bang the' in message) > 0;
+update public.alerts set message = replace(message, 'The RFID/NFC khong hop le', 'Thẻ RFID/NFC không hợp lệ')
+where position('The RFID/NFC khong hop le' in message) > 0;
+update public.alerts set message = replace(message, 'Phat hien chuyen dong (cam bien)', 'Phát hiện chuyển động (cảm biến)')
+where position('Phat hien chuyen dong (cam bien)' in message) > 0;
+update public.alerts set message = replace(message, 'Cua da duoc mo (cam bien)', 'Cửa đã được mở (cảm biến)')
+where position('Cua da duoc mo (cam bien)' in message) > 0;
+update public.alerts set message = replace(message, 'Tu choi the RFID/NFC', 'Từ chối thẻ RFID/NFC')
+where position('Tu choi the RFID/NFC' in message) > 0;
+update public.alerts set message = replace(message, 'Da them the RFID/NFC', 'Đã thêm thẻ RFID/NFC')
+where position('Da them the RFID/NFC' in message) > 0;
+update public.alerts set message = replace(message, 'Da cap nhat the RFID/NFC', 'Đã cập nhật thẻ RFID/NFC')
+where position('Da cap nhat the RFID/NFC' in message) > 0;
+update public.alerts set message = replace(message, 'Da xoa the RFID/NFC', 'Đã xóa thẻ RFID/NFC')
+where position('Da xoa the RFID/NFC' in message) > 0;
 
 alter table public.security_event_views add column if not exists device_id text not null default 'device_001';
 alter table public.security_event_views add column if not exists telegram_id text not null default 'dev';
 alter table public.security_event_views add column if not exists event_id text;
 alter table public.security_event_views add column if not exists viewed_at timestamptz not null default now();
 
-alter table public.known_faces add column if not exists image_base64 text;
-update public.known_faces
-set image_base64 = image_url
-where image_base64 is null
-  and image_url is not null
-  and image_url like 'data:image/%;base64,%';
-alter table public.known_faces drop column if exists image_url;
+-- Add URL/path columns before removing legacy inline image columns.
+alter table public.event_images add column if not exists storage_bucket text;
+alter table public.event_images add column if not exists storage_path text;
+alter table public.event_images add column if not exists public_url text;
+alter table public.event_images add column if not exists image_size_bytes bigint;
+
+alter table public.known_faces add column if not exists image_url text;
+alter table public.known_faces add column if not exists image_bucket text;
+alter table public.known_faces add column if not exists image_path text;
+alter table public.known_faces add column if not exists image_mime_type text;
+alter table public.known_faces add column if not exists image_bytes bigint;
+
+-- Never silently discard inline image data. This migration stops with a clear
+-- message if legacy base64/bytea rows still need exporting to Storage first.
+do $image_migration$
+declare
+  has_legacy boolean;
+begin
+  select exists (
+    select 1 from public.alerts
+    where thumbnail_url like 'data:image/%;base64,%'
+  ) or exists (
+    select 1 from public.ai_logs
+    where image_path like 'data:image/%;base64,%'
+  ) into has_legacy;
+
+  if has_legacy then
+    raise exception 'Legacy base64 exists in alerts/ai_logs. Upload those images to Storage before rerunning schema.sql.';
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'event_images' and column_name = 'image_base64'
+  ) then
+    execute 'select exists (select 1 from public.event_images where image_base64 is not null)'
+      into has_legacy;
+    if has_legacy then
+      raise exception 'Legacy event_images.image_base64 rows exist. Upload them to Storage before rerunning schema.sql.';
+    end if;
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'event_images' and column_name = 'image_bytes'
+  ) then
+    execute 'select exists (select 1 from public.event_images where image_bytes is not null)'
+      into has_legacy;
+    if has_legacy then
+      raise exception 'Legacy event_images.image_bytes rows exist. Upload them to Storage before rerunning schema.sql.';
+    end if;
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'known_faces' and column_name = 'image_base64'
+  ) then
+    execute $$select exists (
+      select 1 from public.known_faces
+      where image_base64 is not null and image_base64 not like 'http%'
+    )$$ into has_legacy;
+    if has_legacy then
+      raise exception 'Legacy known_faces.image_base64 rows exist. Upload them to Storage before rerunning schema.sql.';
+    end if;
+
+    execute $$update public.known_faces
+      set image_url = image_base64
+      where image_url is null and image_base64 like 'http%'$$;
+  end if;
+end;
+$image_migration$;
+
+alter table public.event_images drop constraint if exists event_images_storage_mode_check;
+alter table public.event_images drop constraint if exists event_images_check;
+update public.event_images
+set storage_mode = 'supabase_storage'
+where storage_mode = 'database';
+alter table public.event_images drop column if exists image_base64;
+alter table public.event_images drop column if exists image_bytes;
+alter table public.event_images drop constraint if exists event_images_storage_reference_check;
+alter table public.event_images add constraint event_images_storage_mode_check
+  check (storage_mode in ('telegram', 'supabase_storage'));
+alter table public.event_images add constraint event_images_storage_reference_check check (
+  (storage_mode = 'telegram' and (telegram_file_id is not null or telegram_msg_link is not null))
+  or
+  (storage_mode = 'supabase_storage'
+    and storage_bucket is not null
+    and storage_path is not null
+    and public_url is not null)
+);
+
+alter table public.known_faces drop column if exists image_base64;
+alter table public.known_faces drop constraint if exists known_faces_storage_reference_check;
+alter table public.known_faces add constraint known_faces_storage_reference_check check (
+  (image_url is null and image_bucket is null and image_path is null)
+  or
+  (image_url is not null and image_bucket is not null and image_path is not null)
+);
+
+alter table public.alerts drop constraint if exists alerts_image_bytes_check;
+alter table public.alerts add constraint alerts_image_bytes_check
+  check (image_bytes is null or image_bytes >= 0);
+alter table public.ai_logs drop constraint if exists ai_logs_image_bytes_check;
+alter table public.ai_logs add constraint ai_logs_image_bytes_check
+  check (image_bytes is null or image_bytes >= 0);
+alter table public.event_images drop constraint if exists event_images_image_size_bytes_check;
+alter table public.event_images add constraint event_images_image_size_bytes_check
+  check (image_size_bytes is null or image_size_bytes >= 0);
+alter table public.known_faces drop constraint if exists known_faces_image_bytes_check;
+alter table public.known_faces add constraint known_faces_image_bytes_check
+  check (image_bytes is null or image_bytes >= 0);
 
 -- Fast dashboard and log queries.
 create index if not exists idx_alerts_device_timestamp on public.alerts (device_id, timestamp desc);
 create index if not exists idx_alerts_unresolved on public.alerts (device_id, timestamp desc) where resolved = false;
 create index if not exists idx_alerts_type_timestamp on public.alerts (alert_type, timestamp desc);
 create index if not exists idx_alerts_metadata_gin on public.alerts using gin (metadata);
+create index if not exists idx_alerts_storage_path on public.alerts (image_bucket, image_path) where image_path is not null;
 create index if not exists idx_ai_logs_device_created on public.ai_logs (device_id, created_at desc);
 create index if not exists idx_ai_logs_label_created on public.ai_logs (label, created_at desc);
+create index if not exists idx_ai_logs_storage_path on public.ai_logs (image_bucket, image_object_path) where image_object_path is not null;
 create index if not exists idx_rfid_credentials_device_tag on public.rfid_credentials (device_id, tag_id);
 create index if not exists idx_rfid_credentials_active on public.rfid_credentials (device_id, is_active);
 create index if not exists idx_access_logs_device_created on public.access_logs (device_id, created_at desc);
@@ -218,6 +401,7 @@ create unique index if not exists idx_pending_rfid_scans_unique_pending
   where status = 'pending';
 create index if not exists idx_event_images_device_created on public.event_images (device_id, created_at desc);
 create index if not exists idx_known_faces_device_active on public.known_faces (device_id, is_active, added_at desc);
+create unique index if not exists idx_known_faces_storage_path on public.known_faces (image_bucket, image_path) where image_path is not null;
 create unique index if not exists idx_security_event_views_unique on public.security_event_views (device_id, telegram_id, event_id);
 create index if not exists idx_security_event_views_viewer on public.security_event_views (device_id, telegram_id, viewed_at desc);
 
@@ -350,7 +534,7 @@ select
   ('ai-' || id::text) as id,
   device_id,
   label as event_type,
-  ('AI inference: ' || label || coalesce(' (' || round(confidence * 100)::text || '%)', '')) as description,
+  ('Suy luận AI: ' || label || coalesce(' (' || round(confidence * 100)::text || '%)', '')) as description,
   case
     when label in ('stranger_detected', 'camera_blocked') then 'danger'
     when label in ('object_left', 'unknown_object') then 'warning'
@@ -382,6 +566,12 @@ alter table public.pending_rfid_scans enable row level security;
 alter table public.event_images enable row level security;
 alter table public.known_faces enable row level security;
 alter table public.security_event_views enable row level security;
+
+-- Public URL reads are allowed; all writes still go through the service-role backend.
+drop policy if exists "Public read EdgeGuard image bucket" on storage.objects;
+create policy "Public read EdgeGuard image bucket"
+on storage.objects for select
+using (bucket_id = 'event-images');
 
 -- Development policies. Production should prefer service-role access from the backend.
 drop policy if exists "Enable full access for alerts" on public.alerts;
@@ -417,3 +607,5 @@ create policy "Enable full access for security_event_views" on public.security_e
 insert into public.device_settings (device_id)
 values ('device_001')
 on conflict (device_id) do nothing;
+
+commit;

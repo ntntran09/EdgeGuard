@@ -1,7 +1,10 @@
 import mqtt from 'mqtt';
 
 import { config, mqttUrl } from '../config.js';
-import { saveImageBuffer, saveImageFromJson } from './image-store.js';
+import {
+  createTransientImageBuffer,
+  createTransientImageFromJson,
+} from './image-store.js';
 import { supabaseService } from './supabase-service.js';
 
 const TELEMETRY_KEYS = {
@@ -13,6 +16,44 @@ const TELEMETRY_KEYS = {
   nfc: '/telemetry/nfc',
   modelInference: '/model/inference',
 };
+const MAX_OFFLINE_RFID_CARDS = 32;
+const MIN_AUTO_LOCK_MS = 1000;
+const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
+const LIVE_FRAME_MAX_AGE_MS = 5000;
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(maximum, Math.max(minimum, number));
+}
+
+export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
+  const fallbackAutoLockMs = clampNumber(
+    config.access.unlockMs,
+    MIN_AUTO_LOCK_MS,
+    MAX_AUTO_LOCK_MS,
+    10000
+  );
+  const configuredAutoLockMs = settings.auto_lock_seconds === null
+    || settings.auto_lock_seconds === undefined
+    ? fallbackAutoLockMs
+    : Number(settings.auto_lock_seconds) * 1000;
+  const autoLockMs = clampNumber(
+    configuredAutoLockMs,
+    MIN_AUTO_LOCK_MS,
+    MAX_AUTO_LOCK_MS,
+    fallbackAutoLockMs
+  );
+
+  return {
+    auto_lock_enabled: settings.auto_lock_enabled !== false,
+    auto_lock_ms: autoLockMs,
+    lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
+    unlock_angle: clampNumber(config.access.unlockAngle, 0, 180, 90),
+    rfid_allowlist: [...new Set(rfidAllowlist.map(normalizeTagId).filter(Boolean))]
+      .slice(0, MAX_OFFLINE_RFID_CARDS),
+  };
+}
 
 function parsePayload(payload) {
   const raw = payload.toString('utf8');
@@ -60,6 +101,18 @@ function summarizeTelemetry(summary, key, parsed) {
     if (typeof parsed.pn532_ready === 'boolean') {
       summary.pn532Ready = parsed.pn532_ready;
     }
+    if (typeof parsed.camera_ready === 'boolean') {
+      summary.cameraReady = parsed.camera_ready;
+    }
+    if (typeof parsed.door_open === 'boolean') {
+      summary.doorOpen = parsed.door_open;
+    }
+    summary.cameraLastSuccessMs = Number(parsed.camera_last_success_ms) || 0;
+    summary.cameraLastFrameBytes = Number(parsed.camera_last_frame_bytes) || 0;
+    summary.cameraPublishFailures = Number(parsed.camera_publish_failures) || 0;
+    if (typeof parsed.door_state_reason === 'string') {
+      summary.doorStateReason = parsed.door_state_reason;
+    }
     const lastNfcUid = normalizeTagId(parsed.last_nfc_uid);
     if (lastNfcUid) {
       summary.latestRfidUid = lastNfcUid;
@@ -85,7 +138,7 @@ function summarizeTelemetry(summary, key, parsed) {
   }
 }
 
-export function createMqttService({ onImageSaved } = {}) {
+export function createMqttService() {
   const topicBase = config.mqtt.topicBase.replace(/\/$/, '');
   const topics = {
     commandBase: `${topicBase}/command`,
@@ -111,6 +164,9 @@ export function createMqttService({ onImageSaved } = {}) {
   };
 
   let client = null;
+  let deviceAccessConfig = buildDeviceAccessPayload();
+  let latestFrame = null;
+  const frameSubscribers = new Set();
 
   function publish(topic, payload, options = {}) {
     if (!client || !client.connected) {
@@ -130,29 +186,54 @@ export function createMqttService({ onImageSaved } = {}) {
   }
 
   async function publishDeviceCommand(command, payload = {}) {
-    return publish(`${topics.commandBase}/${command}`, JSON.stringify({
+    await publish(`${topics.commandBase}/${command}`, JSON.stringify({
       requested_at: new Date().toISOString(),
       source: 'backend',
       payload,
     }));
+
+    if (command === 'servo' && (payload.action === 'lock' || payload.action === 'unlock')) {
+      snapshot.summary.doorOpen = payload.action === 'unlock';
+      snapshot.summary.doorStateReason = 'command';
+      snapshot.summary.updatedAt = new Date().toISOString();
+    }
+  }
+
+  async function syncAccessConfig() {
+    const storedConfig = await supabaseService.getDeviceAccessConfig(
+      config.mqtt.deviceId,
+      MAX_OFFLINE_RFID_CARDS
+    );
+    if (!storedConfig) {
+      return { synced: false, reason: 'database_unavailable' };
+    }
+
+    deviceAccessConfig = buildDeviceAccessPayload(
+      storedConfig.settings,
+      storedConfig.rfidAllowlist
+    );
+    await publish(topics.config, JSON.stringify({
+      ...deviceAccessConfig,
+      requested_at: new Date().toISOString(),
+      source: 'access_config_sync',
+    }), { qos: 1, retain: true });
+
+    console.log(
+      `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
+      + `after ${deviceAccessConfig.auto_lock_ms} ms, ${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
+    );
+    return { synced: true, config: deviceAccessConfig };
   }
 
   async function pulseAccessActuators(tagId) {
     try {
-      await Promise.all([
-        publishDeviceCommand('servo', { angle: config.access.unlockAngle, tag_id: tagId }),
-        publishDeviceCommand('buzzer', {
-          enabled: true,
-          duration_ms: config.access.buzzerMs,
-          frequency_hz: config.access.buzzerHz,
-          tag_id: tagId,
-        }),
-      ]);
-
-      setTimeout(() => {
-        publishDeviceCommand('servo', { angle: config.access.lockAngle, tag_id: tagId })
-          .catch((error) => console.error('[MQTT] Failed to reset servo after RFID access', error));
-      }, config.access.unlockMs);
+      await publishDeviceCommand('servo', {
+        action: 'unlock',
+        angle: deviceAccessConfig.unlock_angle,
+        lock_angle: deviceAccessConfig.lock_angle,
+        auto_lock_ms: deviceAccessConfig.auto_lock_enabled ? deviceAccessConfig.auto_lock_ms : 0,
+        tag_id: tagId,
+      });
     } catch (error) {
       console.error('[MQTT] Failed to trigger access actuators', error);
     }
@@ -165,14 +246,25 @@ export function createMqttService({ onImageSaved } = {}) {
       deviceId: config.mqtt.deviceId,
     };
 
-    const image = topic === topics.imageJson
-      ? await saveImageFromJson(JSON.parse(payload.toString('utf8')), metadata)
-      : await saveImageBuffer(payload, metadata);
+    const frame = topic === topics.imageJson
+      ? createTransientImageFromJson(JSON.parse(payload.toString('utf8')), metadata)
+      : createTransientImageBuffer(payload, metadata);
+    const publicFrame = { ...frame };
+    delete publicFrame.buffer;
 
-    snapshot.latestImage = image;
+    latestFrame = frame;
+    snapshot.latestImage = publicFrame;
+    snapshot.summary.cameraReady = true;
+    snapshot.summary.cameraLastFrameAt = frame.receivedAt;
+    snapshot.summary.cameraLastFrameBytes = frame.buffer.length;
+    snapshot.summary.updatedAt = frame.receivedAt;
 
-    if (onImageSaved) {
-      await onImageSaved(image);
+    for (const subscriber of frameSubscribers) {
+      try {
+        subscriber(frame);
+      } catch (error) {
+        console.error('[MQTT] Live-frame subscriber failed', error);
+      }
     }
   }
 
@@ -197,7 +289,7 @@ export function createMqttService({ onImageSaved } = {}) {
     await supabaseService.insertAlert({
       deviceId: config.mqtt.deviceId,
       alertType: 'rfid_scan',
-      message: `Da quet the RFID/NFC: ${normalizedTagId}`,
+      message: `Đã quét thẻ RFID/NFC: ${normalizedTagId}`,
       thumbnailUrl: snapshot.latestImage?.base64,
       severity: 'info',
       source: 'rfid',
@@ -206,11 +298,15 @@ export function createMqttService({ onImageSaved } = {}) {
     });
 
     if (result.ok) {
-      await pulseAccessActuators(normalizedTagId);
+      // New firmware opens cached active cards locally for instant/offline
+      // access. Only send a servo command when the device did not already do it.
+      if (metadata.local_access_granted !== true) {
+        await pulseAccessActuators(normalizedTagId);
+      }
       await supabaseService.insertAlert({
         deviceId: config.mqtt.deviceId,
         alertType: 'access_granted',
-        message: `Mo cua thanh cong bang the: ${normalizedTagId}`,
+        message: `Mở cửa thành công bằng thẻ: ${normalizedTagId}`,
         thumbnailUrl: snapshot.latestImage?.base64,
         metadata: {
           ...scanMetadata,
@@ -218,9 +314,12 @@ export function createMqttService({ onImageSaved } = {}) {
           card_id: result.credentialId,
           holder_name: result.holderName,
           reason: result.reason,
-          servo_angle: config.access.unlockAngle,
-          servo_reset_angle: config.access.lockAngle,
-          servo_reset_after_ms: config.access.unlockMs,
+          opened_locally: metadata.local_access_granted === true,
+          servo_angle: deviceAccessConfig.unlock_angle,
+          servo_reset_angle: deviceAccessConfig.lock_angle,
+          servo_reset_after_ms: deviceAccessConfig.auto_lock_enabled
+            ? deviceAccessConfig.auto_lock_ms
+            : null,
         },
         resolved: true,
       });
@@ -242,7 +341,7 @@ export function createMqttService({ onImageSaved } = {}) {
     await supabaseService.insertAlert({
       deviceId: config.mqtt.deviceId,
       alertType: 'rfid_invalid',
-      message: `The RFID/NFC khong hop le: ${normalizedTagId}`,
+      message: `Thẻ RFID/NFC không hợp lệ: ${normalizedTagId}`,
       thumbnailUrl: snapshot.latestImage?.base64,
       metadata: { ...scanMetadata, reason: result.reason },
     });
@@ -276,7 +375,7 @@ export function createMqttService({ onImageSaved } = {}) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'motion',
-            message: 'Phat hien chuyen dong (cam bien)',
+            message: 'Phát hiện chuyển động (cảm biến)',
             thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
@@ -284,7 +383,7 @@ export function createMqttService({ onImageSaved } = {}) {
           supabaseService.insertAlert({
             deviceId: config.mqtt.deviceId,
             alertType: 'door_open',
-            message: 'Cua da duoc mo (cam bien)',
+            message: 'Cửa đã được mở (cảm biến)',
             thumbnailUrl: snapshot.latestImage?.base64,
           });
         }
@@ -294,6 +393,8 @@ export function createMqttService({ onImageSaved } = {}) {
           technology: parsed.technology,
           uid_length: parsed.uid_length,
           uptime_ms: parsed.uptime_ms,
+          local_access_granted: parsed.local_access_granted === true,
+          offline_rfid_count: parsed.offline_rfid_count,
         }).catch((error) => {
           console.error('[MQTT] Failed to handle RFID/NFC scan', error);
         });
@@ -338,10 +439,24 @@ export function createMqttService({ onImageSaved } = {}) {
 
         console.log('[MQTT] Subscribed:', subscriptions.join(', '));
       });
+
+      syncAccessConfig().catch((error) => {
+        console.error('[MQTT] Failed to sync access config after connect', error);
+      });
     });
 
-    client.on('message', (topic, payload) => {
+    client.on('message', (topic, payload, packet) => {
       if (topic === topics.imageRaw || topic === topics.imageJson) {
+        if (packet.retain) {
+          console.warn(`[MQTT] Removing stale retained image on ${topic}; waiting for a fresh camera frame`);
+          client.publish(topic, Buffer.alloc(0), { qos: 1, retain: true }, (error) => {
+            if (error) console.error('[MQTT] Failed to clear retained image', error);
+          });
+          return;
+        }
+        if (payload.length === 0) {
+          return;
+        }
         handleImageMessage(topic, payload).catch((error) => {
           console.error('[MQTT] Failed to handle image payload', error);
         });
@@ -371,14 +486,32 @@ export function createMqttService({ onImageSaved } = {}) {
     start,
     stop,
     getStatus() {
+      const latestFrameAge = latestFrame?.receivedAt
+        ? Date.now() - Date.parse(latestFrame.receivedAt)
+        : Number.POSITIVE_INFINITY;
+      const latestImage = snapshot.latestImage && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS
+        ? { ...snapshot.latestImage, base64: undefined, url: '/api/mqtt/stream' }
+        : null;
       return {
         ...snapshot,
+        latestImage,
         topicBase,
         imageTopics: {
           raw: topics.imageRaw,
           json: topics.imageJson,
         },
       };
+    },
+    getLatestFrame() {
+      return latestFrame;
+    },
+    subscribeToFrames(subscriber) {
+      frameSubscribers.add(subscriber);
+      const latestFrameAge = latestFrame?.receivedAt
+        ? Date.now() - Date.parse(latestFrame.receivedAt)
+        : Number.POSITIVE_INFINITY;
+      if (latestFrame && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS) subscriber(latestFrame);
+      return () => frameSubscribers.delete(subscriber);
     },
     publishJson(topic, message, options = {}) {
       return publish(topic, JSON.stringify(message), options);
@@ -399,5 +532,6 @@ export function createMqttService({ onImageSaved } = {}) {
         source: 'api',
       }), { retain: true });
     },
+    syncAccessConfig,
   };
 }

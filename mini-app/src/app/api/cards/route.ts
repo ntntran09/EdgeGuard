@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { DEVICE_ID, requireAdmin } from '@/lib/server-auth';
+import { syncDeviceAccessConfig } from '@/lib/device-sync';
+import { restoreVietnameseDiacritics } from '@/lib/vietnamese-copy';
 import type { PendingRfidScan, RfidCard } from '@/types';
 
 interface RfidCredentialRow {
@@ -45,7 +47,7 @@ function mapCard(card: RfidCredentialRow): RfidCard {
   return {
     id: card.id,
     cardUid: card.tag_id,
-    name: card.name || 'Chua dat ten',
+    name: restoreVietnameseDiacritics(card.name || 'Chưa đặt tên'),
     isActive: card.is_active,
     addedAt: card.added_at,
     lastUsedAt: card.last_used_at ?? undefined,
@@ -80,7 +82,7 @@ async function isRfidCardConfigurationEnabled() {
 function rfidCardConfigurationRequiredResponse() {
   return NextResponse.json({
     ok: false,
-    error: 'Bat cau hinh the RFID/NFC truoc khi thay doi danh sach the',
+    error: 'Bật cấu hình thẻ RFID/NFC trước khi thay đổi danh sách thẻ',
   }, { status: 409 });
 }
 
@@ -157,7 +159,7 @@ export async function POST(request: Request) {
 
       if (action === 'decline') {
         await supabase.from('pending_rfid_scans').update(review).eq('id', pendingId);
-        await logToAlerts(`Tu choi the RFID/NFC ${pending.tag_id}`, 'rfid_deleted', { tag_id: pending.tag_id });
+        await logToAlerts(`Từ chối thẻ RFID/NFC ${pending.tag_id}`, 'rfid_deleted', { tag_id: pending.tag_id });
         return NextResponse.json({ ok: true });
       }
 
@@ -166,7 +168,7 @@ export async function POST(request: Request) {
         .upsert({
           device_id: DEVICE_ID,
           tag_id: normalizeTagId(pending.tag_id),
-          name: name || `The ${pending.tag_id}`,
+          name: name || `Thẻ ${pending.tag_id}`,
           is_active: true,
         }, { onConflict: 'device_id,tag_id' })
         .select()
@@ -175,9 +177,10 @@ export async function POST(request: Request) {
       if (cardError) throw cardError;
 
       await supabase.from('pending_rfid_scans').update(review).eq('id', pendingId);
-      await logToAlerts(`Da them the RFID/NFC ${card.tag_id} (${card.name})`, 'rfid_added', { tag_id: card.tag_id, card_id: card.id });
+      await logToAlerts(`Đã thêm thẻ RFID/NFC ${card.tag_id} (${card.name})`, 'rfid_added', { tag_id: card.tag_id, card_id: card.id });
+      const deviceSynced = await syncDeviceAccessConfig();
 
-      return NextResponse.json({ ok: true, card: mapCard(card) }, { status: 201 });
+      return NextResponse.json({ ok: true, card: mapCard(card), deviceSynced }, { status: 201 });
     }
 
     const normalizedCardUid = normalizeTagId(cardUid);
@@ -190,7 +193,7 @@ export async function POST(request: Request) {
       .upsert({
         device_id: DEVICE_ID,
         tag_id: normalizedCardUid,
-        name: name || `The ${normalizedCardUid}`,
+        name: name || `Thẻ ${normalizedCardUid}`,
         is_active: true,
       }, { onConflict: 'device_id,tag_id' })
       .select()
@@ -198,8 +201,9 @@ export async function POST(request: Request) {
 
     if (cardError) throw cardError;
 
-    await logToAlerts(`Da them the RFID/NFC ${card.tag_id} (${card.name})`, 'rfid_added', { tag_id: card.tag_id, card_id: card.id });
-    return NextResponse.json({ ok: true, card: mapCard(card) }, { status: 201 });
+    await logToAlerts(`Đã thêm thẻ RFID/NFC ${card.tag_id} (${card.name})`, 'rfid_added', { tag_id: card.tag_id, card_id: card.id });
+    const deviceSynced = await syncDeviceAccessConfig();
+    return NextResponse.json({ ok: true, card: mapCard(card), deviceSynced }, { status: 201 });
   } catch (error) {
     console.error('[API /cards] POST Error:', error);
     return NextResponse.json({ ok: false, error: 'Cannot process RFID/NFC card' }, { status: 400 });
@@ -239,8 +243,11 @@ export async function PUT(request: Request) {
 
     if (error) throw error;
 
-    await logToAlerts(`Da cap nhat the RFID/NFC ${data.tag_id} (${data.name})`, 'rfid_added', { tag_id: data.tag_id, card_id: data.id });
-    return NextResponse.json({ ok: true, card: mapCard(data) });
+    await logToAlerts(`Đã cập nhật thẻ RFID/NFC ${data.tag_id} (${data.name})`, 'rfid_added', { tag_id: data.tag_id, card_id: data.id });
+    const deviceSynced = isActive !== undefined
+      ? await syncDeviceAccessConfig()
+      : true;
+    return NextResponse.json({ ok: true, card: mapCard(data), deviceSynced });
   } catch (error) {
     console.error('[API /cards] PUT Error:', error);
     return NextResponse.json({ ok: false, error: 'Cannot update RFID/NFC card' }, { status: 400 });
@@ -284,8 +291,9 @@ export async function DELETE(request: Request) {
   }
 
   if (cardData) {
-    await logToAlerts(`Da xoa the RFID/NFC ${cardData.tag_id} (${cardData.name})`, 'rfid_deleted', { tag_id: cardData.tag_id });
+    await logToAlerts(`Đã xóa thẻ RFID/NFC ${cardData.tag_id} (${cardData.name})`, 'rfid_deleted', { tag_id: cardData.tag_id });
   }
 
-  return NextResponse.json({ ok: true, message: 'RFID/NFC card deleted' });
+  const deviceSynced = await syncDeviceAccessConfig();
+  return NextResponse.json({ ok: true, message: 'RFID/NFC card deleted', deviceSynced });
 }

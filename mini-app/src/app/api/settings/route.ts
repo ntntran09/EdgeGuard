@@ -1,10 +1,19 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/server-auth';
+import { syncDeviceAccessConfig } from '@/lib/device-sync';
 import type { AlertConfig } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
+const MIN_AUTO_LOCK_SECONDS = 1;
+const MAX_AUTO_LOCK_SECONDS = 60 * 60;
+
+function normalizeAutoLockSeconds(value: unknown) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return DEFAULT_AUTO_LOCK_SECONDS;
+  return Math.round(Math.min(MAX_AUTO_LOCK_SECONDS, Math.max(MIN_AUTO_LOCK_SECONDS, seconds)));
+}
 
 const defaultAlertConfig: AlertConfig = {
   objectLeftAlertEnabled: true,
@@ -43,7 +52,7 @@ export async function GET() {
     objectLeftAlertEnabled: data.object_left_alert_enabled ?? true,
     objectLeftMaxSeconds: data.object_left_max_seconds,
     autoLockEnabled: data.auto_lock_enabled ?? data.auto_lock_seconds !== null,
-    autoLockSeconds: data.auto_lock_enabled === false ? null : data.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS,
+    autoLockSeconds: data.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS,
     strangerAlertEnabled: data.stranger_alert_enabled,
     cameraBlockedAlertEnabled: data.camera_blocked_alert_enabled,
     telegramAlertEnabled: data.telegram_alert_enabled || false,
@@ -64,13 +73,15 @@ export async function POST(request: Request) {
     if (!isSupabaseConfigured) return databaseRequired();
 
     const body: Partial<AlertConfig> = await request.json();
+    const autoLockSeconds = body.autoLockSeconds !== undefined
+      ? normalizeAutoLockSeconds(body.autoLockSeconds)
+      : undefined;
     const updates = {
       device_id: DEVICE_ID,
       ...(body.objectLeftAlertEnabled !== undefined && { object_left_alert_enabled: body.objectLeftAlertEnabled }),
       ...(body.objectLeftMaxSeconds !== undefined && { object_left_max_seconds: body.objectLeftMaxSeconds }),
       ...(body.autoLockEnabled !== undefined && { auto_lock_enabled: body.autoLockEnabled }),
-      ...(body.autoLockEnabled === true && body.autoLockSeconds === undefined && { auto_lock_seconds: DEFAULT_AUTO_LOCK_SECONDS }),
-      ...(body.autoLockSeconds !== undefined && { auto_lock_seconds: body.autoLockSeconds }),
+      ...(autoLockSeconds !== undefined && { auto_lock_seconds: autoLockSeconds }),
       ...(body.strangerAlertEnabled !== undefined && { stranger_alert_enabled: body.strangerAlertEnabled }),
       ...(body.cameraBlockedAlertEnabled !== undefined && { camera_blocked_alert_enabled: body.cameraBlockedAlertEnabled }),
       ...(body.telegramAlertEnabled !== undefined && { telegram_alert_enabled: body.telegramAlertEnabled }),
@@ -87,7 +98,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: true });
+    const deviceSynced = await syncDeviceAccessConfig();
+    return NextResponse.json({ ok: true, deviceSynced });
   } catch {
     return NextResponse.json({ ok: false, error: 'Invalid settings payload' }, { status: 400 });
   }

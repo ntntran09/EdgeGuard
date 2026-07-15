@@ -1,5 +1,5 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 function telegramHeaders() {
   if (typeof window === 'undefined') return {};
@@ -9,7 +9,7 @@ function telegramHeaders() {
 
   return {
     'x-telegram-user-id': String(user.id),
-    'x-telegram-user-name': [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || 'Telegram user',
+    'x-telegram-user-name': [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || 'Người dùng Telegram',
   };
 }
 

@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       user: {
         id: crypto.randomUUID(),
         telegramId,
-        displayName: displayName || 'Telegram user',
+        displayName: displayName || 'Người dùng Telegram',
         role: 'user',
         isActive: true,
         addedAt: new Date().toISOString(),
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     .upsert({
       device_id: DEVICE_ID,
       telegram_id: String(telegramId),
-      display_name: displayName || 'Telegram user',
+      display_name: displayName || 'Người dùng Telegram',
       role: 'user',
       is_active: true,
     }, { onConflict: 'device_id,telegram_id' })

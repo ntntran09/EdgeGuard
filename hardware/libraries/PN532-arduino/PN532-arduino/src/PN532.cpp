@@ -334,7 +334,10 @@ bool PN532::SAMConfig(void)
     if (HAL(writeCommand)(pn532_packetbuffer, 4))
         return false;
 
-    return (0 < HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
+    // SAMConfiguration has a valid response frame with no payload bytes.
+    // readResponse() strips TFI/command bytes and returns 0 in that case;
+    // only a negative transport status is an error.
+    return (0 <= HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
 }
 
 /**************************************************************************/
@@ -377,7 +380,8 @@ bool PN532::setPassiveActivationRetries(uint8_t maxRetries)
     if (HAL(writeCommand)(pn532_packetbuffer, 5))
         return 0x0; // no ACK
 
-    return (0 < HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
+    // RFConfiguration acknowledges success with a zero-payload response.
+    return (0 <= HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
 }
 
 /**************************************************************************/
@@ -408,7 +412,8 @@ bool PN532::setRFField(uint8_t autoRFCA, uint8_t rFOnOff)
         return 0x0; // command failed
     }
 
-    return (0 < HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
+    // RFConfiguration acknowledges success with a zero-payload response.
+    return (0 <= HAL(readResponse)(pn532_packetbuffer, sizeof(pn532_packetbuffer)));
 }
 
 /***** ISO14443A Commands ******/

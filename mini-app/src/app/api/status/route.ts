@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { backendApiUrl } from '@/lib/backend-url';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
 
@@ -19,8 +19,8 @@ function integrationStatus() {
 export async function GET() {
   try {
     const [res, settingsResult] = await Promise.all([
-      fetch(`${BACKEND_URL}/api/mqtt/status`, {
-        next: { revalidate: 5 },
+      fetch(backendApiUrl('/api/mqtt/status'), {
+        cache: 'no-store',
       }),
       isSupabaseConfigured
         ? supabase
@@ -56,6 +56,10 @@ export async function GET() {
       anomalyScore: data.summary?.anomalyScore,
       lastUpdate: data.summary?.updatedAt,
       latestImageUrl: data.latestImage?.base64 || data.latestImage?.url,
+      cameraReady: data.summary?.cameraReady ?? false,
+      cameraLastFrameAt: data.summary?.cameraLastFrameAt,
+      cameraLastFrameBytes: data.summary?.cameraLastFrameBytes,
+      cameraPublishFailures: data.summary?.cameraPublishFailures,
       autoLockEnabled: settingsResult.data
         ? (settingsResult.data.auto_lock_enabled ?? settingsResult.data.auto_lock_seconds !== null)
         : false,

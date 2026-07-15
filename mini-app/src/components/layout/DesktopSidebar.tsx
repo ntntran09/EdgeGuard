@@ -39,7 +39,7 @@ export function DesktopSidebar() {
 
       <div className="sidebar-footer">
         <span className="status-dot status-dot-ok" />
-        <span>Secure AIoT</span>
+        <span>An ninh AIoT</span>
       </div>
     </aside>
   );

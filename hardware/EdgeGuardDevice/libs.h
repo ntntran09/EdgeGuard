@@ -7,16 +7,15 @@
 #include <Wire.h>
 #include <PubSubClient.h>
 #include <ESP32Servo.h>
+#include <Preferences.h>
 
-// The supplied PN532-Arduino ZIP conditionally compiles each transport.
-// For Arduino IDE builds, its own examples enable I2C and include the
-// transport implementation directly. Without these two lines the sketch
-// can compile headers but fail at link time with missing PN532_I2C methods.
+// Select the I2C transport. Arduino builds the library's PN532_I2C.cpp as a
+// separate translation unit; including that source file here would define
+// every PN532_I2C method twice at link time.
 #ifndef NFC_INTERFACE_I2C
 #define NFC_INTERFACE_I2C
 #endif
 #include <PN532_I2C.h>
-#include <PN532_I2C.cpp>
 #include <PN532.h>
 
 #include "esp_camera.h"

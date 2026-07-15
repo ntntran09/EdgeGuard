@@ -8,9 +8,7 @@ import { parse } from 'url';
 import { config } from './backend/config.js';
 import { createImagesRouter } from './backend/routes/images.js';
 import { createMqttRouter } from './backend/routes/mqtt.js';
-import { ensureImageStorage } from './backend/services/image-store.js';
 import { createMqttService } from './backend/services/mqtt-service.js';
-import { createTelegramService } from './backend/services/telegram.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
@@ -20,18 +18,8 @@ const port = config.port || 3000;
 const nextApp = next({ dev, hostname, port });
 const handle = nextApp.getRequestHandler();
 
-nextApp.prepare().then(async () => {
-  await ensureImageStorage();
-
-  const telegram = createTelegramService(config.telegram);
-  const mqttService = createMqttService({
-    onImageSaved: async (image) => {
-      const result = await telegram.sendImage(image);
-      if (!result.skipped) {
-        image.telegramMsgLink = result.telegramMsgLink;
-      }
-    },
-  });
+nextApp.prepare().then(() => {
+  const mqttService = createMqttService();
 
   mqttService.start();
 

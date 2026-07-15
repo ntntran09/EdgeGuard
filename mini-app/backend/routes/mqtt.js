@@ -7,6 +7,46 @@ function isPlainObject(value) {
 export function createMqttRouter(mqttService) {
   const router = Router();
 
+  router.get('/stream', (request, response) => {
+    const boundary = 'edgeguard-frame';
+    response.status(200);
+    response.set({
+      'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    response.flushHeaders();
+
+    let waitingForDrain = false;
+    const unsubscribe = mqttService.subscribeToFrames((frame) => {
+      if (waitingForDrain || response.writableEnded || response.destroyed) return;
+
+      const header = [
+        `--${boundary}`,
+        `Content-Type: ${frame.contentType}`,
+        `Content-Length: ${frame.buffer.length}`,
+        `X-Frame-Time: ${frame.receivedAt}`,
+        '',
+        '',
+      ].join('\r\n');
+      const canWriteHeader = response.write(header);
+      const canWriteFrame = response.write(frame.buffer);
+      const canWriteTail = response.write('\r\n');
+      waitingForDrain = !(canWriteHeader && canWriteFrame && canWriteTail);
+    });
+
+    response.on('drain', () => {
+      waitingForDrain = false;
+    });
+
+    const closeStream = () => unsubscribe();
+    request.once('close', closeStream);
+    response.once('close', closeStream);
+  });
+
   router.get('/status', (_request, response) => {
     response.json(mqttService.getStatus());
   });
@@ -41,6 +81,19 @@ export function createMqttRouter(mqttService) {
 
       await mqttService.publishConfig(request.body);
       response.json({ ok: true, config: request.body });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/sync-access', async (_request, response, next) => {
+    try {
+      const result = await mqttService.syncAccessConfig();
+      if (!result.synced) {
+        response.status(503).json(result);
+        return;
+      }
+      response.json({ ok: true, ...result });
     } catch (error) {
       next(error);
     }

@@ -23,9 +23,19 @@ function parseDataUrl(dataUrl) {
   if (!match) return null;
 
   return {
-    contentType: match[1],
+    contentType: match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase(),
     buffer: Buffer.from(match[2], 'base64'),
   };
+}
+
+function isWebUrl(value) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value);
+}
+
+function storageErrorMessage(error) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && typeof error.message === 'string') return error.message;
+  return 'Unknown Supabase Storage error';
 }
 
 function extensionForContentType(contentType) {
@@ -41,6 +51,12 @@ function extensionForContentType(contentType) {
   }
 }
 
+function safeStorageSegment(value, fallback) {
+  return String(value || fallback)
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || fallback;
+}
+
 async function ensureStorageBucket() {
   if (!supabase || storageBucketReady) return;
 
@@ -48,21 +64,26 @@ async function ensureStorageBucket() {
   const { data: buckets, error: listError } = await supabase.storage.listBuckets();
   if (listError) throw listError;
 
-  if (!buckets?.some((item) => item.name === bucket)) {
+  const existingBucket = buckets?.find((item) => item.name === bucket);
+  if (!existingBucket) {
     const { error } = await supabase.storage.createBucket(bucket, {
       public: true,
       allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'],
       fileSizeLimit: config.images.maxBytes,
     });
     if (error && !/already exists/i.test(error.message)) throw error;
+  } else if (!existingBucket.public) {
+    throw new Error(`Supabase Storage bucket "${bucket}" must be public to create log image links.`);
   }
 
   storageBucketReady = true;
 }
 
-async function uploadImageToStorage({ deviceId, imagePath, metadata }) {
+async function uploadImageToStorage({ deviceId, imagePath, metadata, folder = 'events' }) {
   if (!supabase) return null;
-  if (imageUploadCache.has(imagePath)) return imageUploadCache.get(imagePath);
+  const safeFolder = safeStorageSegment(folder, 'events');
+  const cacheKey = `${safeFolder}:${imagePath}`;
+  if (imageUploadCache.has(cacheKey)) return imageUploadCache.get(cacheKey);
 
   const parsed = parseDataUrl(imagePath);
   if (!parsed || parsed.buffer.length === 0) return null;
@@ -71,10 +92,9 @@ async function uploadImageToStorage({ deviceId, imagePath, metadata }) {
 
   const extension = extensionForContentType(parsed.contentType);
   const now = new Date();
-  const safeDeviceId = String(deviceId || config.mqtt.deviceId || 'device')
-    .replace(/[^a-zA-Z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'device';
+  const safeDeviceId = safeStorageSegment(deviceId || config.mqtt.deviceId, 'device');
   const objectPath = [
+    safeFolder,
     safeDeviceId,
     now.toISOString().slice(0, 10),
     `${now.toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}.${extension}`,
@@ -94,6 +114,10 @@ async function uploadImageToStorage({ deviceId, imagePath, metadata }) {
     .from(config.supabase.imageBucket)
     .getPublicUrl(objectPath);
 
+  if (!data?.publicUrl) {
+    throw new Error(`Supabase Storage did not return a public URL for ${objectPath}`);
+  }
+
   const result = {
     bucket: config.supabase.imageBucket,
     path: objectPath,
@@ -101,18 +125,46 @@ async function uploadImageToStorage({ deviceId, imagePath, metadata }) {
     contentType: parsed.contentType,
     bytes: parsed.buffer.length,
   };
-  imageUploadCache.set(imagePath, result);
+  imageUploadCache.set(cacheKey, result);
+  console.log(`[Supabase] Image uploaded: ${result.bucket}/${result.path}`);
   return result;
 }
 
 export const supabaseService = {
-  async prepareImageReference({ deviceId, imagePath, telegramMsgLink, metadata }) {
-    if (!supabase || !imagePath) {
-      return { thumbnailUrl: telegramMsgLink || imagePath, telegramMsgLink, imageMetadata: metadata || {} };
+  async prepareImageReference({ deviceId, imagePath, telegramMsgLink, metadata, folder = 'events' }) {
+    if (!imagePath) {
+      return {
+        thumbnailUrl: telegramMsgLink || null,
+        telegramMsgLink,
+        imageMetadata: metadata || {},
+      };
+    }
+
+    if (isWebUrl(imagePath)) {
+      return {
+        thumbnailUrl: imagePath,
+        telegramMsgLink,
+        imageMetadata: {
+          ...(metadata || {}),
+          image_storage_mode: metadata?.image_storage_mode || 'linked_url',
+        },
+      };
+    }
+
+    if (!supabase) {
+      console.error('[Supabase] Event image was not stored because Supabase is not configured.');
+      return {
+        thumbnailUrl: telegramMsgLink || null,
+        telegramMsgLink,
+        imageMetadata: {
+          ...(metadata || {}),
+          image_storage_mode: telegramMsgLink ? 'telegram_link' : 'storage_unavailable',
+        },
+      };
     }
 
     try {
-      const storedImage = await uploadImageToStorage({ deviceId, imagePath, metadata });
+      const storedImage = await uploadImageToStorage({ deviceId, imagePath, metadata, folder });
       if (storedImage) {
         return {
           thumbnailUrl: storedImage.publicUrl,
@@ -129,42 +181,57 @@ export const supabaseService = {
       }
     } catch (error) {
       console.error('[Supabase] Error uploading image to storage:', error);
+      return {
+        thumbnailUrl: telegramMsgLink || null,
+        telegramMsgLink,
+        imageMetadata: {
+          ...(metadata || {}),
+          image_storage_mode: telegramMsgLink ? 'telegram_link' : 'storage_failed',
+          image_storage_error: storageErrorMessage(error),
+        },
+      };
     }
 
-    if (telegramMsgLink) {
-      return {
-        thumbnailUrl: telegramMsgLink,
-        telegramMsgLink,
-        imageMetadata: { ...(metadata || {}), image_storage_mode: 'telegram_link' },
-      };
+    console.error('[Supabase] Event image was not stored because the payload was not a supported data URL.');
+    return {
+      thumbnailUrl: telegramMsgLink || null,
+      telegramMsgLink,
+      imageMetadata: {
+        ...(metadata || {}),
+        image_storage_mode: telegramMsgLink ? 'telegram_link' : 'invalid_image_payload',
+      },
+    };
+  },
+
+  async recordStoredImageReference({ deviceId, imageReference, metadata = {} }) {
+    if (!supabase) throw new Error('Supabase is not configured.');
+    const imageMetadata = imageReference?.imageMetadata || {};
+    if (imageMetadata.image_storage_mode !== 'supabase_storage') {
+      throw new Error('A Supabase Storage image reference is required.');
     }
 
     const { data, error } = await supabase
       .from('event_images')
       .insert([{
         device_id: deviceId,
-        storage_mode: 'database',
-        image_base64: imagePath,
-        telegram_msg_link: telegramMsgLink,
-        metadata: metadata || {},
+        storage_mode: 'supabase_storage',
+        storage_bucket: imageMetadata.image_bucket,
+        storage_path: imageMetadata.image_path,
+        public_url: imageReference.thumbnailUrl,
+        mime_type: imageMetadata.image_content_type,
+        image_size_bytes: imageMetadata.image_bytes,
+        metadata,
       }])
-      .select('id')
+      .select()
       .single();
 
     if (error) {
-      console.error('[Supabase] Error storing image in database:', error);
-      return {
-        thumbnailUrl: imagePath,
-        telegramMsgLink,
-        imageMetadata: { ...(metadata || {}), image_storage_mode: 'storage_failed' },
-      };
+      await supabase.storage
+        .from(imageMetadata.image_bucket)
+        .remove([imageMetadata.image_path]);
+      throw new Error(`Cannot link Storage image in event_images: ${error.message}`);
     }
-
-    return {
-      thumbnailUrl: imagePath,
-      telegramMsgLink,
-      imageMetadata: { ...(metadata || {}), image_storage_mode: 'database', image_id: data.id },
-    };
+    return data;
   },
 
   async insertAiLog({ deviceId, label, confidence, anomalyScore, objectCount, imagePath, telegramMsgLink, metadata }) {
@@ -172,7 +239,13 @@ export const supabaseService = {
 
     const normalizedConfidence = Number(confidence);
     const normalizedAnomalyScore = Number(anomalyScore ?? confidence);
-    const image = await this.prepareImageReference({ deviceId, imagePath, telegramMsgLink, metadata });
+    const image = await this.prepareImageReference({
+      deviceId,
+      imagePath,
+      telegramMsgLink,
+      metadata,
+      folder: 'ai-logs',
+    });
 
     const { error } = await supabase.from('ai_logs').insert([
       {
@@ -182,6 +255,10 @@ export const supabaseService = {
         anomaly_score: Number.isFinite(normalizedAnomalyScore) ? normalizedAnomalyScore : null,
         object_count: Number.isFinite(Number(objectCount)) ? Number(objectCount) : 0,
         image_path: image.thumbnailUrl,
+        image_bucket: image.imageMetadata.image_bucket || null,
+        image_object_path: image.imageMetadata.image_path || null,
+        image_mime_type: image.imageMetadata.image_content_type || null,
+        image_bytes: image.imageMetadata.image_bytes || null,
         telegram_msg_link: image.telegramMsgLink,
         metadata: image.imageMetadata,
       },
@@ -192,7 +269,7 @@ export const supabaseService = {
       await this.insertAlert({
         deviceId,
         alertType: label || 'model_inference',
-        message: `AI inference: ${label || 'unknown'} (${Math.round(Number(confidence || 0) * 100)}%)`,
+        message: `Suy luận AI: ${label || 'không xác định'} (${Math.round(Number(confidence || 0) * 100)}%)`,
         thumbnailUrl: image.thumbnailUrl,
         source: 'ai',
         severity: this.severityForAlertType(label || 'model_inference'),
@@ -227,7 +304,13 @@ export const supabaseService = {
 
   async insertAlert({ deviceId, alertType, message, thumbnailUrl, severity, source, metadata, telegramMsgLink, resolved = false }) {
     if (!supabase) return;
-    const image = await this.prepareImageReference({ deviceId, imagePath: thumbnailUrl, telegramMsgLink, metadata });
+    const image = await this.prepareImageReference({
+      deviceId,
+      imagePath: thumbnailUrl,
+      telegramMsgLink,
+      metadata,
+      folder: 'events',
+    });
 
     const { error } = await supabase.from('alerts').insert([
       {
@@ -235,6 +318,10 @@ export const supabaseService = {
         alert_type: alertType,
         message,
         thumbnail_url: image.thumbnailUrl,
+        image_bucket: image.imageMetadata.image_bucket || null,
+        image_path: image.imageMetadata.image_path || null,
+        image_mime_type: image.imageMetadata.image_content_type || null,
+        image_bytes: image.imageMetadata.image_bytes || null,
         severity: severity || this.severityForAlertType(alertType),
         source: source || this.sourceForAlertType(alertType),
         metadata: image.imageMetadata,
@@ -263,6 +350,40 @@ export const supabaseService = {
     }
 
     return data;
+  },
+
+  async getDeviceAccessConfig(deviceId, maxCards = 32) {
+    if (!supabase) return null;
+
+    const [settingsResult, cardsResult] = await Promise.all([
+      supabase
+        .from('device_settings')
+        .select('auto_lock_enabled,auto_lock_seconds')
+        .eq('device_id', deviceId)
+        .maybeSingle(),
+      supabase
+        .from('rfid_credentials')
+        .select('tag_id')
+        .eq('device_id', deviceId)
+        .eq('is_active', true)
+        .order('added_at', { ascending: true })
+        .limit(maxCards),
+    ]);
+
+    if (settingsResult.error || cardsResult.error) {
+      console.error(
+        '[Supabase] Error loading device access config:',
+        settingsResult.error || cardsResult.error
+      );
+      return null;
+    }
+
+    return {
+      settings: settingsResult.data || {},
+      rfidAllowlist: (cardsResult.data || [])
+        .map((card) => normalizeTagId(card.tag_id))
+        .filter(Boolean),
+    };
   },
 
   async recordPendingRfidScan({ deviceId, tagId, thumbnailUrl }) {

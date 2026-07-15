@@ -18,6 +18,7 @@ void setup() {
   // Camera first so it reserves its LEDC timer/channel before servo and tone.
   camera_setup();
   actuators_setup();
+  device_setup();
   pn532_setup();
   mqtt_setup();
   sensors_setup();

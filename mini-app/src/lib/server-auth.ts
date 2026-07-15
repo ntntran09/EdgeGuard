@@ -14,7 +14,7 @@ interface TelegramUserRow {
 
 export function getRequestTelegramUser(request: Request) {
   const telegramId = request.headers.get('x-telegram-user-id')?.trim() || null;
-  const displayName = request.headers.get('x-telegram-user-name')?.trim() || 'Telegram user';
+  const displayName = request.headers.get('x-telegram-user-name')?.trim() || 'Người dùng Telegram';
   return { telegramId, displayName };
 }
 
@@ -22,7 +22,7 @@ export function mapTelegramUser(row: TelegramUserRow): TelegramDeviceUser {
   return {
     id: row.id,
     telegramId: row.telegram_id,
-    displayName: row.display_name || 'Telegram user',
+    displayName: row.display_name || 'Người dùng Telegram',
     role: row.role || 'admin',
     isActive: row.is_active,
     addedAt: row.added_at,

@@ -1,5 +1,18 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Event image storage
+
+Set `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and `SUPABASE_IMAGE_BUCKET=event-images` in `.env`. Camera frames remain memory-only until an event is logged. Persistent images use these bucket prefixes:
+
+```text
+events/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
+ai-logs/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
+known-faces/<device-id>/<uuid>.<extension>
+manual-uploads/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
+```
+
+`alerts`, `ai_logs`, `known_faces`, and `event_images` store only public URLs plus bucket/object paths and image metadata. Image base64/bytea is never written to a database table; if Storage is unavailable, the event is retained without an image and records the storage error in metadata.
+
 ## Getting Started
 
 First, run the development server:

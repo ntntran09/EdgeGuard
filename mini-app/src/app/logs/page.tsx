@@ -13,7 +13,7 @@ const filters: { key: FilterType; label: string }[] = [
   { key: 'all', label: 'Tất cả' },
   { key: 'person', label: 'Người' },
   { key: 'object', label: 'Vật thể' },
-  { key: 'door', label: 'Mở khóa/Cửa' },
+  { key: 'door', label: 'Cửa' },
   { key: 'rfid', label: 'RFID' },
 ];
 

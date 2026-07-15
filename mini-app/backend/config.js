@@ -53,7 +53,7 @@ export const config = {
     allowAllRfid: booleanFromEnv('RFID_ALLOW_ALL', false),
     unlockAngle: numberFromEnv('RFID_UNLOCK_ANGLE', 90),
     lockAngle: numberFromEnv('RFID_LOCK_ANGLE', 0),
-    unlockMs: numberFromEnv('RFID_UNLOCK_MS', 3000),
+    unlockMs: numberFromEnv('RFID_UNLOCK_MS', 10000),
     buzzerMs: numberFromEnv('RFID_BUZZER_MS', 300),
     buzzerHz: numberFromEnv('RFID_BUZZER_HZ', 2200),
   },

@@ -5,21 +5,9 @@ import morgan from 'morgan';
 import { config } from './config.js';
 import { createImagesRouter } from './routes/images.js';
 import { createMqttRouter } from './routes/mqtt.js';
-import { ensureImageStorage } from './services/image-store.js';
 import { createMqttService } from './services/mqtt-service.js';
-import { createTelegramService } from './services/telegram.js';
 
-await ensureImageStorage();
-
-const telegram = createTelegramService(config.telegram);
-const mqttService = createMqttService({
-  onImageSaved: async (image) => {
-    const result = await telegram.sendImage(image);
-    if (!result.skipped) {
-      image.telegramMsgLink = result.telegramMsgLink;
-    }
-  },
-});
+const mqttService = createMqttService();
 
 mqttService.start();
 

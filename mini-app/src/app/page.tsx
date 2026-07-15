@@ -38,13 +38,13 @@ export default function DashboardPage() {
   const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const activeStatus: SystemStatus = status || {
+  const activeStatus = useMemo<SystemStatus>(() => status || ({
     mqttConnected: false,
     doorOpen: false,
     motionDetected: false,
     autoLockEnabled: false,
     autoLockSeconds: null,
-  };
+  }), [status]);
   const doorOpen = Boolean(activeStatus.doorOpen);
   const recentEvents = events;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
@@ -55,7 +55,7 @@ export default function DashboardPage() {
     activeStatus.latestImageUrl;
 
   const statusCopy = useMemo(() => {
-    if (!activeStatus.mqttConnected) return 'Thiet bi offline';
+    if (!activeStatus.mqttConnected) return 'Thiết bị ngoại tuyến';
     if (!isSafe) return 'Cần kiểm tra';
     return 'Hệ thống an toàn';
   }, [activeStatus.mqttConnected, isSafe]);
@@ -101,8 +101,12 @@ export default function DashboardPage() {
     setDoorLoading(true);
     try {
       await api.setDoor(action);
+      setStatus((current) => ({
+        ...(current || activeStatus),
+        doorOpen: action === 'unlock',
+      }));
       hapticFeedback('notification', 'success');
-      showToast(action === 'unlock' ? 'Đã gửi lệnh mở cửa' : 'Đã gửi lệnh khóa cửa', 'success');
+      showToast(action === 'unlock' ? 'Đã gửi lệnh mở cửa' : 'Đã gửi lệnh đóng cửa', 'success');
       await loadDashboard();
     } catch {
       hapticFeedback('notification', 'error');
@@ -110,7 +114,7 @@ export default function DashboardPage() {
     } finally {
       setDoorLoading(false);
     }
-  }, [doorOpen, hapticFeedback, loadDashboard, showToast]);
+  }, [activeStatus, doorOpen, hapticFeedback, loadDashboard, showToast]);
 
   const handleAlarm = useCallback(async () => {
     setAlarmLoading(true);
@@ -152,7 +156,7 @@ export default function DashboardPage() {
         </div>
         <span className={`connection-chip ${activeStatus.mqttConnected ? 'is-online' : 'is-offline'}`}>
           <WifiFilledIcon size={16} />
-          {activeStatus.mqttConnected ? 'Online' : 'Offline'}
+          {activeStatus.mqttConnected ? 'Trực tuyến' : 'Ngoại tuyến'}
         </span>
       </header>
 
@@ -203,7 +207,7 @@ export default function DashboardPage() {
               ) : (
                 <LockOpenFilledIcon size={22} />
               )}
-              <span>{doorOpen ? 'Khóa cửa' : 'Mở cửa'}</span>
+              <span>{doorOpen ? 'Đóng cửa' : 'Mở cửa'}</span>
             </button>
 
             <button
@@ -228,7 +232,7 @@ export default function DashboardPage() {
               ESP32-CAM
             </div>
             <span className={`badge camera-badge ${cameraSource ? 'badge-success' : 'badge-warning'}`}>
-              {cameraSource ? 'LIVE' : 'NO SIGNAL'}
+              {cameraSource ? 'TRỰC TIẾP' : 'MẤT TÍN HIỆU'}
             </span>
             {isVideoSource(cameraSource) ? (
               <video
@@ -242,6 +246,8 @@ export default function DashboardPage() {
                 preload="auto"
               />
             ) : canShowCameraSource(cameraSource) ? (
+              // A native img element is required for the multipart MJPEG stream.
+              // eslint-disable-next-line @next/next/no-img-element
               <img className="camera-feed" src={cameraSource} alt="Camera chính đang quan sát cửa ra vào" />
             ) : (
               <div className="camera-placeholder">

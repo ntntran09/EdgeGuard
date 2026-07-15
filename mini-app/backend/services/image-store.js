@@ -30,18 +30,6 @@ export function safeImageFilename(filename) {
   return base;
 }
 
-function timestampPrefix() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-function sanitizeName(value) {
-  return String(value ?? 'capture')
-    .replace(/\.[^.]+$/, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60) || 'capture';
-}
-
 function detectImageType(buffer, contentType) {
   if (contentType && MIME_TO_EXTENSION.has(contentType.toLowerCase())) {
     return {
@@ -89,68 +77,46 @@ function assertImageSize(buffer) {
   }
 }
 
-function buildFilename(metadata, extension) {
-  const requested = safeImageFilename(metadata.filename);
-
-  if (requested && requested.toLowerCase().endsWith(extension)) {
-    return `${timestampPrefix()}-${requested}`;
-  }
-
-  return `${timestampPrefix()}-${sanitizeName(metadata.deviceId ?? metadata.source)}${extension}`;
-}
-
-export function metadataPathFor(filename) {
-  return path.join(config.images.storageDir, `${filename}.json`);
-}
-
-export async function saveImageBuffer(buffer, metadata = {}) {
+export function createTransientImageBuffer(buffer, metadata = {}) {
   assertImageSize(buffer);
 
   const detected = detectImageType(buffer, metadata.contentType);
-  const filename = buildFilename(metadata, detected.extension);
-  const filePath = path.join(config.images.storageDir, filename);
-  const savedAt = new Date().toISOString();
-  const record = {
-    filename,
-    path: filePath,
+  const receivedAt = new Date().toISOString();
+  return {
+    buffer,
     bytes: buffer.length,
     contentType: detected.contentType,
     topic: metadata.topic,
     source: metadata.source ?? 'mqtt',
     deviceId: metadata.deviceId,
     capturedAt: metadata.capturedAt,
-    savedAt,
-    base64: `data:${detected.contentType};base64,${buffer.toString('base64')}`
+    receivedAt,
+    base64: `data:${detected.contentType};base64,${buffer.toString('base64')}`,
   };
-
-  await ensureImageStorage();
-  await fs.writeFile(filePath, buffer);
-  await fs.writeFile(metadataPathFor(filename), JSON.stringify(record, null, 2));
-
-  console.log(`[Images] Saved ${filename} (${buffer.length} bytes)`);
-  return record;
 }
 
-export async function saveImageFromJson(payload, metadata = {}) {
+export function createTransientImageFromJson(payload, metadata = {}) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Image JSON payload must be an object.');
   }
 
   const imageBase64 = payload.image_base64 ?? payload.imageBase64 ?? payload.data;
-
   if (typeof imageBase64 !== 'string' || !imageBase64.trim()) {
     throw new Error('Image JSON payload requires image_base64.');
   }
 
-  const buffer = Buffer.from(imageBase64, 'base64');
-
-  return saveImageBuffer(buffer, {
+  const dataUrlMatch = imageBase64.match(/^data:([^;,]+);base64,(.+)$/);
+  const buffer = Buffer.from(dataUrlMatch?.[2] ?? imageBase64, 'base64');
+  return createTransientImageBuffer(buffer, {
     ...metadata,
-    filename: payload.filename,
-    contentType: payload.content_type ?? payload.contentType,
-    deviceId: payload.device_id ?? payload.deviceId,
-    capturedAt: payload.captured_at ?? payload.capturedAt,
+    contentType: payload.content_type ?? payload.contentType ?? dataUrlMatch?.[1],
+    deviceId: payload.device_id ?? payload.deviceId ?? metadata.deviceId,
+    capturedAt: payload.captured_at ?? payload.capturedAt ?? metadata.capturedAt,
   });
+}
+
+export function metadataPathFor(filename) {
+  return path.join(config.images.storageDir, `${filename}.json`);
 }
 
 export async function listSavedImages() {
