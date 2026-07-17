@@ -15,11 +15,11 @@
 11. Handles the Mini App alarm command with a continuous alternating urgent buzzer tone until the alarm is turned off.
 12. Opens cached active RFID cards locally even while Wi-Fi/MQTT still appears connected during an outage; MQTT is used for logging rather than gating the servo.
 13. Publishes door state immediately after manual unlock/lock, RFID access, and auto-lock so the Mini App button follows the servo state.
-14. Retries failed camera initialization/capture and streams QVGA JPEG frames to MQTT in bounded chunks.
+14. Retries failed camera initialization/capture, serves QVGA `/capture` and `/stream` endpoints over HTTP, and announces those URLs through retained MQTT telemetry.
 15. Runs the bundled 96 x 96 grayscale Edge Impulse FOMO model once per second when possible and detects `human`, `backpack`, and `package` objects.
 16. Prints every FOMO bounding box and centroid above 70% confidence to Serial, then publishes those detections to `/EdgeGuard/device_001/model/inference` with `person`/`bag`/`package` aliases.
 17. Uses separate LEDC timers for the servo, buzzer, and camera so RFID/alarm tones cannot stop the servo PWM signal.
-18. Persists independent `camera_publish_enabled` and `ai_detection_enabled` switches from the retained MQTT device configuration, allowing image traffic and FOMO inference to be stopped separately without disabling RFID or access control.
+18. Persists independent `camera_publish_enabled` and `ai_detection_enabled` switches from the retained MQTT device configuration, allowing the HTTP live view and FOMO inference to be stopped separately without disabling RFID or access control.
 
 The supplied NDEF library is bundled because PN532-Arduino declares it as a dependency, but this firmware only reads ISO14443A UID values. It does not parse or write NDEF records.
 
@@ -72,7 +72,7 @@ The merged binary must be written at address `0x0`. Because it covers the full 4
 2. Wi-Fi and MQTT reconnect in the background rather than blocking setup/loop.
 3. PN532 continuously checks ISO14443A cards and prints UIDs to Serial.
 4. When MQTT is online, the UID is published to `/EdgeGuard/device_001/telemetry/nfc`.
-5. Camera requests a binary JPEG twice per second on `/EdgeGuard/device_001/image` for the Mini App's MJPEG live preview. FOMO inference is blocking on this ESP32, so the effective preview rate is lower while AI detection is enabled. Live frames stay in backend memory and are only persisted when attached to an event/log entry.
+5. Camera starts an HTTP server on port 81 and publishes `/capture`, `/stream`, and `/health` URLs to `/EdgeGuard/device_001/telemetry/endpoints`. The Mini App server polls `/capture`; camera frame bytes no longer need to pass through MQTT.
 6. System metrics publish every 10 seconds.
 7. MQTT commands can control buzzer, servo, config and reboot.
 8. FOMO captures a separate QVGA frame, center-crops/resizes it to 96 x 96, and runs inference at a requested 1-second interval. The prototype model is estimated at about 1180 ms per inference, so the real interval cannot be shorter than the inference duration.
@@ -83,7 +83,7 @@ Manual Mini App door commands move only the servo and do not sound the buzzer. R
 
 After the firmware and Mini App backend are online together once, the backend publishes a retained access configuration. The ESP32 stores the auto-lock settings, servo angles, and active RFID/NFC allowlist in NVS. Later Wi-Fi outages do not erase those values. Add, enable, disable, or remove cards through the Mini App while online so the stored offline allowlist stays current.
 
-The same retained configuration includes `camera_publish_enabled` and `ai_detection_enabled`. Both switches are persisted in NVS. Disabling camera publishing stops JPEG messages on `/image` but leaves the camera available to FOMO when AI remains enabled. Disabling AI stops FOMO inference and new AI logs while the live camera can continue independently.
+The same retained configuration includes `camera_publish_enabled` and `ai_detection_enabled`. Both switches are persisted in NVS. `camera_publish_enabled` now controls access to the HTTP live camera while the camera remains available to FOMO when AI is enabled. Disabling AI stops FOMO inference and new AI logs while the live camera can continue independently.
 
 At boot, Serial prints `[Device] Loaded RFID cache (...)`. Before testing without Wi-Fi, verify that this line contains the expected UID and is not `empty`. When a cached card is accepted, Serial prints `[PN532] Cached RFID access granted` followed by `[Servo] Unlocked ...`.
 

@@ -17,6 +17,12 @@ manual-uploads/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
 
 `alerts`, `ai_logs`, `known_faces`, and `event_images` store only public URLs plus bucket/object paths and image metadata. Image base64/bytea is never written to a database table; if Storage is unavailable, the event is retained without an image and records the storage error in metadata.
 
+## Dynamic camera endpoints
+
+The main `EdgeGuardDevice` firmware serves `/capture`, `/stream`, and `/health` on port 81. Whenever its Wi-Fi address changes, it publishes the complete endpoint set to the retained MQTT topic `{topic-base}/telemetry/endpoints`. The backend consumes that announcement and proxies JPEG frames through `/api/camera/frame`, so `CAMERA_STREAM_URL` and `CAMERA_CAPTURE_URL` are not required in `.env`.
+
+Open **Settings → System → Dynamic connection paths** to inspect the MQTT topic, device URLs, and server proxy currently in use. The dashboard polls individual JPEG frames because this is more reliable than holding a long-lived MJPEG connection through the application server.
+
 ## Getting Started
 
 First, run the development server:

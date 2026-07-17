@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 build/
+build-cache/
 hardware/libraries/ESP32-CAM_Detection_FOMO_inferencing/
 .env
 .env.*
@@ -17,6 +18,8 @@ __pycache__/
 *.tflite
 server/data/images/*
 !server/data/images/.gitkeep
+mini-app/data/images/*
+!mini-app/data/images/.gitkeep
 ai-models/data/raw/*
 ai-models/data/processed/*
 !ai-models/data/raw/.gitkeep

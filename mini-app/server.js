@@ -5,6 +5,7 @@ import next from 'next';
 
 // Adjust imports for the moved backend files
 import { config } from './backend/config.js';
+import { createCameraRouter } from './backend/routes/camera.js';
 import { createImagesRouter } from './backend/routes/images.js';
 import { createMqttRouter } from './backend/routes/mqtt.js';
 import { createMqttService } from './backend/services/mqtt-service.js';
@@ -20,7 +21,11 @@ const handle = nextApp.getRequestHandler();
 nextApp.prepare().then(() => {
   const mqttService = createMqttService();
 
-  mqttService.start();
+  if (config.mqtt.enabled) {
+    mqttService.start();
+  } else {
+    console.log('[MQTT] Disabled by MQTT_ENABLED=false');
+  }
 
   const app = express();
   const jsonParser = express.json({ limit: `${config.images.maxBytes + 1024}b` });
@@ -37,6 +42,7 @@ nextApp.prepare().then(() => {
   });
 
   // Mount existing API routes
+  app.use('/api/camera', createCameraRouter(mqttService));
   app.use('/api/mqtt', jsonParser, createMqttRouter(mqttService));
   app.use('/api/images', jsonParser, createImagesRouter());
 

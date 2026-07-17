@@ -31,6 +31,7 @@ export const config = {
     imageBucket: process.env.SUPABASE_IMAGE_BUCKET ?? 'event-images',
   },
   mqtt: {
+    enabled: booleanFromEnv('MQTT_ENABLED', true),
     url: process.env.MQTT_URL,
     protocol: process.env.MQTT_PROTOCOL ?? 'mqtt',
     host: process.env.MQTT_HOST ?? 'broker.hivemq.com',

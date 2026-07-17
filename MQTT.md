@@ -101,6 +101,25 @@ JSON image payloads can be published to `{base}/image/json`:
 
 The JSON format is easier to test from API clients. The raw binary format is better for camera firmware.
 
+The main device serves JPEG/MJPEG over HTTP and announces its current URLs through retained MQTT telemetry. Image topics remain supported for backward compatibility, but the dashboard no longer requires camera frames to be transported through MQTT.
+
+Dynamic camera endpoint discovery:
+
+```text
+{base}/telemetry/endpoints
+```
+
+```json
+{
+  "device_id": "device_001",
+  "base_url": "http://192.168.1.50:81",
+  "capture_url": "http://192.168.1.50:81/capture",
+  "stream_url": "http://192.168.1.50:81/stream",
+  "health_url": "http://192.168.1.50:81/health",
+  "live_mode": "jpeg-polling"
+}
+```
+
 ## AI Topics
 
 AI worker to server and hardware:

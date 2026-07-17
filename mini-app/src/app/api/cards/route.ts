@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { DEVICE_ID, requireAdmin } from '@/lib/server-auth';
 import { syncDeviceAccessConfig } from '@/lib/device-sync';
+import { logSecurityAlerts } from '@/lib/event-logger';
 import { restoreVietnameseDiacritics } from '@/lib/vietnamese-copy';
 import type { PendingRfidScan, RfidCard } from '@/types';
 
@@ -32,7 +33,7 @@ function normalizeTagId(value: unknown) {
 }
 
 async function logToAlerts(message: string, alertType = 'system_event', metadata: Record<string, unknown> = {}) {
-  await supabase.from('alerts').insert([{
+  await logSecurityAlerts([{
     device_id: DEVICE_ID,
     alert_type: alertType,
     message,

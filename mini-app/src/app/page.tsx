@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AlarmOffFilledIcon,
@@ -51,6 +51,9 @@ export default function DashboardPage() {
   const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [cameraFrameSequence, setCameraFrameSequence] = useState(1);
+  const [cameraFrameState, setCameraFrameState] = useState<'connecting' | 'online' | 'offline'>('connecting');
+  const cameraFrameTimerRef = useRef<number | null>(null);
   const activeStatus = useMemo<SystemStatus>(() => status || ({
     mqttConnected: false,
     doorOpen: false,
@@ -62,10 +65,10 @@ export default function DashboardPage() {
   const recentEvents = events;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
   const isSafe = activeStatus.mqttConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
-  const cameraSource =
-    process.env.NEXT_PUBLIC_ESP32_CAM_STREAM_URL ||
-    process.env.NEXT_PUBLIC_CAMERA_STREAM_URL ||
-    activeStatus.latestImageUrl;
+  const cameraFrameProxyUrl = activeStatus.cameraEndpoints?.frameProxyUrl;
+  const cameraSource = cameraFrameProxyUrl
+    ? `${cameraFrameProxyUrl}?frame=${cameraFrameSequence}`
+    : activeStatus.latestImageUrl;
   const cameraPublishingEnabled = activeStatus.cameraImagePublishingEnabled !== false;
   const aiDetections = (activeStatus.aiDetections || [])
     .filter((detection) => detection.confidence > AI_MIN_CONFIDENCE);
@@ -105,6 +108,30 @@ export default function DashboardPage() {
       window.clearInterval(interval);
     };
   }, [loadDashboard]);
+
+  useEffect(() => () => {
+    if (cameraFrameTimerRef.current !== null) window.clearTimeout(cameraFrameTimerRef.current);
+  }, []);
+
+  const scheduleNextCameraFrame = useCallback((delay: number) => {
+    if (cameraFrameTimerRef.current !== null) window.clearTimeout(cameraFrameTimerRef.current);
+    cameraFrameTimerRef.current = window.setTimeout(() => {
+      cameraFrameTimerRef.current = null;
+      setCameraFrameSequence((sequence) => sequence + 1);
+    }, delay);
+  }, []);
+
+  const handleCameraFrameLoad = useCallback(() => {
+    if (!cameraFrameProxyUrl) return;
+    setCameraFrameState('online');
+    scheduleNextCameraFrame(500);
+  }, [cameraFrameProxyUrl, scheduleNextCameraFrame]);
+
+  const handleCameraFrameError = useCallback(() => {
+    if (!cameraFrameProxyUrl) return;
+    setCameraFrameState('offline');
+    scheduleNextCameraFrame(1500);
+  }, [cameraFrameProxyUrl, scheduleNextCameraFrame]);
 
   useEffect(() => {
     if (!toast) return;
@@ -247,8 +274,8 @@ export default function DashboardPage() {
               <span className="camera-live-dot" />
               ESP32-CAM
             </div>
-            <span className={`badge camera-badge ${cameraSource ? 'badge-success' : 'badge-warning'}`}>
-              {cameraSource ? 'TRỰC TIẾP' : cameraPublishingEnabled ? 'MẤT TÍN HIỆU' : 'ĐÃ TẮT'}
+            <span className={`badge camera-badge ${cameraSource && cameraFrameState !== 'offline' ? 'badge-success' : 'badge-warning'}`}>
+              {cameraSource && cameraFrameState !== 'offline' ? 'TRỰC TIẾP' : cameraPublishingEnabled ? 'MẤT TÍN HIỆU' : 'ĐÃ TẮT'}
             </span>
             {isVideoSource(cameraSource) ? (
               <video
@@ -264,14 +291,20 @@ export default function DashboardPage() {
             ) : canShowCameraSource(cameraSource) ? (
               // A native img element is required for the multipart MJPEG stream.
               // eslint-disable-next-line @next/next/no-img-element
-              <img className="camera-feed" src={cameraSource} alt="Camera chính đang quan sát cửa ra vào" />
+              <img
+                className="camera-feed"
+                src={cameraSource}
+                alt="Camera chính đang quan sát cửa ra vào"
+                onLoad={handleCameraFrameLoad}
+                onError={handleCameraFrameError}
+              />
             ) : (
               <div className="camera-placeholder">
                 <ShieldFilledIcon size={42} />
                 <span>{cameraPublishingEnabled ? 'Chưa có luồng camera' : 'Gửi ảnh camera đang tắt'}</span>
                 <small>
                   {cameraPublishingEnabled
-                    ? 'Cấu hình NEXT_PUBLIC_ESP32_CAM_STREAM_URL để xem stream từ ESP32-CAM'
+                    ? 'Đang chờ ESP32-CAM công bố đường dẫn camera qua MQTT'
                     : 'Bật lại trong Cài đặt → Hệ thống để xem luồng trực tiếp'}
                 </small>
               </div>

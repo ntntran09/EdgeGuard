@@ -103,8 +103,15 @@ static int fomo_getSignalData(size_t offset, size_t length, float *outPtr) {
 }
 
 bool fomo_captureAndResize(unsigned long now) {
+  if (!camera_take()) {
+    fomoInferenceFailures++;
+    Serial.println("[FOMO] Camera is busy");
+    return false;
+  }
+
   camera_fb_t *frame = esp_camera_fb_get();
   if (!frame) {
+    camera_give();
     cameraCaptureFailures++;
     fomoInferenceFailures++;
     Serial.printf("[FOMO] Camera capture failed (%u/%u)\n", cameraCaptureFailures, CAMERA_CAPTURE_FAILURES_BEFORE_RESTART);
@@ -126,6 +133,7 @@ bool fomo_captureAndResize(unsigned long now) {
     fomoSnapshotBuffer
   );
   esp_camera_fb_return(frame);
+  camera_give();
 
   if (!dimensionsValid) {
     fomoInferenceFailures++;

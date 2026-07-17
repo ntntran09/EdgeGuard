@@ -13,6 +13,7 @@ const TELEMETRY_KEYS = {
   security: '/telemetry/security',
   power: '/telemetry/power',
   system: '/telemetry/system',
+  endpoints: '/telemetry/endpoints',
   nfc: '/telemetry/nfc',
   modelInference: '/model/inference',
 };
@@ -21,6 +22,7 @@ const MIN_AUTO_LOCK_MS = 1000;
 const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
 const LIVE_FRAME_MAX_AGE_MS = 5000;
 const AI_MIN_CONFIDENCE = 0.7;
+const EVENT_IMAGE_CAPTURE_TIMEOUT_MS = 6000;
 
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -78,6 +80,29 @@ function normalizeTagId(value) {
   return tagId.length ? tagId : null;
 }
 
+function normalizeDeviceEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 512) return null;
+  try {
+    const endpoint = new URL(value);
+    if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') return null;
+    if (endpoint.username || endpoint.password) return null;
+    return endpoint.toString();
+  } catch {
+    return null;
+  }
+}
+
+function cameraCaptureEndpoint(summary) {
+  const endpoints = summary?.cameraEndpoints;
+  if (!endpoints || typeof endpoints !== 'object') return null;
+
+  const captureUrl = normalizeDeviceEndpoint(endpoints.captureUrl);
+  if (captureUrl) return captureUrl;
+
+  const baseUrl = normalizeDeviceEndpoint(endpoints.baseUrl);
+  return baseUrl ? new URL('/capture', baseUrl).toString() : null;
+}
+
 function summarizeTelemetry(summary, key, parsed) {
   if (!parsed || typeof parsed !== 'object') {
     return;
@@ -126,6 +151,27 @@ function summarizeTelemetry(summary, key, parsed) {
     if (lastNfcUid) {
       summary.latestRfidUid = lastNfcUid;
       summary.latestRfidSeenAt = new Date().toISOString();
+    }
+    return;
+  }
+
+  if (key === 'endpoints') {
+    const captureUrl = normalizeDeviceEndpoint(parsed.capture_url);
+    const streamUrl = normalizeDeviceEndpoint(parsed.stream_url);
+    const healthUrl = normalizeDeviceEndpoint(parsed.health_url);
+    const baseUrl = normalizeDeviceEndpoint(parsed.base_url);
+    if (captureUrl || streamUrl || healthUrl || baseUrl) {
+      summary.cameraEndpoints = {
+        baseUrl,
+        captureUrl,
+        streamUrl,
+        healthUrl,
+        ip: typeof parsed.ip === 'string' ? parsed.ip : null,
+        port: Number(parsed.port) || null,
+        liveMode: typeof parsed.live_mode === 'string' ? parsed.live_mode : 'jpeg-polling',
+        source: 'mqtt',
+        discoveredAt: new Date().toISOString(),
+      };
     }
     return;
   }
@@ -230,7 +276,7 @@ export function createMqttService() {
 
     console.log(
       `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
-      + `after ${deviceAccessConfig.auto_lock_ms} ms, camera publishing `
+      + `after ${deviceAccessConfig.auto_lock_ms} ms, camera live view `
       + `${deviceAccessConfig.camera_publish_enabled ? 'on' : 'off'}, AI detection `
       + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, `
       + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
@@ -281,6 +327,108 @@ export function createMqttService() {
     }
   }
 
+  async function captureEventImage() {
+    const captureUrl = cameraCaptureEndpoint(snapshot.summary);
+    const fallbackImage = snapshot.latestImage?.base64;
+    if (!captureUrl) {
+      return fallbackImage
+        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        : { imagePath: null, source: 'unavailable' };
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), EVENT_IMAGE_CAPTURE_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(captureUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'image/jpeg,*/*',
+          'User-Agent': 'EdgeGuard-Event-Capture/1.0',
+        },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`ESP32-CAM returned HTTP ${response.status}.`);
+      }
+
+      const contentType = (response.headers.get('content-type') || 'image/jpeg')
+        .split(';', 1)[0]
+        .trim()
+        .toLowerCase();
+      if (!contentType.startsWith('image/')) {
+        throw new Error('ESP32-CAM did not return an image.');
+      }
+
+      const frame = createTransientImageBuffer(Buffer.from(await response.arrayBuffer()), {
+        contentType,
+        topic: `${topicBase}/camera/capture`,
+        source: 'camera_event_capture',
+        deviceId: config.mqtt.deviceId,
+        capturedAt: new Date().toISOString(),
+      });
+      const publicFrame = { ...frame };
+      delete publicFrame.buffer;
+      latestFrame = frame;
+      snapshot.latestImage = publicFrame;
+      snapshot.summary.cameraReady = true;
+      snapshot.summary.cameraLastFrameAt = frame.receivedAt;
+      snapshot.summary.cameraLastFrameBytes = frame.buffer.length;
+      snapshot.summary.updatedAt = frame.receivedAt;
+      console.log(`[MQTT] Captured ${frame.bytes}-byte camera frame for AI event`);
+
+      return {
+        imagePath: frame.base64,
+        source: 'camera_event_capture',
+        capturedAt: frame.capturedAt,
+      };
+    } catch (error) {
+      console.error('[MQTT] Could not capture a camera frame for AI event:', error);
+      return fallbackImage
+        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        : { imagePath: null, source: 'capture_failed' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function recordAiInference(parsed, detections) {
+    const eventImage = await captureEventImage();
+    await supabaseService.insertAiLog({
+      deviceId: config.mqtt.deviceId,
+      label: parsed.label,
+      confidence: Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score),
+      anomalyScore: parsed.anomaly_score,
+      objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
+      imagePath: eventImage.imagePath,
+      telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
+      metadata: {
+        ...parsed,
+        detections,
+        event_image_source: eventImage.source,
+        ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
+      },
+    });
+  }
+
+  function metadataWithEventImage(metadata = {}, eventImage) {
+    return {
+      ...metadata,
+      event_image_source: eventImage.source,
+      ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
+    };
+  }
+
+  async function insertAlertWithEventImage(alert, eventImage) {
+    const capturedImage = eventImage ?? await captureEventImage();
+    return supabaseService.insertAlert({
+      ...alert,
+      thumbnailUrl: capturedImage.imagePath || alert.thumbnailUrl,
+      metadata: metadataWithEventImage(alert.metadata, capturedImage),
+    });
+  }
+
   async function handleRfidScan(tagId, metadata = {}) {
     const normalizedTagId = normalizeTagId(tagId);
     if (!normalizedTagId) return;
@@ -299,7 +447,7 @@ export function createMqttService() {
         })
       : await supabaseService.validateRfid(normalizedTagId);
 
-    await supabaseService.insertAlert({
+    await insertAlertWithEventImage({
       deviceId: config.mqtt.deviceId,
       alertType: 'rfid_scan',
       message: `Đã quét thẻ RFID/NFC: ${normalizedTagId}`,
@@ -316,7 +464,7 @@ export function createMqttService() {
       if (metadata.local_access_granted !== true) {
         await pulseAccessActuators(normalizedTagId);
       }
-      await supabaseService.insertAlert({
+      await insertAlertWithEventImage({
         deviceId: config.mqtt.deviceId,
         alertType: 'access_granted',
         message: `Mở cửa thành công bằng thẻ: ${normalizedTagId}`,
@@ -342,16 +490,18 @@ export function createMqttService() {
     if (!config.access.allowAllRfid) {
       const settings = await supabaseService.getDeviceSettings(config.mqtt.deviceId);
       if (settings?.master_key_enabled) {
+        const eventImage = await captureEventImage();
         await supabaseService.recordPendingRfidScan({
           deviceId: config.mqtt.deviceId,
           tagId: normalizedTagId,
-          thumbnailUrl: snapshot.latestImage?.base64,
+          thumbnailUrl: eventImage.imagePath,
+          metadata: metadataWithEventImage({}, eventImage),
         });
         return;
       }
     }
 
-    await supabaseService.insertAlert({
+    await insertAlertWithEventImage({
       deviceId: config.mqtt.deviceId,
       alertType: 'rfid_invalid',
       message: `Thẻ RFID/NFC không hợp lệ: ${normalizedTagId}`,
@@ -383,20 +533,13 @@ export function createMqttService() {
           : [];
 
         if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
-          supabaseService.insertAiLog({
-            deviceId: config.mqtt.deviceId,
-            label: parsed.label,
-            confidence,
-            anomalyScore: parsed.anomaly_score,
-            objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
-            imagePath: snapshot.latestImage?.base64,
-            telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
-            metadata: { ...parsed, detections },
+          recordAiInference(parsed, detections).catch((error) => {
+            console.error('[MQTT] Failed to record AI inference', error);
           });
         }
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
-          supabaseService.insertAlert({
+          insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
             alertType: 'motion',
             message: 'Phát hiện chuyển động (cảm biến)',
@@ -404,7 +547,7 @@ export function createMqttService() {
           });
         }
         if (parsed.door_open) {
-          supabaseService.insertAlert({
+          insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
             alertType: 'door_open',
             message: 'Cửa đã được mở (cảm biến)',
@@ -555,6 +698,17 @@ export function createMqttService() {
         requested_at: new Date().toISOString(),
         source: 'api',
       }), { retain: true });
+    },
+    recordEvent({ alertType, message, severity, source, metadata, resolved = false }) {
+      return insertAlertWithEventImage({
+        deviceId: config.mqtt.deviceId,
+        alertType,
+        message,
+        severity,
+        source,
+        metadata,
+        resolved,
+      });
     },
     syncAccessConfig,
   };

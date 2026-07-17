@@ -12,7 +12,7 @@ import {
   SettingsFilledIcon,
   ShieldFilledIcon,
 } from '@/components/icons/FilledIcons';
-import type { AlertConfig, KnownFace, PendingRfidScan, RfidCard } from '@/types';
+import type { AlertConfig, CameraEndpoints, KnownFace, PendingRfidScan, RfidCard } from '@/types';
 
 type SettingsSection = 'menu' | 'system' | 'rfid' | 'faces';
 const MAX_FACE_IMAGE_BYTES = 2.5 * 1024 * 1024;
@@ -66,6 +66,7 @@ export default function SettingsPage() {
   const [cards, setCards] = useState<RfidCard[]>([]);
   const [pending, setPending] = useState<PendingRfidScan[]>([]);
   const [faces, setFaces] = useState<KnownFace[]>([]);
+  const [cameraEndpoints, setCameraEndpoints] = useState<CameraEndpoints | null>(null);
   const [alertConfig, setAlertConfig] = useState<AlertConfig>({
     objectLeftAlertEnabled: true,
     objectLeftMaxSeconds: 60,
@@ -97,15 +98,17 @@ export default function SettingsPage() {
   const loadSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [cardsRes, settingsRes, facesRes] = await Promise.all([
+      const [cardsRes, settingsRes, facesRes, statusRes] = await Promise.all([
         api.getCards(),
         api.getSettings(),
         api.getFaces(),
+        api.getStatus().catch(() => null),
       ]);
 
       setCards(cardsRes.cards || []);
       setPending(cardsRes.pending || []);
       setFaces(facesRes.faces || []);
+      setCameraEndpoints(statusRes?.cameraEndpoints || null);
       if (settingsRes.settings) {
         setAlertConfig((prev) => ({
           ...prev,
@@ -341,13 +344,13 @@ export default function SettingsPage() {
           </div>
           <div className="setting-row">
             <div>
-              <strong>Gửi ảnh camera</strong>
-              <small>Tắt để ESP32-CAM ngừng gửi ảnh qua MQTT; các cảm biến và RFID vẫn hoạt động.</small>
+              <strong>Camera trực tiếp</strong>
+              <small>Server lấy frame qua HTTP; đường dẫn được ESP32-CAM tự công bố qua MQTT.</small>
             </div>
             <ToggleSwitch
               checked={alertConfig.cameraImagePublishingEnabled !== false}
               onChange={() => updateSetting('cameraImagePublishingEnabled', alertConfig.cameraImagePublishingEnabled === false)}
-              label="Gửi ảnh camera qua MQTT"
+              label="Bật camera trực tiếp"
             />
           </div>
           <div className="setting-row">
@@ -360,6 +363,25 @@ export default function SettingsPage() {
               onChange={() => updateSetting('aiDetectionEnabled', !alertConfig.aiDetectionEnabled)}
               label="Phát hiện AI trên ESP32-CAM"
             />
+          </div>
+
+          <div className="setting-block endpoint-settings-block">
+            <div className="setting-block-title">
+              <strong>Đường dẫn kết nối động</strong>
+              <small>Các đường dẫn thiết bị được nhận qua MQTT, không đọc từ CAMERA_STREAM_URL trong .env.</small>
+            </div>
+            {cameraEndpoints ? (
+              <dl className="endpoint-list">
+                <div><dt>MQTT topic</dt><dd>{cameraEndpoints.mqttTopicBase || '—'}/telemetry/endpoints</dd></div>
+                <div><dt>Camera gốc</dt><dd>{cameraEndpoints.baseUrl || '—'}</dd></div>
+                <div><dt>JPEG capture</dt><dd>{cameraEndpoints.captureUrl || '—'}</dd></div>
+                <div><dt>MJPEG stream</dt><dd>{cameraEndpoints.streamUrl || '—'}</dd></div>
+                <div><dt>Health</dt><dd>{cameraEndpoints.healthUrl || '—'}</dd></div>
+                <div><dt>Server proxy</dt><dd>{cameraEndpoints.frameProxyUrl}</dd></div>
+              </dl>
+            ) : (
+              <div className="rfid-config-note">Đang chờ mạch công bố đường dẫn camera qua MQTT.</div>
+            )}
           </div>
         </section>
       )}

@@ -19,5 +19,6 @@
 #include <PN532.h>
 
 #include "esp_camera.h"
+#include "esp_http_server.h"
 
 #endif

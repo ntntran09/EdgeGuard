@@ -39,13 +39,11 @@ const uint8_t BUZZER_LEDC_CHANNEL = 2; // LEDC timer 1
 #define CAM_PIN_HREF 23
 #define CAM_PIN_PCLK 22
 
-// Two JPEG frames per second gives a responsive preview without starving PN532/MQTT work.
-const unsigned long CAMERA_INTERVAL_MS = 500;
-const unsigned long CAMERA_FAILURE_RETRY_MS = 2000;
 const unsigned long CAMERA_INIT_RETRY_MS = 10000;
-const size_t CAMERA_MQTT_CHUNK_BYTES = 1024;
-const size_t CAMERA_MAX_MQTT_FRAME_BYTES = 60000;
 const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
+const uint16_t CAMERA_HTTP_PORT = 81;
+const unsigned long CAMERA_MUTEX_TIMEOUT_MS = 2500;
+const unsigned long CAMERA_ENDPOINT_RETRY_MS = 5000;
 const unsigned long FOMO_INTERVAL_MS = 1000;
 const unsigned long FOMO_INIT_RETRY_MS = 10000;
 // Only treat predictions strictly above 70% as detections.

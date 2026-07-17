@@ -386,7 +386,7 @@ export const supabaseService = {
     };
   },
 
-  async recordPendingRfidScan({ deviceId, tagId, thumbnailUrl }) {
+  async recordPendingRfidScan({ deviceId, tagId, thumbnailUrl, metadata = {} }) {
     if (!supabase) return null;
     const normalizedTagId = normalizeTagId(tagId);
     if (!normalizedTagId) return null;
@@ -408,7 +408,7 @@ export const supabaseService = {
       thumbnailUrl,
       severity: 'warning',
       source: 'rfid',
-      metadata: { tag_id: normalizedTagId, raw_tag_id: tagId, pending_id: data },
+      metadata: { ...metadata, tag_id: normalizedTagId, raw_tag_id: tagId, pending_id: data },
       resolved: false,
     });
 

@@ -3,13 +3,18 @@ import cors from 'cors';
 import morgan from 'morgan';
 
 import { config } from './config.js';
+import { createCameraRouter } from './routes/camera.js';
 import { createImagesRouter } from './routes/images.js';
 import { createMqttRouter } from './routes/mqtt.js';
 import { createMqttService } from './services/mqtt-service.js';
 
 const mqttService = createMqttService();
 
-mqttService.start();
+if (config.mqtt.enabled) {
+  mqttService.start();
+} else {
+  console.log('[MQTT] Disabled by MQTT_ENABLED=false');
+}
 
 const app = express();
 
@@ -26,6 +31,7 @@ app.get('/health', (_request, response) => {
 });
 
 app.use('/api/mqtt', createMqttRouter(mqttService));
+app.use('/api/camera', createCameraRouter(mqttService));
 app.use('/api/images', createImagesRouter());
 
 app.use((error, _request, response, _next) => {

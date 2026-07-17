@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { backendApiUrl } from '@/lib/backend-url';
+import { logSecurityAlerts } from '@/lib/event-logger';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const UNLOCK_ANGLE = Number(process.env.RFID_UNLOCK_ANGLE || 90);
@@ -70,7 +71,7 @@ export async function POST(request: Request) {
     }
 
     if (isSupabaseConfigured) {
-      await supabase.from('alerts').insert([{
+      await logSecurityAlerts([{
         device_id: DEVICE_ID,
         alert_type: action === 'unlock' ? 'door_unlocked' : 'door_locked',
         message: action === 'unlock'

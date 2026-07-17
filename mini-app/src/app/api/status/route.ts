@@ -17,6 +17,16 @@ interface MqttStatusPayload {
   summary?: Record<string, unknown>;
   latestImage?: { base64?: string; url?: string };
   topics?: { modelInference?: MqttInferenceSnapshot };
+  topicBase?: string;
+}
+
+interface MqttCameraEndpoints {
+  baseUrl?: string;
+  captureUrl?: string;
+  streamUrl?: string;
+  healthUrl?: string;
+  source?: string;
+  discoveredAt?: string;
 }
 
 export const dynamic = 'force-dynamic';
@@ -69,6 +79,7 @@ export async function GET() {
     const data = await res.json() as MqttStatusPayload;
     const inference = data.topics?.modelInference;
     const aiDetections = freshAiDetections(inference);
+    const cameraEndpoints = data.summary?.cameraEndpoints as MqttCameraEndpoints | undefined;
     return NextResponse.json({
       mqttConnected: data.connection?.connected ?? false,
       doorOpen: data.summary?.doorOpen ?? false,
@@ -86,6 +97,17 @@ export async function GET() {
       cameraImagePublishingEnabled: typeof data.summary?.cameraImagePublishingEnabled === 'boolean'
         ? data.summary.cameraImagePublishingEnabled
         : settingsResult.data?.camera_image_publish_enabled ?? true,
+      cameraEndpoints: cameraEndpoints ? {
+        baseUrl: cameraEndpoints.baseUrl,
+        captureUrl: cameraEndpoints.captureUrl,
+        streamUrl: cameraEndpoints.streamUrl,
+        healthUrl: cameraEndpoints.healthUrl,
+        frameProxyUrl: '/api/camera/frame',
+        streamProxyUrl: '/api/camera/stream',
+        mqttTopicBase: data.topicBase,
+        source: 'mqtt',
+        discoveredAt: cameraEndpoints.discoveredAt,
+      } : undefined,
       aiDetectionEnabled: typeof data.summary?.aiDetectionEnabled === 'boolean'
         ? data.summary.aiDetectionEnabled
         : settingsResult.data?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',

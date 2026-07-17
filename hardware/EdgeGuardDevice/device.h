@@ -113,7 +113,7 @@ void device_setup() {
 
   actuators_lockDoor(deviceLockAngle, "startup");
   Serial.printf(
-    "[Device] Loaded config: auto-lock %s after %lu ms, camera publishing %s, AI detection %s, %u offline RFID card(s)\n",
+    "[Device] Loaded config: auto-lock %s after %lu ms, camera live view %s, AI detection %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
     deviceCameraPublishEnabled ? "on" : "off",
@@ -223,7 +223,7 @@ void device_applyConfig(JsonDocument &doc) {
   }
 
   Serial.printf(
-    "[Device] Config updated: auto-lock %s after %lu ms, camera publishing %s, AI detection %s, %u offline RFID card(s)\n",
+    "[Device] Config updated: auto-lock %s after %lu ms, camera live view %s, AI detection %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
     deviceCameraPublishEnabled ? "on" : "off",

@@ -48,6 +48,7 @@ void sensors_loop() {
   doc["camera_last_frame_bytes"] = lastCameraFrameBytes;
   doc["camera_publish_failures"] = cameraPublishFailures;
   doc["camera_publish_enabled"] = deviceCameraPublishEnabled;
+  doc["camera_transport"] = "http";
   doc["ai_detection_enabled"] = deviceAiDetectionEnabled;
   doc["fomo_ready"] = fomoReady;
   doc["fomo_inference_count"] = fomoInferenceCount;

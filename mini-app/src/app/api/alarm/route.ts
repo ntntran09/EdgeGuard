@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { isSupabaseConfigured } from '@/lib/supabase';
 import { backendApiUrl } from '@/lib/backend-url';
+import { logSecurityAlerts } from '@/lib/event-logger';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 
@@ -29,7 +30,7 @@ export async function POST(request: Request) {
     const data = await res.json();
 
     if (isSupabaseConfigured) {
-      await supabase.from('alerts').insert([{
+      await logSecurityAlerts([{
         device_id: DEVICE_ID,
         alert_type: 'system_event',
         message: `Người dùng đã ${active ? 'bật' : 'tắt'} chuông báo động`,

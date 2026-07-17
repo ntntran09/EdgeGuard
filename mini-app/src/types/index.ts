@@ -127,6 +127,18 @@ export interface CameraStatus {
   lastFrameAt?: string;
 }
 
+export interface CameraEndpoints {
+  baseUrl?: string;
+  captureUrl?: string;
+  streamUrl?: string;
+  healthUrl?: string;
+  frameProxyUrl: string;
+  streamProxyUrl: string;
+  mqttTopicBase?: string;
+  source: 'mqtt';
+  discoveredAt?: string;
+}
+
 export interface AiDetection {
   label: string;
   type: string;
@@ -156,6 +168,7 @@ export interface SystemStatus {
   cameraLastFrameBytes?: number;
   cameraPublishFailures?: number;
   cameraImagePublishingEnabled?: boolean;
+  cameraEndpoints?: CameraEndpoints;
   aiDetections?: AiDetection[];
   aiDetectionsAt?: string;
   aiDetectionEnabled?: boolean;
