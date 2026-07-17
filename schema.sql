@@ -160,12 +160,13 @@ create table if not exists public.known_faces (
   id uuid primary key default gen_random_uuid(),
   device_id text not null default 'device_001',
   display_name text not null,
+  rekognition_face_id text unique,
   image_url text,
   image_bucket text,
   image_path text,
   image_mime_type text,
   image_bytes bigint check (image_bytes is null or image_bytes >= 0),
-  embedding jsonb,
+  credential_id uuid references public.rfid_credentials(id) on delete set null,
   is_active boolean not null default true,
   added_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -508,7 +509,7 @@ end;
 $$;
 
 -- Unified feed for dashboards and logs.
-create or replace view public.security_events as
+create or replace view public.security_events with (security_invoker = true) as
 select
   ('alert-' || id::text) as id,
   device_id,
@@ -611,3 +612,32 @@ values ('device_001')
 on conflict (device_id) do nothing;
 
 commit;
+
+-- BỔ SUNG FOREIGN KEYS (RÀNG BUỘC THIẾT BỊ)
+-- Cảnh báo: Khi đã bật Foreign Key này, bạn bắt buộc phải tạo 1 dòng dữ liệu trong bảng device_settings (vd: device_id = 'device_001') TRƯỚC KHI lưu log hoặc tạo cảnh báo. Nếu không Database sẽ báo lỗi!
+ALTER TABLE public.ai_logs DROP CONSTRAINT IF EXISTS fk_ai_logs_device;
+ALTER TABLE public.ai_logs ADD CONSTRAINT fk_ai_logs_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.alerts DROP CONSTRAINT IF EXISTS fk_alerts_device;
+ALTER TABLE public.alerts ADD CONSTRAINT fk_alerts_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.telegram_device_users DROP CONSTRAINT IF EXISTS fk_telegram_users_device;
+ALTER TABLE public.telegram_device_users ADD CONSTRAINT fk_telegram_users_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.rfid_credentials DROP CONSTRAINT IF EXISTS fk_rfid_device;
+ALTER TABLE public.rfid_credentials ADD CONSTRAINT fk_rfid_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.pending_rfid_scans DROP CONSTRAINT IF EXISTS fk_pending_scans_device;
+ALTER TABLE public.pending_rfid_scans ADD CONSTRAINT fk_pending_scans_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.event_images DROP CONSTRAINT IF EXISTS fk_event_images_device;
+ALTER TABLE public.event_images ADD CONSTRAINT fk_event_images_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.known_faces DROP CONSTRAINT IF EXISTS fk_known_faces_device;
+ALTER TABLE public.known_faces ADD CONSTRAINT fk_known_faces_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.access_logs DROP CONSTRAINT IF EXISTS fk_access_logs_device;
+ALTER TABLE public.access_logs ADD CONSTRAINT fk_access_logs_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
+
+ALTER TABLE public.security_event_views DROP CONSTRAINT IF EXISTS fk_security_views_device;
+ALTER TABLE public.security_event_views ADD CONSTRAINT fk_security_views_device FOREIGN KEY (device_id) REFERENCES public.device_settings(device_id) ON DELETE CASCADE;
