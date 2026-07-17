@@ -37,7 +37,7 @@ export default function RootLayout({
           strategy="beforeInteractive"
         />
       </head>
-      <body className={`${inter.variable} font-sans antialiased`}>
+      <body suppressHydrationWarning className={`${inter.variable} font-sans antialiased`}>
         <AppShell>{children}</AppShell>
       </body>
     </html>
