@@ -20,6 +20,7 @@ const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
 const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
 const LIVE_FRAME_MAX_AGE_MS = 5000;
+const AI_MIN_CONFIDENCE = 0.7;
 
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -48,6 +49,8 @@ export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
   return {
     auto_lock_enabled: settings.auto_lock_enabled !== false,
     auto_lock_ms: autoLockMs,
+    camera_publish_enabled: settings.camera_image_publish_enabled !== false,
+    ai_detection_enabled: settings.ai_detection_enabled === true,
     lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
     unlock_angle: clampNumber(config.access.unlockAngle, 0, 180, 90),
     rfid_allowlist: [...new Set(rfidAllowlist.map(normalizeTagId).filter(Boolean))]
@@ -110,6 +113,12 @@ function summarizeTelemetry(summary, key, parsed) {
     summary.cameraLastSuccessMs = Number(parsed.camera_last_success_ms) || 0;
     summary.cameraLastFrameBytes = Number(parsed.camera_last_frame_bytes) || 0;
     summary.cameraPublishFailures = Number(parsed.camera_publish_failures) || 0;
+    if (typeof parsed.camera_publish_enabled === 'boolean') {
+      summary.cameraImagePublishingEnabled = parsed.camera_publish_enabled;
+    }
+    if (typeof parsed.ai_detection_enabled === 'boolean') {
+      summary.aiDetectionEnabled = parsed.ai_detection_enabled;
+    }
     if (typeof parsed.door_state_reason === 'string') {
       summary.doorStateReason = parsed.door_state_reason;
     }
@@ -122,7 +131,8 @@ function summarizeTelemetry(summary, key, parsed) {
   }
 
   if (key === 'modelInference') {
-    if (typeof parsed.label === 'string') {
+    const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
+    if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE && typeof parsed.label === 'string') {
       summary.modelLabel = parsed.label;
     }
     summary.anomalyScore = Number(parsed.anomaly_score) || summary.anomalyScore;
@@ -220,7 +230,10 @@ export function createMqttService() {
 
     console.log(
       `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
-      + `after ${deviceAccessConfig.auto_lock_ms} ms, ${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
+      + `after ${deviceAccessConfig.auto_lock_ms} ms, camera publishing `
+      + `${deviceAccessConfig.camera_publish_enabled ? 'on' : 'off'}, AI detection `
+      + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, `
+      + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
     );
     return { synced: true, config: deviceAccessConfig };
   }
@@ -360,16 +373,27 @@ export function createMqttService() {
       summarizeTelemetry(snapshot.summary, key, parsed);
 
       if (key === 'modelInference' && parsed && typeof parsed === 'object') {
-        supabaseService.insertAiLog({
-          deviceId: config.mqtt.deviceId,
-          label: parsed.label,
-          confidence: parsed.confidence ?? parsed.score ?? parsed.anomaly_score,
-          anomalyScore: parsed.anomaly_score,
-          objectCount: parsed.object_count ?? parsed.people_count ?? 0,
-          imagePath: snapshot.latestImage?.base64,
-          telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
-          metadata: parsed,
-        });
+        const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
+        const detections = Array.isArray(parsed.detections)
+          ? parsed.detections.filter((detection) => (
+              detection
+              && typeof detection === 'object'
+              && Number(detection.confidence) > AI_MIN_CONFIDENCE
+            ))
+          : [];
+
+        if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
+          supabaseService.insertAiLog({
+            deviceId: config.mqtt.deviceId,
+            label: parsed.label,
+            confidence,
+            anomalyScore: parsed.anomaly_score,
+            objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
+            imagePath: snapshot.latestImage?.base64,
+            telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
+            metadata: { ...parsed, detections },
+          });
+        }
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
           supabaseService.insertAlert({

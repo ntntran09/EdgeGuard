@@ -57,7 +57,8 @@ void mqtt_serviceWifi() {
 bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
   if (!mqttClient.connected()) return false;
 
-  char payload[512];
+  // FOMO summaries include up to three compact bounding boxes.
+  char payload[768];
   size_t size = serializeJson(doc, payload, sizeof(payload));
   if (size == 0 || size >= sizeof(payload)) {
     Serial.println("[MQTT] JSON payload is too large");

@@ -5,6 +5,7 @@
 #include "device.h"
 #include "pn532_reader.h"
 #include "camera.h"
+#include "fomo.h"
 #include "sensors.h"
 
 bool publish_system_metrics = true;
@@ -17,6 +18,7 @@ void setup() {
 
   // Camera first so it reserves its LEDC timer/channel before servo and tone.
   camera_setup();
+  fomo_setup();
   actuators_setup();
   device_setup();
   pn532_setup();
@@ -29,6 +31,7 @@ void loop() {
   actuators_loop();
   pn532_loop();
   camera_loop();
+  fomo_loop();
   sensors_loop();
   device_loop();
 }

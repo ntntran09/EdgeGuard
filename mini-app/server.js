@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import next from 'next';
-import { parse } from 'url';
 
 // Adjust imports for the moved backend files
 import { config } from './backend/config.js';
@@ -43,8 +42,7 @@ nextApp.prepare().then(() => {
 
   // Let Next.js handle all other requests
   app.use((req, res) => {
-    const parsedUrl = parse(req.url, true);
-    handle(req, res, parsedUrl);
+    handle(req, res);
   });
 
   const server = app.listen(port, () => {

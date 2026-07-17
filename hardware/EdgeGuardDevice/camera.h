@@ -5,6 +5,8 @@
 #include "config.h"
 #include "mqtt.h"
 
+extern bool deviceCameraPublishEnabled;
+
 bool cameraReady = false;
 unsigned long lastCameraPublish = 0;
 unsigned long lastCameraInitAttempt = 0;
@@ -58,6 +60,7 @@ void camera_loop() {
     }
     return;
   }
+  if (!deviceCameraPublishEnabled) return;
   if (!mqttClient.connected() || now - lastCameraPublish < cameraPublishInterval) return;
   lastCameraPublish = now;
   camera_fb_t *frame = esp_camera_fb_get();

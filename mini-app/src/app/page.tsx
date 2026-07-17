@@ -15,8 +15,9 @@ import {
 } from '@/components/icons/FilledIcons';
 import { useTelegram } from '@/hooks/useTelegram';
 import { api } from '@/lib/api';
+import { AI_MIN_CONFIDENCE } from '@/lib/ai-detections';
 import { formatDate, formatTimeAgo, getGreeting } from '@/lib/telegram';
-import type { SecurityEvent, SystemStatus } from '@/types';
+import type { AiDetection, SecurityEvent, SystemStatus } from '@/types';
 
 type ToastKind = 'success' | 'error' | 'warn';
 
@@ -28,6 +29,18 @@ function canShowCameraSource(url?: string) {
 function isVideoSource(url?: string) {
   if (!url) return false;
   return /\.(mp4|webm|ogg)(\?|$)/i.test(url);
+}
+
+function detectionLabel(detection: AiDetection) {
+  if (detection.type === 'person') return 'Người';
+  if (detection.type === 'bag') return 'Túi';
+  if (detection.type === 'package') return 'Bưu kiện';
+  return detection.label;
+}
+
+function centroidPercent(value: number, dimension: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(dimension) || dimension <= 0) return 0;
+  return Math.min(100, Math.max(0, (value / dimension) * 100));
 }
 
 export default function DashboardPage() {
@@ -53,6 +66,9 @@ export default function DashboardPage() {
     process.env.NEXT_PUBLIC_ESP32_CAM_STREAM_URL ||
     process.env.NEXT_PUBLIC_CAMERA_STREAM_URL ||
     activeStatus.latestImageUrl;
+  const cameraPublishingEnabled = activeStatus.cameraImagePublishingEnabled !== false;
+  const aiDetections = (activeStatus.aiDetections || [])
+    .filter((detection) => detection.confidence > AI_MIN_CONFIDENCE);
 
   const statusCopy = useMemo(() => {
     if (!activeStatus.mqttConnected) return 'Thiết bị ngoại tuyến';
@@ -232,7 +248,7 @@ export default function DashboardPage() {
               ESP32-CAM
             </div>
             <span className={`badge camera-badge ${cameraSource ? 'badge-success' : 'badge-warning'}`}>
-              {cameraSource ? 'TRỰC TIẾP' : 'MẤT TÍN HIỆU'}
+              {cameraSource ? 'TRỰC TIẾP' : cameraPublishingEnabled ? 'MẤT TÍN HIỆU' : 'ĐÃ TẮT'}
             </span>
             {isVideoSource(cameraSource) ? (
               <video
@@ -252,8 +268,32 @@ export default function DashboardPage() {
             ) : (
               <div className="camera-placeholder">
                 <ShieldFilledIcon size={42} />
-                <span>Chưa có luồng camera</span>
-                <small>Cấu hình NEXT_PUBLIC_ESP32_CAM_STREAM_URL để xem stream từ ESP32-CAM</small>
+                <span>{cameraPublishingEnabled ? 'Chưa có luồng camera' : 'Gửi ảnh camera đang tắt'}</span>
+                <small>
+                  {cameraPublishingEnabled
+                    ? 'Cấu hình NEXT_PUBLIC_ESP32_CAM_STREAM_URL để xem stream từ ESP32-CAM'
+                    : 'Bật lại trong Cài đặt → Hệ thống để xem luồng trực tiếp'}
+                </small>
+              </div>
+            )}
+            {cameraSource && aiDetections.length > 0 && (
+              <div className="ai-centroid-layer" aria-label="Tâm các phát hiện AI trên khung hình">
+                {aiDetections.map((detection, index) => (
+                  <span
+                    className="ai-centroid-marker"
+                    key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
+                    style={{
+                      left: `${centroidPercent(detection.centroidX, detection.inputWidth)}%`,
+                      top: `${centroidPercent(detection.centroidY, detection.inputHeight)}%`,
+                    }}
+                  >
+                    <span className="ai-centroid-label">
+                      {detectionLabel(detection)} {Math.round(detection.confidence * 100)}%
+                      {' · '}
+                      ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
+                    </span>
+                  </span>
+                ))}
               </div>
             )}
           </section>

@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Database schema
+
+Run the workspace-root `schema.sql` in the Supabase SQL editor when setting up the app or after pulling schema changes. The device processing controls require `device_settings.camera_image_publish_enabled`; the migration is idempotent and keeps image publishing enabled by default.
+
 ## Event image storage
 
 Set `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and `SUPABASE_IMAGE_BUCKET=event-images` in `.env`. Camera frames remain memory-only until an event is logged. Persistent images use these bucket prefixes:

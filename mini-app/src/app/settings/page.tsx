@@ -73,6 +73,8 @@ export default function SettingsPage() {
     autoLockSeconds: 10,
     strangerAlertEnabled: true,
     cameraBlockedAlertEnabled: true,
+    cameraImagePublishingEnabled: true,
+    aiDetectionEnabled: false,
     rfidCardConfigurationEnabled: false,
   });
   const [isLoading, setIsLoading] = useState(true);
@@ -336,6 +338,28 @@ export default function SettingsPage() {
           <div className="setting-row">
             <div><strong>Camera bị che</strong><small>Cảnh báo khi tầm nhìn bị cản trở.</small></div>
             <ToggleSwitch checked={alertConfig.cameraBlockedAlertEnabled} onChange={() => updateSetting('cameraBlockedAlertEnabled', !alertConfig.cameraBlockedAlertEnabled)} label="Cảnh báo camera bị che" />
+          </div>
+          <div className="setting-row">
+            <div>
+              <strong>Gửi ảnh camera</strong>
+              <small>Tắt để ESP32-CAM ngừng gửi ảnh qua MQTT; các cảm biến và RFID vẫn hoạt động.</small>
+            </div>
+            <ToggleSwitch
+              checked={alertConfig.cameraImagePublishingEnabled !== false}
+              onChange={() => updateSetting('cameraImagePublishingEnabled', alertConfig.cameraImagePublishingEnabled === false)}
+              label="Gửi ảnh camera qua MQTT"
+            />
+          </div>
+          <div className="setting-row">
+            <div>
+              <strong>Phát hiện AI</strong>
+              <small>Tắt để dừng suy luận FOMO và không gửi thêm log phát hiện AI.</small>
+            </div>
+            <ToggleSwitch
+              checked={Boolean(alertConfig.aiDetectionEnabled)}
+              onChange={() => updateSetting('aiDetectionEnabled', !alertConfig.aiDetectionEnabled)}
+              label="Phát hiện AI trên ESP32-CAM"
+            />
           </div>
         </section>
       )}

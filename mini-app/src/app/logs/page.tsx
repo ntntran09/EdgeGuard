@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { formatDate, formatTime, formatTimeAgo } from '@/lib/telegram';
 import { api } from '@/lib/api';
 import { BlockFilledIcon, CheckFilledIcon, getEventFilledIcon } from '@/components/icons/FilledIcons';
-import type { SecurityEvent } from '@/types';
+import type { AiDetection, SecurityEvent } from '@/types';
 
 type FilterType = 'all' | 'person' | 'object' | 'door' | 'rfid';
 
@@ -37,6 +37,43 @@ function canRenderImage(url?: string) {
   if (!url) return false;
   if (url.startsWith('data:image/') || url.startsWith('/')) return true;
   return !url.includes('t.me/');
+}
+
+function detectionLabel(detection: AiDetection) {
+  if (detection.type === 'person') return 'Người';
+  if (detection.type === 'bag') return 'Túi';
+  if (detection.type === 'package') return 'Bưu kiện';
+  return detection.label;
+}
+
+function centroidPercent(value: number, dimension: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(dimension) || dimension <= 0) return 0;
+  return Math.min(100, Math.max(0, (value / dimension) * 100));
+}
+
+function DetectionCentroids({ detections }: { detections?: AiDetection[] }) {
+  if (!detections?.length) return null;
+
+  return (
+    <div className="ai-centroid-layer log-centroid-layer" aria-label="Tâm các vật thể AI đã phát hiện">
+      {detections.map((detection, index) => (
+        <span
+          className="ai-centroid-marker"
+          key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
+          style={{
+            left: `${centroidPercent(detection.centroidX, detection.inputWidth)}%`,
+            top: `${centroidPercent(detection.centroidY, detection.inputHeight)}%`,
+          }}
+        >
+          <span className="ai-centroid-label">
+            {detectionLabel(detection)} {Math.round(detection.confidence * 100)}%
+            {' · '}
+            ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
+          </span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 export default function LogsPage() {
@@ -145,6 +182,9 @@ export default function LogsPage() {
                   {getEventFilledIcon(event.type, { size: 34 })}
                 </div>
               )}
+              {canRenderImage(event.thumbnailUrl) && (
+                <DetectionCentroids detections={event.aiDetections} />
+              )}
               <div className="event-card-image-overlay">
                 <span className={`badge ${getSeverityBadgeClass(event.severity)}`}>
                   {getSeverityLabel(event.severity)}
@@ -248,6 +288,7 @@ export default function LogsPage() {
                   sizes="(min-width: 768px) 420px, 100vw"
                   className="event-card-img"
                 />
+                <DetectionCentroids detections={selectedEvent.aiDetections} />
                 <button className="icon-close-btn" onClick={() => setSelectedEvent(null)} aria-label="Đóng">
                   <BlockFilledIcon size={18} />
                 </button>
@@ -280,6 +321,16 @@ export default function LogsPage() {
                     <strong>{Math.round(selectedEvent.aiConfidence * 100)}%</strong>
                   </div>
                 )}
+                {selectedEvent.aiDetections?.map((detection, index) => (
+                  <div key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}>
+                    <span>Tâm {detectionLabel(detection)}</span>
+                    <strong>
+                      ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
+                      {' · '}
+                      {Math.round(detection.confidence * 100)}%
+                    </strong>
+                  </div>
+                ))}
                 {selectedEvent.cardId && (
                   <div>
                     <span>Mã thẻ</span>

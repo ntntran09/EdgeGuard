@@ -2,8 +2,8 @@
 #define EDGEGUARD_CONFIG_H
 
 // Network settings.
-const char *WIFI_SSID = "Nguyen";
-const char *WIFI_PASSWORD = "127127127";
+const char *WIFI_SSID = "Ai đó";
+const char *WIFI_PASSWORD = "012345678";
 const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_DEVICE_ID = "device_001";
@@ -15,6 +15,11 @@ const char *MQTT_TOPIC_BASE = "/EdgeGuard/device_001";
 #define SERVO_PIN 12
 #define BUZZER_PIN 15
 #define STATUS_LED_PIN 33
+
+// Keep the buzzer away from ESP32Servo's first LEDC channel (channel 0,
+// timer 0). Arduino tone() otherwise changes the servo PWM frequency and
+// noTone() clears its duty cycle, leaving the servo without a valid signal.
+const uint8_t BUZZER_LEDC_CHANNEL = 2; // LEDC timer 1
 
 // AI Thinker ESP32-CAM camera pins.
 #define CAM_PIN_PWDN 32
@@ -41,6 +46,11 @@ const unsigned long CAMERA_INIT_RETRY_MS = 10000;
 const size_t CAMERA_MQTT_CHUNK_BYTES = 1024;
 const size_t CAMERA_MAX_MQTT_FRAME_BYTES = 60000;
 const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
+const unsigned long FOMO_INTERVAL_MS = 1000;
+const unsigned long FOMO_INIT_RETRY_MS = 10000;
+// Only treat predictions strictly above 70% as detections.
+const float FOMO_MIN_CONFIDENCE = 0.70f;
+const size_t FOMO_MAX_PUBLISHED_DETECTIONS = 3;
 const unsigned long NFC_CARD_RELEASE_MS = 500;
 const unsigned long PN532_INIT_RETRY_MS = 10000;
 const uint16_t PN532_POLL_TIMEOUT_MS = 50;

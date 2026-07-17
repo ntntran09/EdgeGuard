@@ -556,14 +556,77 @@ body {
   border-radius: 8px;
   overflow: hidden;
   background: #1a1a2e;
-  aspect-ratio: 16/9;
+  /* The ESP32-CAM stream is QVGA (4:3). Keeping that ratio lets the square
+     FOMO crop and its centroid coordinates align with the visible frame. */
+  aspect-ratio: 4/3;
   box-shadow: var(--shadow-card);
 }
 
 .camera-feed {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.ai-centroid-layer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  aspect-ratio: 1;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.ai-centroid-marker {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #7cffad;
+  border-radius: 50%;
+  background: rgba(20, 130, 79, 0.34);
+  box-shadow: 0 0 0 4px rgba(124, 255, 173, 0.18), 0 0 14px rgba(124, 255, 173, 0.9);
+}
+
+.ai-centroid-marker::before,
+.ai-centroid-marker::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
+}
+
+.ai-centroid-marker::before {
+  width: 20px;
+  height: 1px;
+}
+
+.ai-centroid-marker::after {
+  width: 1px;
+  height: 20px;
+}
+
+.ai-centroid-label {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  padding: 4px 7px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(124, 255, 173, 0.5);
+  border-radius: 6px;
+  background: rgba(4, 24, 14, 0.82);
+  color: #d8ffe7;
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(6px);
 }
 
 .camera-placeholder {
@@ -1667,7 +1730,7 @@ body {
 
 .event-card-media {
   position: relative;
-  height: 180px;
+  aspect-ratio: 4 / 3;
   overflow: hidden;
   background: #1a1a2e;
 }
@@ -1764,8 +1827,24 @@ body {
 
 .detail-modal-media {
   position: relative;
-  height: 240px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
   background: #1a1a2e;
+}
+
+.log-centroid-layer {
+  z-index: 4;
+}
+
+.event-card-media .ai-centroid-marker {
+  width: 13px;
+  height: 13px;
+}
+
+.event-card-media .ai-centroid-label {
+  top: 17px;
+  padding: 3px 5px;
+  font-size: 0.56rem;
 }
 
 .detail-modal-body,
@@ -1819,6 +1898,7 @@ body {
 
 .icon-close-btn {
   position: absolute;
+  z-index: 10;
   top: 12px;
   right: 12px;
   display: grid;

@@ -5,6 +5,7 @@
 #include "config.h"
 #include "mqtt.h"
 #include "device.h"
+#include "fomo.h"
 
 unsigned long lastSystemPublish = 0;
 
@@ -46,6 +47,16 @@ void sensors_loop() {
   doc["camera_last_success_ms"] = lastCameraSuccessAt;
   doc["camera_last_frame_bytes"] = lastCameraFrameBytes;
   doc["camera_publish_failures"] = cameraPublishFailures;
+  doc["camera_publish_enabled"] = deviceCameraPublishEnabled;
+  doc["ai_detection_enabled"] = deviceAiDetectionEnabled;
+  doc["fomo_ready"] = fomoReady;
+  doc["fomo_inference_count"] = fomoInferenceCount;
+  doc["fomo_inference_failures"] = fomoInferenceFailures;
+  doc["fomo_last_inference_ms"] = lastFomoInferenceMs;
+  doc["fomo_last_detection_count"] = lastFomoDetectionCount;
+  doc["fomo_people_count"] = lastFomoPeopleCount;
+  doc["fomo_bag_count"] = lastFomoBagCount;
+  doc["fomo_package_count"] = lastFomoPackageCount;
   doc["door_open"] = doorOpenState;
   doc["door_state_reason"] = doorStateReason;
   doc["auto_lock_enabled"] = deviceAutoLockEnabled;

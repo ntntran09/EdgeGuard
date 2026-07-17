@@ -83,6 +83,7 @@ create table if not exists public.device_settings (
   stranger_alert_enabled boolean not null default true,
   camera_blocked_alert_enabled boolean not null default true,
   telegram_alert_enabled boolean not null default false,
+  camera_image_publish_enabled boolean not null default true,
   ai_detection_enabled boolean not null default false,
   master_key_enabled boolean not null default false,
   updated_at timestamptz not null default now()
@@ -213,6 +214,7 @@ alter table public.ai_logs add column if not exists image_mime_type text;
 alter table public.ai_logs add column if not exists image_bytes bigint;
 
 alter table public.device_settings add column if not exists telegram_alert_enabled boolean not null default false;
+alter table public.device_settings add column if not exists camera_image_publish_enabled boolean not null default true;
 alter table public.device_settings add column if not exists ai_detection_enabled boolean not null default false;
 alter table public.device_settings add column if not exists object_left_alert_enabled boolean not null default true;
 alter table public.device_settings add column if not exists auto_lock_enabled boolean not null default true;

@@ -6,6 +6,8 @@
 #include "actuators.h"
 
 bool deviceAutoLockEnabled = true;
+bool deviceCameraPublishEnabled = true;
+bool deviceAiDetectionEnabled = true;
 unsigned long deviceAutoLockMs = DEFAULT_AUTO_LOCK_MS;
 int deviceLockAngle = SERVO_LOCK_ANGLE;
 int deviceUnlockAngle = SERVO_UNLOCK_ANGLE;
@@ -100,6 +102,8 @@ void device_setup() {
   Preferences preferences;
   if (preferences.begin("edgeguard", true)) {
     deviceAutoLockEnabled = preferences.getBool("autolock", true);
+    deviceCameraPublishEnabled = preferences.getBool("campub", true);
+    deviceAiDetectionEnabled = preferences.getBool("aienabled", true);
     deviceAutoLockMs = preferences.getULong("lockms", DEFAULT_AUTO_LOCK_MS);
     deviceLockAngle = preferences.getInt("lockang", SERVO_LOCK_ANGLE);
     deviceUnlockAngle = preferences.getInt("unlockang", SERVO_UNLOCK_ANGLE);
@@ -109,9 +113,11 @@ void device_setup() {
 
   actuators_lockDoor(deviceLockAngle, "startup");
   Serial.printf(
-    "[Device] Loaded access config: auto-lock %s after %lu ms, %u offline RFID card(s)\n",
+    "[Device] Loaded config: auto-lock %s after %lu ms, camera publishing %s, AI detection %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
+    deviceCameraPublishEnabled ? "on" : "off",
+    deviceAiDetectionEnabled ? "on" : "off",
     static_cast<unsigned int>(deviceRfidAllowlistCount)
   );
   device_printRfidAllowlist("Loaded");
@@ -135,6 +141,8 @@ void device_applyConfig(JsonDocument &doc) {
   if (source["publish_system_metrics"].is<bool>()) publish_system_metrics = source["publish_system_metrics"];
 
   bool persistAutoLock = false;
+  bool persistCameraPublish = false;
+  bool persistAiDetection = false;
   bool persistAutoLockMs = false;
   bool persistLockAngle = false;
   bool persistUnlockAngle = false;
@@ -145,6 +153,18 @@ void device_applyConfig(JsonDocument &doc) {
     persistAutoLock = next != deviceAutoLockEnabled;
     deviceAutoLockEnabled = next;
     if (!deviceAutoLockEnabled) doorLockPending = false;
+  }
+
+  if (source["camera_publish_enabled"].is<bool>()) {
+    bool next = source["camera_publish_enabled"].as<bool>();
+    persistCameraPublish = next != deviceCameraPublishEnabled;
+    deviceCameraPublishEnabled = next;
+  }
+
+  if (source["ai_detection_enabled"].is<bool>()) {
+    bool next = source["ai_detection_enabled"].as<bool>();
+    persistAiDetection = next != deviceAiDetectionEnabled;
+    deviceAiDetectionEnabled = next;
   }
 
   if (!source["auto_lock_ms"].isNull()) {
@@ -175,10 +195,12 @@ void device_applyConfig(JsonDocument &doc) {
     if (persistRfidAllowlist) device_loadRfidCsv(next);
   }
 
-  if (persistAutoLock || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistRfidAllowlist) {
+  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistRfidAllowlist) {
     Preferences preferences;
     if (preferences.begin("edgeguard", false)) {
       if (persistAutoLock) preferences.putBool("autolock", deviceAutoLockEnabled);
+      if (persistCameraPublish) preferences.putBool("campub", deviceCameraPublishEnabled);
+      if (persistAiDetection) preferences.putBool("aienabled", deviceAiDetectionEnabled);
       if (persistAutoLockMs) preferences.putULong("lockms", deviceAutoLockMs);
       if (persistLockAngle) preferences.putInt("lockang", deviceLockAngle);
       if (persistUnlockAngle) preferences.putInt("unlockang", deviceUnlockAngle);
@@ -201,9 +223,11 @@ void device_applyConfig(JsonDocument &doc) {
   }
 
   Serial.printf(
-    "[Device] Config updated: auto-lock %s after %lu ms, %u offline RFID card(s)\n",
+    "[Device] Config updated: auto-lock %s after %lu ms, camera publishing %s, AI detection %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
+    deviceCameraPublishEnabled ? "on" : "off",
+    deviceAiDetectionEnabled ? "on" : "off",
     static_cast<unsigned int>(deviceRfidAllowlistCount)
   );
   device_printRfidAllowlist("Current");

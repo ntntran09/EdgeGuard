@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getRequester } from '@/lib/server-auth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { restoreVietnameseDiacritics } from '@/lib/vietnamese-copy';
+import { normalizeAiDetections } from '@/lib/ai-detections';
 import type { EventCategory, EventSeverity, EventType, SecurityEvent } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
@@ -101,6 +102,7 @@ function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityE
     timestamp: row.occurred_at,
     thumbnailUrl: normalizeImagePath(row.thumbnail_url),
     aiConfidence: row.ai_confidence ?? undefined,
+    aiDetections: normalizeAiDetections(metadata),
     severity: row.severity || copy.severity,
     cardId,
     category: row.category || undefined,

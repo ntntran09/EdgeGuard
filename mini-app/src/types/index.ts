@@ -78,6 +78,7 @@ export interface SecurityEvent {
   timestamp: string;
   thumbnailUrl?: string;
   aiConfidence?: number;
+  aiDetections?: AiDetection[];
   severity: EventSeverity;
   cardId?: string;
   category?: EventCategory;
@@ -126,6 +127,20 @@ export interface CameraStatus {
   lastFrameAt?: string;
 }
 
+export interface AiDetection {
+  label: string;
+  type: string;
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centroidX: number;
+  centroidY: number;
+  inputWidth: number;
+  inputHeight: number;
+}
+
 export interface SystemStatus {
   mqttConnected: boolean;
   doorOpen: boolean;
@@ -140,6 +155,9 @@ export interface SystemStatus {
   cameraLastFrameAt?: string;
   cameraLastFrameBytes?: number;
   cameraPublishFailures?: number;
+  cameraImagePublishingEnabled?: boolean;
+  aiDetections?: AiDetection[];
+  aiDetectionsAt?: string;
   aiDetectionEnabled?: boolean;
   aiModelReady?: boolean;
   telegramEnabled?: boolean;
@@ -157,6 +175,7 @@ export interface AlertConfig {
   strangerAlertEnabled: boolean;
   cameraBlockedAlertEnabled: boolean;
   telegramAlertEnabled?: boolean;
+  cameraImagePublishingEnabled?: boolean;
   aiDetectionEnabled?: boolean;
   rfidCardConfigurationEnabled?: boolean;
 }

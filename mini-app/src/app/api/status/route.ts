@@ -1,19 +1,40 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { backendApiUrl } from '@/lib/backend-url';
+import { normalizeAiDetections } from '@/lib/ai-detections';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
+const AI_DETECTION_MAX_AGE_MS = 5000;
+
+interface MqttInferenceSnapshot {
+  receivedAt?: string;
+  parsed?: unknown;
+}
+
+interface MqttStatusPayload {
+  connection?: { connected?: boolean };
+  summary?: Record<string, unknown>;
+  latestImage?: { base64?: string; url?: string };
+  topics?: { modelInference?: MqttInferenceSnapshot };
+}
 
 export const dynamic = 'force-dynamic';
 
 function integrationStatus() {
   return {
-    aiDetectionEnabled: process.env.AI_DETECTION_ENABLED === 'true',
     aiModelReady: Boolean(process.env.AI_MODEL_PATH || process.env.NEXT_PUBLIC_AI_MODEL_READY === 'true'),
     telegramEnabled: process.env.TELEGRAM_ENABLED === 'true',
     telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
   };
+}
+
+function freshAiDetections(inference?: MqttInferenceSnapshot) {
+  const receivedAtMs = inference?.receivedAt ? Date.parse(inference.receivedAt) : Number.NaN;
+  if (!Number.isFinite(receivedAtMs) || Date.now() - receivedAtMs > AI_DETECTION_MAX_AGE_MS) {
+    return [];
+  }
+  return normalizeAiDetections(inference?.parsed);
 }
 
 export async function GET() {
@@ -25,7 +46,7 @@ export async function GET() {
       isSupabaseConfigured
         ? supabase
             .from('device_settings')
-            .select('auto_lock_enabled, auto_lock_seconds')
+            .select('*')
             .eq('device_id', DEVICE_ID)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
@@ -45,7 +66,9 @@ export async function GET() {
       );
     }
 
-    const data = await res.json();
+    const data = await res.json() as MqttStatusPayload;
+    const inference = data.topics?.modelInference;
+    const aiDetections = freshAiDetections(inference);
     return NextResponse.json({
       mqttConnected: data.connection?.connected ?? false,
       doorOpen: data.summary?.doorOpen ?? false,
@@ -60,6 +83,14 @@ export async function GET() {
       cameraLastFrameAt: data.summary?.cameraLastFrameAt,
       cameraLastFrameBytes: data.summary?.cameraLastFrameBytes,
       cameraPublishFailures: data.summary?.cameraPublishFailures,
+      cameraImagePublishingEnabled: typeof data.summary?.cameraImagePublishingEnabled === 'boolean'
+        ? data.summary.cameraImagePublishingEnabled
+        : settingsResult.data?.camera_image_publish_enabled ?? true,
+      aiDetectionEnabled: typeof data.summary?.aiDetectionEnabled === 'boolean'
+        ? data.summary.aiDetectionEnabled
+        : settingsResult.data?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',
+      aiDetections,
+      aiDetectionsAt: aiDetections.length ? inference?.receivedAt : undefined,
       autoLockEnabled: settingsResult.data
         ? (settingsResult.data.auto_lock_enabled ?? settingsResult.data.auto_lock_seconds !== null)
         : false,

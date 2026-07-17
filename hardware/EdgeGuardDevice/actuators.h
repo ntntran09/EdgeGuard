@@ -78,11 +78,18 @@ void actuators_setAlarm(bool active) {
 void actuators_setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
+
+  // tone() defaults to LEDC channel 0, which is also the first channel
+  // allocated by ESP32Servo. Assign the buzzer its own timer before any
+  // tone/noTone call so it cannot corrupt the servo's 50 Hz PWM signal.
+  setToneChannel(BUZZER_LEDC_CHANNEL);
+
   doorServo.setPeriodHertz(50);
   doorServo.attach(SERVO_PIN, 500, 2400);
   doorServo.write(SERVO_START_ANGLE);
   Serial.printf(
-    "[Actuators] Buzzer and servo initialized%s\n",
+    "[Actuators] Servo initialized; buzzer uses LEDC channel %u%s\n",
+    BUZZER_LEDC_CHANNEL,
     doorServo.attached() ? "" : " (servo attach failed)"
   );
 }

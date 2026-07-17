@@ -23,6 +23,7 @@ const defaultAlertConfig: AlertConfig = {
   strangerAlertEnabled: true,
   cameraBlockedAlertEnabled: true,
   telegramAlertEnabled: false,
+  cameraImagePublishingEnabled: true,
   aiDetectionEnabled: false,
   rfidCardConfigurationEnabled: false,
 };
@@ -56,6 +57,7 @@ export async function GET() {
     strangerAlertEnabled: data.stranger_alert_enabled,
     cameraBlockedAlertEnabled: data.camera_blocked_alert_enabled,
     telegramAlertEnabled: data.telegram_alert_enabled || false,
+    cameraImagePublishingEnabled: data.camera_image_publish_enabled ?? true,
     aiDetectionEnabled: data.ai_detection_enabled || false,
     rfidCardConfigurationEnabled: data.master_key_enabled || false,
   };
@@ -85,6 +87,7 @@ export async function POST(request: Request) {
       ...(body.strangerAlertEnabled !== undefined && { stranger_alert_enabled: body.strangerAlertEnabled }),
       ...(body.cameraBlockedAlertEnabled !== undefined && { camera_blocked_alert_enabled: body.cameraBlockedAlertEnabled }),
       ...(body.telegramAlertEnabled !== undefined && { telegram_alert_enabled: body.telegramAlertEnabled }),
+      ...(body.cameraImagePublishingEnabled !== undefined && { camera_image_publish_enabled: body.cameraImagePublishingEnabled }),
       ...(body.aiDetectionEnabled !== undefined && { ai_detection_enabled: body.aiDetectionEnabled }),
       ...(body.rfidCardConfigurationEnabled !== undefined && { master_key_enabled: body.rfidCardConfigurationEnabled }),
       updated_at: new Date().toISOString(),

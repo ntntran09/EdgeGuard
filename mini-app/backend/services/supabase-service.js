@@ -358,7 +358,7 @@ export const supabaseService = {
     const [settingsResult, cardsResult] = await Promise.all([
       supabase
         .from('device_settings')
-        .select('auto_lock_enabled,auto_lock_seconds')
+        .select('*')
         .eq('device_id', deviceId)
         .maybeSingle(),
       supabase
