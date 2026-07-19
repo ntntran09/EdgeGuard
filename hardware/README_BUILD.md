@@ -16,10 +16,12 @@
 12. Opens cached active RFID cards locally even while Wi-Fi/MQTT still appears connected during an outage; MQTT is used for logging rather than gating the servo.
 13. Publishes door state immediately after manual unlock/lock, RFID access, and auto-lock so the Mini App button follows the servo state.
 14. Retries failed camera initialization/capture, serves QVGA `/capture` and `/stream` endpoints over HTTP, and announces those URLs through retained MQTT telemetry.
-15. Runs the bundled 96 x 96 grayscale Edge Impulse FOMO model once per second when possible and detects `human`, `backpack`, and `package` objects.
+15. Runs the bundled 96 x 96 grayscale Edge Impulse FOMO model every 1.3 seconds when possible and detects `human`, `backpack`, and `package` objects.
 16. Prints every FOMO bounding box and centroid above 70% confidence to Serial, then publishes those detections to `/EdgeGuard/device_001/model/inference` with `person`/`bag`/`package` aliases.
 17. Uses separate LEDC timers for the servo, buzzer, and camera so RFID/alarm tones cannot stop the servo PWM signal.
 18. Persists independent `camera_publish_enabled` and `ai_detection_enabled` switches from the retained MQTT device configuration, allowing the HTTP live view and FOMO inference to be stopped separately without disabling RFID or access control.
+19. Pins FOMO inference to ESP32 Core 1 and runs MQTT, PN532, actuators, camera management, and the HTTP/MJPEG server on Core 0.
+20. Passes FOMO detections through a FreeRTOS queue so only the Core 0 control task accesses PubSubClient.
 
 The supplied NDEF library is bundled because PN532-Arduino declares it as a dependency, but this firmware only reads ISO14443A UID values. It does not parse or write NDEF records.
 
@@ -75,7 +77,9 @@ The merged binary must be written at address `0x0`. Because it covers the full 4
 5. Camera starts an HTTP server on port 81 and publishes `/capture`, `/stream`, and `/health` URLs to `/EdgeGuard/device_001/telemetry/endpoints`. The Mini App server polls `/capture`; camera frame bytes no longer need to pass through MQTT.
 6. System metrics publish every 10 seconds.
 7. MQTT commands can control buzzer, servo, config and reboot.
-8. FOMO captures a separate QVGA frame, center-crops/resizes it to 96 x 96, and runs inference at a requested 1-second interval. The prototype model is estimated at about 1180 ms per inference, so the real interval cannot be shorter than the inference duration.
+8. FOMO captures a separate QVGA frame, center-crops/resizes it to 96 x 96, and runs inference on Core 1 at a requested 1.3-second interval. The prototype model is estimated at about 1180 ms per inference, so the scheduler normally waits for the remainder of the 1.3-second period after classification. Core 0 continues servicing MQTT, PN532, actuators, and HTTP/MJPEG while classification runs.
+
+FOMO and MJPEG still share one physical camera. A mutex serializes frame access; streaming may pause briefly while FOMO obtains and converts its input frame, then resumes while the neural network runs. Detection JSON is queued back to Core 0 because PubSubClient must not be called concurrently from both cores.
 
 FOMO uses the model's original labels in `model_label` and each bounding box: `human`, `backpack`, and `package`. Only predictions strictly above 70% confidence are accepted. Each MQTT detection includes its bounding box and `centroid_x`/`centroid_y` in the 96 x 96 inference coordinate system. MQTT also supplies the friendlier `object_type` aliases `person`, `bag`, and `package`; the top-level `label` is `person_detected` or `object_detected` for Mini App event compatibility. Frames with no detections are printed to Serial but are not published, avoiding one empty database log per second.
 

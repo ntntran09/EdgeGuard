@@ -44,8 +44,18 @@ const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
 const uint16_t CAMERA_HTTP_PORT = 81;
 const unsigned long CAMERA_MUTEX_TIMEOUT_MS = 2500;
 const unsigned long CAMERA_ENDPOINT_RETRY_MS = 5000;
-const unsigned long FOMO_INTERVAL_MS = 1000;
+const unsigned long FOMO_INTERVAL_MS = 1300;
 const unsigned long FOMO_INIT_RETRY_MS = 10000;
+// Keep latency-sensitive device/network work on Core 0 and reserve Core 1 for
+// the synchronous Edge Impulse classifier. The Arduino loop task starts on
+// Core 1 for this board, then deletes itself after the control task is ready.
+const BaseType_t EDGEGUARD_CONTROL_CORE = 0;
+const BaseType_t EDGEGUARD_FOMO_CORE = 1;
+const uint32_t EDGEGUARD_CONTROL_TASK_STACK_BYTES = 8192;
+const uint32_t EDGEGUARD_FOMO_TASK_STACK_BYTES = 8192;
+const UBaseType_t EDGEGUARD_CONTROL_TASK_PRIORITY = 2;
+const UBaseType_t EDGEGUARD_FOMO_TASK_PRIORITY = 1;
+const unsigned long EDGEGUARD_CONTROL_TASK_DELAY_MS = 1;
 // Only treat predictions strictly above 70% as detections.
 const float FOMO_MIN_CONFIDENCE = 0.70f;
 const size_t FOMO_MAX_PUBLISHED_DETECTIONS = 3;

@@ -135,6 +135,7 @@ create table if not exists public.pending_rfid_scans (
 create table if not exists public.event_images (
   id uuid primary key default gen_random_uuid(),
   device_id text not null,
+  capture_id text,
   storage_mode text not null check (storage_mode in ('telegram', 'supabase_storage')),
   telegram_file_id text,
   telegram_msg_link text,
@@ -278,6 +279,7 @@ alter table public.event_images add column if not exists storage_bucket text;
 alter table public.event_images add column if not exists storage_path text;
 alter table public.event_images add column if not exists public_url text;
 alter table public.event_images add column if not exists image_size_bytes bigint;
+alter table public.event_images add column if not exists capture_id text;
 
 alter table public.known_faces add column if not exists image_url text;
 alter table public.known_faces add column if not exists image_bucket text;
@@ -403,6 +405,8 @@ create unique index if not exists idx_pending_rfid_scans_unique_pending
   on public.pending_rfid_scans (device_id, tag_id)
   where status = 'pending';
 create index if not exists idx_event_images_device_created on public.event_images (device_id, created_at desc);
+create unique index if not exists idx_event_images_device_capture
+  on public.event_images (device_id, capture_id);
 create index if not exists idx_known_faces_device_active on public.known_faces (device_id, is_active, added_at desc);
 create unique index if not exists idx_known_faces_storage_path on public.known_faces (image_bucket, image_path) where image_path is not null;
 create unique index if not exists idx_security_event_views_unique on public.security_event_views (device_id, telegram_id, event_id);
@@ -570,11 +574,19 @@ alter table public.event_images enable row level security;
 alter table public.known_faces enable row level security;
 alter table public.security_event_views enable row level security;
 
--- Public URL reads are allowed; all writes still go through the service-role backend.
+-- Public URL reads and direct CameraCapture firmware uploads.
 drop policy if exists "Public read EdgeGuard image bucket" on storage.objects;
 create policy "Public read EdgeGuard image bucket"
 on storage.objects for select
 using (bucket_id = 'event-images');
+
+drop policy if exists "CameraCapture firmware upload" on storage.objects;
+create policy "CameraCapture firmware upload"
+on storage.objects for insert to anon, authenticated
+with check (
+  bucket_id = 'event-images'
+  and (storage.foldername(name))[1] = 'camera-captures'
+);
 
 -- Development policies. Production should prefer service-role access from the backend.
 drop policy if exists "Enable full access for alerts" on public.alerts;
@@ -599,7 +611,36 @@ drop policy if exists "Enable full access for pending_rfid_scans" on public.pend
 create policy "Enable full access for pending_rfid_scans" on public.pending_rfid_scans for all using (true) with check (true);
 
 drop policy if exists "Enable full access for event_images" on public.event_images;
-create policy "Enable full access for event_images" on public.event_images for all using (true) with check (true);
+drop policy if exists "Public read event_images" on public.event_images;
+create policy "Public read event_images"
+on public.event_images for select
+using (true);
+
+drop policy if exists "CameraCapture insert event_images" on public.event_images;
+create policy "CameraCapture insert event_images"
+on public.event_images for insert to anon, authenticated
+with check (
+  storage_mode = 'supabase_storage'
+  and storage_bucket = 'event-images'
+  and storage_path like 'camera-captures/%'
+  and capture_id is not null
+);
+
+drop policy if exists "CameraCapture update event_images" on public.event_images;
+create policy "CameraCapture update event_images"
+on public.event_images for update to anon, authenticated
+using (
+  storage_mode = 'supabase_storage'
+  and storage_bucket = 'event-images'
+  and storage_path like 'camera-captures/%'
+  and capture_id is not null
+)
+with check (
+  storage_mode = 'supabase_storage'
+  and storage_bucket = 'event-images'
+  and storage_path like 'camera-captures/%'
+  and capture_id is not null
+);
 
 drop policy if exists "Enable full access for known_faces" on public.known_faces;
 create policy "Enable full access for known_faces" on public.known_faces for all using (true) with check (true);
@@ -608,7 +649,7 @@ drop policy if exists "Enable full access for security_event_views" on public.se
 create policy "Enable full access for security_event_views" on public.security_event_views for all using (true) with check (true);
 
 insert into public.device_settings (device_id)
-values ('device_001')
+values ('device_001'), ('camera_capture_001')
 on conflict (device_id) do nothing;
 
 commit;

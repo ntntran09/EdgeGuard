@@ -120,6 +120,11 @@ Dynamic camera endpoint discovery:
 }
 ```
 
+The standalone `hardware/CameraCapture` firmware is intentionally not part of
+MQTT. It hosts its own UI/API, caches pending JPEGs in LittleFS, and uploads
+directly to Supabase. This document only describes the main EdgeGuard device
+and legacy MQTT image topics.
+
 ## AI Topics
 
 AI worker to server and hardware:

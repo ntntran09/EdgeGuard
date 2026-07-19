@@ -12,7 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_arduino_version.h"
 
-extern bool deviceAiDetectionEnabled;
+extern volatile bool deviceAiDetectionEnabled;
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #error "This Edge Impulse export conflicts with TensorFlow Lite Micro in ESP32 Arduino core 3.x; use core 2.0.17"
@@ -31,19 +31,33 @@ const uint16_t FOMO_CAMERA_FRAME_HEIGHT = 240;
 const size_t FOMO_CAMERA_BYTES_PER_PIXEL = 3;
 const size_t FOMO_CAMERA_BUFFER_BYTES =
   FOMO_CAMERA_FRAME_WIDTH * FOMO_CAMERA_FRAME_HEIGHT * FOMO_CAMERA_BYTES_PER_PIXEL;
+const size_t FOMO_MQTT_PAYLOAD_BYTES = 768;
+
+struct FomoPublishMessage {
+  size_t length;
+  char payload[FOMO_MQTT_PAYLOAD_BYTES];
+};
 
 uint8_t *fomoSnapshotBuffer = nullptr;
-bool fomoReady = false;
+volatile bool fomoReady = false;
 unsigned long lastFomoInitAttempt = 0;
 unsigned long lastFomoStartedAt = 0;
-unsigned long lastFomoInferenceAt = 0;
-unsigned long lastFomoInferenceMs = 0;
-uint32_t fomoInferenceCount = 0;
-uint32_t fomoInferenceFailures = 0;
-uint16_t lastFomoDetectionCount = 0;
-uint16_t lastFomoPeopleCount = 0;
-uint16_t lastFomoBagCount = 0;
-uint16_t lastFomoPackageCount = 0;
+volatile unsigned long lastFomoInferenceAt = 0;
+volatile unsigned long lastFomoInferenceMs = 0;
+volatile uint32_t fomoInferenceCount = 0;
+volatile uint32_t fomoInferenceFailures = 0;
+volatile uint16_t lastFomoDetectionCount = 0;
+volatile uint16_t lastFomoPeopleCount = 0;
+volatile uint16_t lastFomoBagCount = 0;
+volatile uint16_t lastFomoPackageCount = 0;
+QueueHandle_t fomoPublishQueue = nullptr;
+TaskHandle_t fomoTaskHandle = nullptr;
+
+void fomo_task(void *parameter);
+
+void fomo_noteFailure() {
+  fomoInferenceFailures++;
+}
 
 const char *fomo_objectType(const char *modelLabel) {
   if (strcmp(modelLabel, "human") == 0) return "person";
@@ -58,6 +72,11 @@ const char *fomo_eventLabel(const char *modelLabel) {
 
 bool fomo_allocateBuffer() {
   lastFomoInitAttempt = millis();
+
+  if (fomoSnapshotBuffer) {
+    fomoReady = true;
+    return true;
+  }
 
   if (!psramFound()) {
     Serial.println("[FOMO] PSRAM is required; inference disabled");
@@ -85,6 +104,31 @@ bool fomo_allocateBuffer() {
 void fomo_setup() {
   lastFomoStartedAt = millis();
   fomo_allocateBuffer();
+
+  fomoPublishQueue = xQueueCreate(1, sizeof(FomoPublishMessage));
+  if (!fomoPublishQueue) {
+    fomoReady = false;
+    Serial.println("[FOMO] Could not create result queue; inference task disabled");
+    return;
+  }
+
+  BaseType_t created = xTaskCreatePinnedToCore(
+    fomo_task,
+    "edgeguard-fomo",
+    EDGEGUARD_FOMO_TASK_STACK_BYTES,
+    nullptr,
+    EDGEGUARD_FOMO_TASK_PRIORITY,
+    &fomoTaskHandle,
+    EDGEGUARD_FOMO_CORE
+  );
+  if (created != pdPASS) {
+    fomoTaskHandle = nullptr;
+    fomoReady = false;
+    Serial.println("[FOMO] Could not create inference task");
+    return;
+  }
+
+  Serial.printf("[FOMO] Inference task pinned to Core %d\n", EDGEGUARD_FOMO_CORE);
 }
 
 static int fomo_getSignalData(size_t offset, size_t length, float *outPtr) {
@@ -102,9 +146,9 @@ static int fomo_getSignalData(size_t offset, size_t length, float *outPtr) {
   return 0;
 }
 
-bool fomo_captureAndResize(unsigned long now) {
+bool fomo_captureAndResize() {
   if (!camera_take()) {
-    fomoInferenceFailures++;
+    fomo_noteFailure();
     Serial.println("[FOMO] Camera is busy");
     return false;
   }
@@ -112,12 +156,11 @@ bool fomo_captureAndResize(unsigned long now) {
   camera_fb_t *frame = esp_camera_fb_get();
   if (!frame) {
     camera_give();
-    cameraCaptureFailures++;
-    fomoInferenceFailures++;
-    Serial.printf("[FOMO] Camera capture failed (%u/%u)\n", cameraCaptureFailures, CAMERA_CAPTURE_FAILURES_BEFORE_RESTART);
-    if (cameraCaptureFailures >= CAMERA_CAPTURE_FAILURES_BEFORE_RESTART) {
-      camera_restartAfterCaptureFailures(now);
-    }
+    uint8_t cameraFailures = camera_noteFailure();
+    fomo_noteFailure();
+    Serial.printf("[FOMO] Camera capture failed (%u/%u)\n", cameraFailures, CAMERA_CAPTURE_FAILURES_BEFORE_RESTART);
+    // Camera recovery stays on the Core 0 control task. Deinitializing the
+    // driver here could race camera_loop() or the HTTP server on the other core.
     return false;
   }
 
@@ -136,17 +179,17 @@ bool fomo_captureAndResize(unsigned long now) {
   camera_give();
 
   if (!dimensionsValid) {
-    fomoInferenceFailures++;
+    fomo_noteFailure();
     Serial.printf("[FOMO] Unexpected camera frame size: %ux%u\n", frameWidth, frameHeight);
     return false;
   }
   if (!converted) {
-    fomoInferenceFailures++;
+    fomo_noteFailure();
     Serial.println("[FOMO] JPEG to RGB conversion failed");
     return false;
   }
 
-  cameraCaptureFailures = 0;
+  camera_clearFailures();
   int resizeResult = ei::image::processing::crop_and_interpolate_rgb888(
     fomoSnapshotBuffer,
     frameWidth,
@@ -156,7 +199,7 @@ bool fomo_captureAndResize(unsigned long now) {
     EI_CLASSIFIER_INPUT_HEIGHT
   );
   if (resizeResult != 0) {
-    fomoInferenceFailures++;
+    fomo_noteFailure();
     Serial.printf("[FOMO] Image resize failed (%d)\n", resizeResult);
     return false;
   }
@@ -165,7 +208,7 @@ bool fomo_captureAndResize(unsigned long now) {
 }
 
 void fomo_publishResult(const ei_impulse_result_t &result, uint16_t detectionCount) {
-  if (!mqttClient.connected() || detectionCount == 0) return;
+  if (!fomoPublishQueue || detectionCount == 0) return;
 
   const ei_impulse_result_bounding_box_t *best = nullptr;
   uint16_t peopleCount = 0;
@@ -211,17 +254,24 @@ void fomo_publishResult(const ei_impulse_result_t &result, uint16_t detectionCou
   doc["package_count"] = packageCount;
   doc["input_width"] = EI_CLASSIFIER_INPUT_WIDTH;
   doc["input_height"] = EI_CLASSIFIER_INPUT_HEIGHT;
-  doc["inference_ms"] = lastFomoInferenceMs;
-  doc["uptime_ms"] = lastFomoInferenceAt;
+  doc["inference_ms"] = static_cast<unsigned long>(lastFomoInferenceMs);
+  doc["uptime_ms"] = static_cast<unsigned long>(lastFomoInferenceAt);
   doc["published_detection_count"] = publishedCount;
 
-  if (!mqtt_publishJson("/model/inference", doc)) {
-    Serial.println("[FOMO] MQTT result publish failed");
+  FomoPublishMessage message = {};
+  message.length = serializeJson(doc, message.payload, sizeof(message.payload));
+  if (message.length == 0 || message.length >= sizeof(message.payload)) {
+    Serial.println("[FOMO] Result JSON is too large");
+    return;
   }
+
+  // A length-one overwrite queue keeps only the newest detection if Core 0 is
+  // temporarily occupied or MQTT is offline. PubSubClient remains Core-0-only.
+  xQueueOverwrite(fomoPublishQueue, &message);
 }
 
 void fomo_runInference(unsigned long startedAt) {
-  if (!fomo_captureAndResize(startedAt)) return;
+  if (!fomo_captureAndResize()) return;
 
   ei::signal_t signal;
   signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
@@ -233,12 +283,12 @@ void fomo_runInference(unsigned long startedAt) {
   lastFomoInferenceMs = lastFomoInferenceAt - startedAt;
 
   if (error != EI_IMPULSE_OK) {
-    fomoInferenceFailures++;
+    fomo_noteFailure();
     Serial.printf("[FOMO] Classifier failed (%d)\n", error);
     return;
   }
 
-  fomoInferenceCount++;
+  uint32_t inferenceNumber = ++fomoInferenceCount;
   uint16_t detectionCount = 0;
   uint16_t peopleCount = 0;
   uint16_t bagCount = 0;
@@ -246,8 +296,8 @@ void fomo_runInference(unsigned long startedAt) {
 
   Serial.printf(
     "[FOMO] #%lu in %lu ms (DSP %d ms, NN %d ms)\n",
-    static_cast<unsigned long>(fomoInferenceCount),
-    lastFomoInferenceMs,
+    static_cast<unsigned long>(inferenceNumber),
+    static_cast<unsigned long>(lastFomoInferenceMs),
     result.timing.dsp,
     result.timing.classification
   );
@@ -284,21 +334,51 @@ void fomo_runInference(unsigned long startedAt) {
   fomo_publishResult(result, detectionCount);
 }
 
-void fomo_loop() {
-  unsigned long now = millis();
+void fomo_task(void *parameter) {
+  (void)parameter;
+  Serial.printf("[FOMO] Task running on Core %d\n", xPortGetCoreID());
 
-  if (!deviceAiDetectionEnabled) return;
+  for (;;) {
+    unsigned long now = millis();
 
-  if (!fomoReady) {
-    if (now - lastFomoInitAttempt >= FOMO_INIT_RETRY_MS) fomo_allocateBuffer();
-    return;
+    if (!deviceAiDetectionEnabled) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (!fomoReady) {
+      if (now - lastFomoInitAttempt >= FOMO_INIT_RETRY_MS) fomo_allocateBuffer();
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (!cameraReady || now - lastFomoStartedAt < FOMO_INTERVAL_MS) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    // Schedule by start time. The task runs alone on Core 1, and the camera is
+    // released before run_classifier() so Core 0 can resume HTTP streaming.
+    lastFomoStartedAt = now;
+    fomo_runInference(now);
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
-  if (!cameraReady || now - lastFomoStartedAt < FOMO_INTERVAL_MS) return;
+}
 
-  // Schedule by start time. If inference itself takes over one second, the next
-  // run starts after the other device loops have each had a chance to execute.
-  lastFomoStartedAt = now;
-  fomo_runInference(now);
+void fomo_loop() {
+  if (!fomoPublishQueue || !mqttClient.connected()) return;
+
+  FomoPublishMessage message = {};
+  if (xQueueReceive(fomoPublishQueue, &message, 0) != pdTRUE) return;
+
+  if (!mqttClient.publish(
+        mqtt_topic("/model/inference").c_str(),
+        reinterpret_cast<const uint8_t *>(message.payload),
+        message.length,
+        false
+      )) {
+    Serial.println("[FOMO] MQTT result publish failed");
+  }
 }
 
 #endif

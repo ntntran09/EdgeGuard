@@ -5,14 +5,15 @@
 #include "config.h"
 #include "mqtt.h"
 
-extern bool deviceCameraPublishEnabled;
+extern volatile bool deviceCameraPublishEnabled;
 
-bool cameraReady = false;
+volatile bool cameraReady = false;
 unsigned long lastCameraInitAttempt = 0;
 unsigned long lastCameraSuccessAt = 0;
 size_t lastCameraFrameBytes = 0;
 uint32_t cameraPublishFailures = 0;
 uint8_t cameraCaptureFailures = 0;
+portMUX_TYPE cameraFailureMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t cameraMutex = nullptr;
 httpd_handle_t cameraHttpServer = nullptr;
 String cameraBaseUrl;
@@ -44,8 +45,29 @@ void camera_give() {
   if (cameraMutex) xSemaphoreGive(cameraMutex);
 }
 
-void camera_noteCapture(camera_fb_t *frame) {
+uint8_t camera_noteFailure() {
+  portENTER_CRITICAL(&cameraFailureMux);
+  if (cameraCaptureFailures < UINT8_MAX) cameraCaptureFailures++;
+  uint8_t failures = cameraCaptureFailures;
+  portEXIT_CRITICAL(&cameraFailureMux);
+  return failures;
+}
+
+void camera_clearFailures() {
+  portENTER_CRITICAL(&cameraFailureMux);
   cameraCaptureFailures = 0;
+  portEXIT_CRITICAL(&cameraFailureMux);
+}
+
+uint8_t camera_getFailureCount() {
+  portENTER_CRITICAL(&cameraFailureMux);
+  uint8_t failures = cameraCaptureFailures;
+  portEXIT_CRITICAL(&cameraFailureMux);
+  return failures;
+}
+
+void camera_noteCapture(camera_fb_t *frame) {
+  camera_clearFailures();
   lastCameraSuccessAt = millis();
   lastCameraFrameBytes = frame ? frame->len : 0;
 }
@@ -87,7 +109,7 @@ esp_err_t camera_captureHandler(httpd_req_t *request) {
   camera_fb_t *frame = esp_camera_fb_get();
   if (!frame) {
     camera_give();
-    cameraCaptureFailures++;
+    camera_noteFailure();
     httpd_resp_set_status(request, "500 Internal Server Error");
     return httpd_resp_send(request, "Capture failed", HTTPD_RESP_USE_STRLEN);
   }
@@ -125,7 +147,7 @@ esp_err_t camera_streamHandler(httpd_req_t *request) {
     camera_fb_t *frame = esp_camera_fb_get();
     if (!frame) {
       camera_give();
-      cameraCaptureFailures++;
+      camera_noteFailure();
       result = ESP_FAIL;
       break;
     }
@@ -173,6 +195,7 @@ void camera_startHttpServer() {
   if (cameraHttpServer || !cameraReady || WiFi.status() != WL_CONNECTED) return;
 
   httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
+  serverConfig.core_id = EDGEGUARD_CONTROL_CORE;
   serverConfig.server_port = CAMERA_HTTP_PORT;
   serverConfig.max_open_sockets = 4;
   serverConfig.lru_purge_enable = true;
@@ -207,8 +230,8 @@ void camera_startHttpServer() {
   httpd_register_uri_handler(cameraHttpServer, &streamUri);
 
   camera_refreshUrls();
-  Serial.printf("[Camera HTTP] Capture: %s\n", cameraCaptureUrl.c_str());
-  Serial.printf("[Camera HTTP] Stream: %s\n", cameraStreamUrl.c_str());
+  Serial.printf("[Camera HTTP] Core %d, capture: %s\n", EDGEGUARD_CONTROL_CORE, cameraCaptureUrl.c_str());
+  Serial.printf("[Camera HTTP] Core %d, stream: %s\n", EDGEGUARD_CONTROL_CORE, cameraStreamUrl.c_str());
 }
 
 void camera_stopHttpServer() {
@@ -264,7 +287,7 @@ void camera_setup() {
   c.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
   esp_err_t result = esp_camera_init(&c);
   cameraReady = result == ESP_OK;
-  if (cameraReady) cameraCaptureFailures = 0;
+  if (cameraReady) camera_clearFailures();
   camera_give();
   Serial.printf("[Camera] %s (0x%x)\n", cameraReady ? "Ready" : "Initialization failed", result);
 }
@@ -275,7 +298,7 @@ void camera_restartAfterCaptureFailures(unsigned long now) {
   Serial.println("[Camera] Too many capture failures; scheduling reinitialization");
   esp_camera_deinit();
   cameraReady = false;
-  cameraCaptureFailures = 0;
+  camera_clearFailures();
   lastCameraInitAttempt = now;
   camera_give();
 }
@@ -290,7 +313,7 @@ void camera_loop() {
     return;
   }
 
-  if (cameraCaptureFailures >= CAMERA_CAPTURE_FAILURES_BEFORE_RESTART) {
+  if (camera_getFailureCount() >= CAMERA_CAPTURE_FAILURES_BEFORE_RESTART) {
     camera_restartAfterCaptureFailures(now);
     return;
   }

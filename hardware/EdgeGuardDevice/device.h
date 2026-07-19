@@ -6,8 +6,8 @@
 #include "actuators.h"
 
 bool deviceAutoLockEnabled = true;
-bool deviceCameraPublishEnabled = true;
-bool deviceAiDetectionEnabled = true;
+volatile bool deviceCameraPublishEnabled = true;
+volatile bool deviceAiDetectionEnabled = true;
 unsigned long deviceAutoLockMs = DEFAULT_AUTO_LOCK_MS;
 int deviceLockAngle = SERVO_LOCK_ANGLE;
 int deviceUnlockAngle = SERVO_UNLOCK_ANGLE;
