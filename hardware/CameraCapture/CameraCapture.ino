@@ -48,12 +48,12 @@ const unsigned long BUTTON_BEEP_MS = 75;
 const unsigned long BUTTON_BEEP_GAP_MS = 90;
 const uint16_t BUTTON_BEEP_HZ = 2400;
 const unsigned long SNAPSHOT_SETTLE_MS = 650;
-const unsigned long FLASH_SNAPSHOT_SETTLE_MS = 750;
+const unsigned long FLASH_SNAPSHOT_SETTLE_MS = 1200;
 const uint8_t SNAPSHOT_WARMUP_FRAMES = 5;
+const uint8_t FLASH_SNAPSHOT_WARMUP_FRAMES = 8;
 const int8_t SNAPSHOT_AE_LEVEL = 2;
 const int8_t SNAPSHOT_BRIGHTNESS = 1;
 const uint8_t AUTO_WB_MODE = 0;
-const uint8_t FLASH_WB_MODE = 1; // Daylight preset for the cool-white onboard LED.
 const unsigned long WIFI_RETRY_MS = 10000;
 const unsigned long SNAPSHOT_RETRY_MS = 10000;
 const unsigned long SUPABASE_HTTP_TIMEOUT_MS = 20000;
@@ -476,11 +476,33 @@ bool supabaseConfigured() {
 }
 
 String buildSnapshotObjectPath() {
-  char date[11] = "undated";
-  struct tm timeInfo;
-  if (getLocalTime(&timeInfo, 0)) strftime(date, sizeof(date), "%Y-%m-%d", &timeInfo);
-  return String("camera-captures/") + CAMERA_DEVICE_ID + "/" + date + "/"
-    + pendingSnapshotCaptureId + ".jpg";
+  char sequence[11];
+  snprintf(
+    sequence,
+    sizeof(sequence),
+    "%010lu",
+    static_cast<unsigned long>(pendingSnapshotSequence)
+  );
+
+  String directoryDate = "undated";
+  String filename = "capture_unsynced_uptime_"
+    + String(pendingSnapshotCapturedUptimeMs) + "_" + sequence + ".jpg";
+
+  // captured_at is UTC ISO 8601 (YYYY-MM-DDTHH:MM:SSZ). Keep the same
+  // most-significant-to-least-significant order in the filename so sorting by
+  // name also sorts captures chronologically.
+  if (pendingSnapshotCapturedAt.length() >= 20) {
+    directoryDate = pendingSnapshotCapturedAt.substring(0, 10);
+    String compactDate = directoryDate;
+    compactDate.replace("-", "");
+    String compactTime = pendingSnapshotCapturedAt.substring(11, 19);
+    compactTime.replace(":", "");
+    filename = "capture_" + compactDate + "_" + compactTime + "Z_"
+      + sequence + ".jpg";
+  }
+
+  return String("camera-captures/") + CAMERA_DEVICE_ID + "/" + directoryDate
+    + "/" + filename;
 }
 
 String snapshotPublicUrl() {
@@ -819,11 +841,16 @@ bool setupCamera() {
 
   esp_err_t result = esp_camera_init(&cameraConfig);
   cameraReady = result == ESP_OK;
-  if (cameraReady && hasPsram) {
+  if (cameraReady) {
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) {
-      sensor->set_framesize(sensor, LIVE_FRAME_SIZE);
-      sensor->set_quality(sensor, LIVE_JPEG_QUALITY);
+      if (hasPsram) {
+        sensor->set_framesize(sensor, LIVE_FRAME_SIZE);
+        sensor->set_quality(sensor, LIVE_JPEG_QUALITY);
+      }
+      sensor->set_whitebal(sensor, 1);
+      sensor->set_awb_gain(sensor, 1);
+      sensor->set_wb_mode(sensor, AUTO_WB_MODE);
     }
   }
 
@@ -1062,7 +1089,9 @@ bool capturePendingSnapshot() {
     sensor->set_brightness(sensor, SNAPSHOT_BRIGHTNESS);
     sensor->set_whitebal(sensor, 1);
     sensor->set_awb_gain(sensor, 1);
-    sensor->set_wb_mode(sensor, useFlash ? FLASH_WB_MODE : AUTO_WB_MODE);
+    // Keep AWB enabled for the onboard LED too. The fixed sunny/daylight
+    // preset can give OV2640 captures a strong green cast under this LED.
+    sensor->set_wb_mode(sensor, AUTO_WB_MODE);
     changedSensorSettings = true;
   }
 
@@ -1072,7 +1101,10 @@ bool capturePendingSnapshot() {
     // A snapshot profile can differ from the live stream. Let AE/AGC settle, then
     // drain every queued pre-change frame before taking the saved image.
     delay(useFlash ? FLASH_SNAPSHOT_SETTLE_MS : SNAPSHOT_SETTLE_MS);
-    for (uint8_t index = 0; index < SNAPSHOT_WARMUP_FRAMES; index++) {
+    uint8_t warmupFrames = useFlash
+      ? FLASH_SNAPSHOT_WARMUP_FRAMES
+      : SNAPSHOT_WARMUP_FRAMES;
+    for (uint8_t index = 0; index < warmupFrames; index++) {
       camera_fb_t *transitionFrame = esp_camera_fb_get();
       if (transitionFrame) esp_camera_fb_return(transitionFrame);
       delay(20);
