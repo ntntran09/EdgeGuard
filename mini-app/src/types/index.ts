@@ -116,6 +116,7 @@ export interface KnownFace {
   id: string;
   displayName: string;
   imageUrl?: string;
+  rekognitionFaceId?: string;
   isActive: boolean;
   addedAt: string;
 }

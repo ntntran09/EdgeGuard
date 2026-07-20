@@ -17,7 +17,11 @@ const EXTENSIONS: Record<string, string> = {
 
 function safeStorageSegment(value: string, fallback: string) {
   return value
-    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '') || fallback;
 }
 
@@ -33,12 +37,14 @@ export async function uploadDataUrlToStorage({
   dataUrl,
   folder,
   deviceId,
+  namePrefix,
   metadata = {},
   maxBytes = DEFAULT_MAX_IMAGE_BYTES,
 }: {
   dataUrl: string;
   folder: string;
   deviceId: string;
+  namePrefix?: string;
   metadata?: Record<string, string>;
   maxBytes?: number;
 }): Promise<StoredImageReference> {
@@ -56,7 +62,10 @@ export async function uploadDataUrlToStorage({
   const safeFolder = safeStorageSegment(folder, 'uploads');
   const safeDeviceId = safeStorageSegment(deviceId, 'device');
   const extension = EXTENSIONS[contentType] || 'jpg';
-  const objectPath = `${safeFolder}/${safeDeviceId}/${crypto.randomUUID()}.${extension}`;
+  const fileId = namePrefix
+    ? `${safeStorageSegment(namePrefix, 'face')}-${crypto.randomUUID().slice(0, 8)}`
+    : crypto.randomUUID();
+  const objectPath = `${safeFolder}/${safeDeviceId}/${fileId}.${extension}`;
 
   const { error } = await supabase.storage
     .from(IMAGE_BUCKET)
