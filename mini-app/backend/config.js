@@ -58,6 +58,12 @@ export const config = {
     buzzerMs: numberFromEnv('RFID_BUZZER_MS', 300),
     buzzerHz: numberFromEnv('RFID_BUZZER_HZ', 2200),
   },
+  aws: {
+    region: process.env.AWS_REGION ?? 'ap-southeast-1',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    rekognitionCollectionId: process.env.AWS_REKOGNITION_COLLECTION_ID ?? 'frontdoor',
+  },
 };
 
 export function mqttUrl() {

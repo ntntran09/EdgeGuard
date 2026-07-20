@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 
 const rfidTypes = ['rfid_scan', 'rfid_invalid', 'rfid_added', 'rfid_deleted', 'access_granted', 'access_denied'];
 const filterMap: Record<string, string[]> = {
-  person: ['person_detected', 'stranger_detected'],
+  person: ['person_detected', 'face_recognized', 'stranger_detected'],
   stranger: ['stranger_detected'],
   object: ['object_detected', 'object_left', 'unknown_object'],
   unknown_object: ['unknown_object', 'object_left'],
@@ -47,7 +47,7 @@ function normalizeImagePath(path?: string | null) {
   return `/api/images/${path}`;
 }
 
-function copyForEvent(type: string, description?: string | null) {
+function copyForEvent(type: string, description?: string | null, metadata?: Record<string, unknown>) {
   switch (type) {
     case 'access_granted':
       return { type: 'access_granted' as EventType, title: 'Mở khóa bằng RFID', severity: 'info' as EventSeverity };
@@ -64,8 +64,14 @@ function copyForEvent(type: string, description?: string | null) {
       return { type: 'rfid_deleted' as EventType, title: 'Xóa/Từ chối thẻ RFID/NFC', severity: 'warning' as EventSeverity };
     case 'rfid_scan':
       return { type: 'rfid_scan' as EventType, title: 'Quét thẻ RFID/NFC', severity: 'info' as EventSeverity };
+    case 'person':
     case 'person_detected':
       return { type: 'person_detected' as EventType, title: 'Phát hiện người', severity: 'info' as EventSeverity };
+    case 'face_recognized': {
+      // Use the full message from DB as title (e.g. "Nhận diện người: Trúc Mai và 1 người lạ")
+      const title = typeof description === 'string' && description.trim() ? description : 'Nhận diện người quen';
+      return { type: 'face_recognized' as EventType, title, severity: 'info' as EventSeverity };
+    }
     case 'object_detected':
       return { type: 'object_detected' as EventType, title: 'Phát hiện vật thể', severity: 'info' as EventSeverity };
     case 'object_left':
@@ -73,8 +79,11 @@ function copyForEvent(type: string, description?: string | null) {
       return { type: 'object_left' as EventType, title: 'Vật thể bị bỏ lại', severity: 'warning' as EventSeverity };
     case 'camera_blocked':
       return { type: 'camera_blocked' as EventType, title: 'Camera bị che', severity: 'danger' as EventSeverity };
-    case 'stranger_detected':
-      return { type: 'stranger_detected' as EventType, title: 'Phát hiện người lạ', severity: 'danger' as EventSeverity };
+    case 'stranger_detected': {
+      // Use the full message from DB as title (e.g. "Nhận diện người: 2 Người lạ")
+      const title = typeof description === 'string' && description.trim() ? description : 'Nhận diện người lạ';
+      return { type: 'stranger_detected' as EventType, title, severity: 'danger' as EventSeverity };
+    }
     default:
       return {
         type: 'system_event' as EventType,
@@ -86,22 +95,33 @@ function copyForEvent(type: string, description?: string | null) {
 
 function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityEvent {
   const description = restoreVietnameseDiacritics(row.description);
-  const copy = copyForEvent(row.event_type, description);
   const metadata = row.metadata || {};
+  const copy = copyForEvent(row.event_type, description, metadata);
   const cardId = typeof metadata.card_id === 'string'
     ? metadata.card_id
     : typeof metadata.tag_id === 'string'
       ? metadata.tag_id
       : undefined;
 
+  const aiConfidence = row.ai_confidence ?? undefined;
+
+  // Subtitle: for person_detected only, show AI inference format
+  let eventDescription = description || copy.title;
+  if ((row.event_type === 'person_detected' || row.event_type === 'person') && aiConfidence != null) {
+    eventDescription = `Suy luận AI: person_detected (${Math.round(aiConfidence * 100)}%)`;
+  } else if (row.event_type === 'face_recognized' || row.event_type === 'stranger_detected') {
+    // For face events: subtitle = title (same message, no need to duplicate)
+    eventDescription = '';
+  }
+
   return {
     id: row.id,
     type: copy.type,
     title: copy.title,
-    description: description || copy.title,
+    description: eventDescription,
     timestamp: row.occurred_at,
     thumbnailUrl: normalizeImagePath(row.thumbnail_url),
-    aiConfidence: row.ai_confidence ?? undefined,
+    aiConfidence,
     aiDetections: normalizeAiDetections(metadata),
     severity: row.severity || copy.severity,
     cardId,

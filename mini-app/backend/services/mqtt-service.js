@@ -6,6 +6,12 @@ import {
   createTransientImageFromJson,
 } from './image-store.js';
 import { supabaseService } from './supabase-service.js';
+import { rekognitionService } from './rekognition-service.js';
+
+let lastRekognitionSearchTime = 0;
+let lastAiLogTime = 0;
+const REKOGNITION_COOLDOWN_MS = 10000;
+const AI_LOG_COOLDOWN_MS = 8000;
 
 const TELEMETRY_KEYS = {
   status: '/status',
@@ -330,7 +336,10 @@ export function createMqttService() {
   async function captureEventImage() {
     const captureUrl = cameraCaptureEndpoint(snapshot.summary);
     const fallbackImage = snapshot.latestImage?.base64;
-    if (!captureUrl) {
+
+    // Nếu đã có frame MQTT mới (< 5s), dùng luôn, không cần fetch ESP32
+    const frameAge = latestFrame ? Date.now() - new Date(latestFrame.receivedAt).getTime() : Infinity;
+    if (!captureUrl || frameAge < 5000) {
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
         : { imagePath: null, source: 'unavailable' };
@@ -395,21 +404,119 @@ export function createMqttService() {
 
   async function recordAiInference(parsed, detections) {
     const eventImage = await captureEventImage();
-    await supabaseService.insertAiLog({
-      deviceId: config.mqtt.deviceId,
-      label: parsed.label,
-      confidence: Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score),
-      anomalyScore: parsed.anomaly_score,
-      objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
-      imagePath: eventImage.imagePath,
-      telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
-      metadata: {
-        ...parsed,
-        detections,
-        event_image_source: eventImage.source,
-        ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
-      },
-    });
+
+    const isPersonDetected =
+      String(parsed.label || '').toLowerCase().includes('person') ||
+      String(parsed.label || '').toLowerCase().includes('human') ||
+      String(parsed.label || '').toLowerCase().includes('người') ||
+      Number(parsed.people_count) > 0 ||
+      detections.some((d) => {
+        const lbl = String(d.label || '').toLowerCase();
+        return lbl.includes('person') || lbl.includes('human') || lbl.includes('người');
+      });
+
+    let rekognitionResults = [];
+
+    if (isPersonDetected && eventImage.imagePath && (Date.now() - lastRekognitionSearchTime > REKOGNITION_COOLDOWN_MS)) {
+      lastRekognitionSearchTime = Date.now();
+      try {
+        rekognitionResults = await rekognitionService.analyzeFrame(eventImage.imagePath, 75);
+        
+        const faceDetections = [];
+        const knownNames = [];
+        let strangerCount = 0;
+
+        for (const res of rekognitionResults) {
+          let recognizedName = 'Người lạ';
+          let isKnown = false;
+          let similarity = res.similarity || 0;
+
+          if (res.matched && res.faceId) {
+            const knownFace = await supabaseService.lookupKnownFaceByRekognitionId(res.faceId);
+            if (knownFace) {
+              recognizedName = knownFace.display_name;
+              isKnown = true;
+              if (!knownNames.includes(recognizedName)) {
+                knownNames.push(recognizedName);
+              }
+            } else {
+              strangerCount++;
+            }
+          } else {
+            strangerCount++;
+          }
+
+          if (res.boundingBox && parsed.input_width && parsed.input_height) {
+            const w = parsed.input_width;
+            const h = parsed.input_height;
+            const awsBbox = res.boundingBox;
+            faceDetections.push({
+              label: recognizedName,
+              type: isKnown ? 'face_known' : 'face_stranger',
+              confidence: similarity / 100,
+              x: awsBbox.Left * w,
+              y: awsBbox.Top * h,
+              width: awsBbox.Width * w,
+              height: awsBbox.Height * h
+            });
+          }
+        }
+
+        if (rekognitionResults.length > 0) {
+          let alertType = 'stranger_detected';
+          let severity = 'warning';
+          let message = `Nhận diện người: ${strangerCount} Người lạ`;
+
+          if (knownNames.length > 0) {
+            alertType = 'face_recognized';
+            severity = 'info'; // Có người quen là Bình thường
+            message = `Nhận diện người: ${knownNames.join(', ')}`;
+            if (strangerCount > 0) {
+              message += ` và ${strangerCount} người lạ`;
+            }
+          }
+
+          await insertAlertWithEventImage({
+            deviceId: config.mqtt.deviceId,
+            alertType: alertType,
+            message: message,
+            thumbnailUrl: eventImage.imagePath,
+            severity: severity,
+            metadata: {
+              rekognition: rekognitionResults,
+              recognized_name: knownNames.join(', ') || 'Người lạ',
+              detections: faceDetections,
+              input_width: parsed.input_width || 320,
+              input_height: parsed.input_height || 240,
+            },
+          }, eventImage);
+        }
+
+      } catch (err) {
+        console.error('[MQTT] Rekognition analyzeFrame inside recordAiInference failed:', err);
+      }
+    }
+
+    const now = Date.now();
+    if (now - lastAiLogTime > AI_LOG_COOLDOWN_MS) {
+      lastAiLogTime = now;
+      await supabaseService.insertAiLog({
+        deviceId: config.mqtt.deviceId,
+        label: parsed.label,
+        confidence: Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score),
+        anomalyScore: parsed.anomaly_score,
+        objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
+        imagePath: eventImage.imagePath,
+        telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
+        metadata: {
+          ...parsed,
+          detections,
+          rekognition: rekognitionResults,
+          event_image_source: eventImage.source,
+          ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
+        },
+      });
+    }
   }
 
   function metadataWithEventImage(metadata = {}, eventImage) {

@@ -25,9 +25,10 @@ export function normalizeAiDetections(payload: unknown): AiDetection[] {
     const y = finiteNumber(value.y);
     const width = finiteNumber(value.width);
     const height = finiteNumber(value.height);
+    const isFaceBox = typeof value.type === 'string' && value.type.startsWith('face_');
     if (
       confidence === undefined
-      || confidence <= AI_MIN_CONFIDENCE
+      || (!isFaceBox && confidence <= AI_MIN_CONFIDENCE)
       || x === undefined
       || y === undefined
       || width === undefined

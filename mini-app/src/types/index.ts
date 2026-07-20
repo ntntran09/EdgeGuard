@@ -54,6 +54,7 @@ export type EventType =
   | 'access_granted'
   | 'access_denied'
   | 'person_detected'
+  | 'face_recognized'
   | 'stranger_detected'
   | 'object_detected'
   | 'object_left'

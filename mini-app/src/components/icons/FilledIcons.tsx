@@ -169,6 +169,7 @@ export function getEventFilledIcon(type: string, props?: Omit<IconProps, 'ref'>)
     case 'access_granted':    return <CheckCircleFilledIcon {...props} />;
     case 'access_denied':     return <BlockFilledIcon {...props} />;
     case 'person_detected':   return <PersonFilledIcon {...props} />;
+    case 'face_recognized':   return <PersonFilledIcon {...props} />;
     case 'stranger_detected': return <PersonFilledIcon {...props} />;
     case 'object_detected':   return <InventoryFilledIcon {...props} />;
     case 'object_left':       return <InventoryFilledIcon {...props} />;

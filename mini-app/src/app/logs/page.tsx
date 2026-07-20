@@ -39,7 +39,7 @@ function canRenderImage(url?: string) {
   return !url.includes('t.me/');
 }
 
-function detectionLabel(detection: AiDetection) {
+function formatAiLabel(detection: AiDetection) {
   if (detection.type === 'person') return 'Người';
   if (detection.type === 'bag') return 'Túi';
   if (detection.type === 'package') return 'Bưu kiện';
@@ -51,28 +51,58 @@ function centroidPercent(value: number, dimension: number) {
   return Math.min(100, Math.max(0, (value / dimension) * 100));
 }
 
-function DetectionCentroids({ detections }: { detections?: AiDetection[] }) {
+function AiOverlays({ detections }: { detections?: AiDetection[] }) {
   if (!detections?.length) return null;
 
+  const faces = detections.filter(d => d.type?.startsWith('face_'));
+  const objects = detections.filter(d => !d.type?.startsWith('face_'));
+
   return (
-    <div className="ai-centroid-layer log-centroid-layer" aria-label="Tâm các vật thể AI đã phát hiện">
-      {detections.map((detection, index) => (
-        <span
-          className="ai-centroid-marker"
-          key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
-          style={{
-            left: `${centroidPercent(detection.centroidX, detection.inputWidth)}%`,
-            top: `${centroidPercent(detection.centroidY, detection.inputHeight)}%`,
-          }}
-        >
-          <span className="ai-centroid-label">
-            {detectionLabel(detection)} {Math.round(detection.confidence * 100)}%
-            {' · '}
-            ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
-          </span>
-        </span>
-      ))}
-    </div>
+    <>
+      {objects.length > 0 && (
+        <div className="ai-centroid-layer log-centroid-layer" aria-label="Tâm các vật thể AI đã phát hiện">
+          {objects.map((detection, index) => (
+            <span
+              className="ai-centroid-marker"
+              key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
+              style={{
+                left: `${centroidPercent(detection.centroidX || 0, detection.inputWidth || 320)}%`,
+                top: `${centroidPercent(detection.centroidY || 0, detection.inputHeight || 240)}%`,
+              }}
+            >
+              <span className="ai-centroid-label">
+                {formatAiLabel(detection)} {Math.round(detection.confidence * 100)}%
+                {' · '}
+                ({Math.round(detection.centroidX || 0)}, {Math.round(detection.centroidY || 0)})
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+      {faces.length > 0 && (
+        <div className="ai-bbox-layer" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 5 }}>
+          {faces.map((detection, index) => {
+            const isKnown = detection.type === 'face_known';
+            return (
+              <span
+                className={`ai-bbox-marker ${isKnown ? 'is-face-known' : 'is-face-stranger'}`}
+                key={`${detection.label}-${detection.x}-${detection.y}-${index}`}
+                style={{
+                  left: `${centroidPercent(detection.x, detection.inputWidth || 320)}%`,
+                  top: `${centroidPercent(detection.y, detection.inputHeight || 240)}%`,
+                  width: `${centroidPercent(detection.width, detection.inputWidth || 320)}%`,
+                  height: `${centroidPercent(detection.height, detection.inputHeight || 240)}%`,
+                }}
+              >
+                <span className="ai-bbox-label">
+                  {formatAiLabel(detection)}{isKnown ? ` ${Math.round(detection.confidence * 100)}%` : ''}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -183,7 +213,7 @@ export default function LogsPage() {
                 </div>
               )}
               {canRenderImage(event.thumbnailUrl) && (
-                <DetectionCentroids detections={event.aiDetections} />
+                <AiOverlays detections={event.aiDetections} />
               )}
               <div className="event-card-image-overlay">
                 <span className={`badge ${getSeverityBadgeClass(event.severity)}`}>
@@ -288,7 +318,7 @@ export default function LogsPage() {
                   sizes="(min-width: 768px) 420px, 100vw"
                   className="event-card-img"
                 />
-                <DetectionCentroids detections={selectedEvent.aiDetections} />
+                <AiOverlays detections={selectedEvent.aiDetections} />
                 <button className="icon-close-btn" onClick={() => setSelectedEvent(null)} aria-label="Đóng">
                   <BlockFilledIcon size={18} />
                 </button>
@@ -323,7 +353,7 @@ export default function LogsPage() {
                 )}
                 {selectedEvent.aiDetections?.map((detection, index) => (
                   <div key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}>
-                    <span>Tâm {detectionLabel(detection)}</span>
+                    <span>Tâm {formatAiLabel(detection)}</span>
                     <strong>
                       ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
                       {' · '}

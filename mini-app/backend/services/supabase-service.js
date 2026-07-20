@@ -463,6 +463,21 @@ export const supabaseService = {
     };
   },
 
+  async lookupKnownFaceByRekognitionId(faceId) {
+    if (!supabase || !faceId) return null;
+    const { data, error } = await supabase
+      .from('known_faces')
+      .select('id, display_name, credential_id')
+      .eq('rekognition_face_id', faceId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error) {
+      console.error('[Supabase] Error querying known_faces by rekognition_face_id:', error);
+      return null;
+    }
+    return data;
+  },
+
   async validateRfid(tagId) {
     if (!supabase) return { ok: false, reason: 'supabase_disabled' };
     const normalizedTagId = normalizeTagId(tagId);

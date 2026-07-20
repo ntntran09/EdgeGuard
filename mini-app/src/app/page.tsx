@@ -31,7 +31,7 @@ function isVideoSource(url?: string) {
   return /\.(mp4|webm|ogg)(\?|$)/i.test(url);
 }
 
-function detectionLabel(detection: AiDetection) {
+function formatAiLabel(detection: AiDetection) {
   if (detection.type === 'person') return 'Người';
   if (detection.type === 'bag') return 'Túi';
   if (detection.type === 'package') return 'Bưu kiện';
@@ -310,24 +310,51 @@ export default function DashboardPage() {
               </div>
             )}
             {cameraSource && aiDetections.length > 0 && (
-              <div className="ai-centroid-layer" aria-label="Tâm các phát hiện AI trên khung hình">
-                {aiDetections.map((detection, index) => (
-                  <span
-                    className="ai-centroid-marker"
-                    key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
-                    style={{
-                      left: `${centroidPercent(detection.centroidX, detection.inputWidth)}%`,
-                      top: `${centroidPercent(detection.centroidY, detection.inputHeight)}%`,
-                    }}
-                  >
-                    <span className="ai-centroid-label">
-                      {detectionLabel(detection)} {Math.round(detection.confidence * 100)}%
-                      {' · '}
-                      ({Math.round(detection.centroidX)}, {Math.round(detection.centroidY)})
-                    </span>
-                  </span>
-                ))}
-              </div>
+              <>
+                {aiDetections.filter(d => !d.type?.startsWith('face_')).length > 0 && (
+                  <div className="ai-centroid-layer" aria-label="Tâm các phát hiện AI trên khung hình">
+                    {aiDetections.filter(d => !d.type?.startsWith('face_')).map((detection, index) => (
+                      <span
+                        className="ai-centroid-marker"
+                        key={`${detection.label}-${detection.centroidX}-${detection.centroidY}-${index}`}
+                        style={{
+                          left: `${centroidPercent(detection.centroidX || 0, detection.inputWidth || 320)}%`,
+                          top: `${centroidPercent(detection.centroidY || 0, detection.inputHeight || 240)}%`,
+                        }}
+                      >
+                        <span className="ai-centroid-label">
+                          {formatAiLabel(detection)} {Math.round(detection.confidence * 100)}%
+                          {' · '}
+                          ({Math.round(detection.centroidX || 0)}, {Math.round(detection.centroidY || 0)})
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {aiDetections.filter(d => d.type?.startsWith('face_')).length > 0 && (
+                  <div className="ai-bbox-layer" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 5 }}>
+                    {aiDetections.filter(d => d.type?.startsWith('face_')).map((detection, index) => {
+                      const isKnown = detection.type === 'face_known';
+                      return (
+                        <span
+                          className={`ai-bbox-marker ${isKnown ? 'is-face-known' : 'is-face-stranger'}`}
+                          key={`${detection.label}-${detection.x}-${detection.y}-${index}`}
+                          style={{
+                            left: `${centroidPercent(detection.x, detection.inputWidth || 320)}%`,
+                            top: `${centroidPercent(detection.y, detection.inputHeight || 240)}%`,
+                            width: `${centroidPercent(detection.width, detection.inputWidth || 320)}%`,
+                            height: `${centroidPercent(detection.height, detection.inputHeight || 240)}%`,
+                          }}
+                        >
+                          <span className="ai-bbox-label">
+                            {formatAiLabel(detection)}{isKnown ? ` ${Math.round(detection.confidence * 100)}%` : ''}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </section>
 
