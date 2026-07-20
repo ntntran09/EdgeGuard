@@ -1,6 +1,9 @@
 #ifndef EDGEGUARD_CAMERA_H
 #define EDGEGUARD_CAMERA_H
 
+#include <opencv2/opencv.hpp>
+#include <string>
+#include <algorithm>
 #include "libs.h"
 #include "config.h"
 #include "mqtt.h"
@@ -336,6 +339,106 @@ void camera_loop() {
     lastCameraEndpointAttempt = now;
     camera_publishEndpoints();
   }
+}
+
+struct CameraMetrics {
+    double meanBrightness = 0.0;
+    double stdDevContrast = 0.0;
+    double darkPixelRatio = 0.0;
+    double brightPixelRatio = 0.0;
+    double edgeDensity = 0.0;
+};
+
+inline CameraMetrics computeMetrics(const cv::Mat& grayFrame) {
+    CameraMetrics metrics;
+    int totalPixels = grayFrame.rows * grayFrame.cols;
+    if (totalPixels == 0) return metrics;
+
+    cv::Scalar meanVal, stdDevVal;
+    cv::meanStdDev(grayFrame, meanVal, stdDevVal);
+    metrics.meanBrightness = meanVal[0];
+    metrics.stdDevContrast = stdDevVal[0];
+
+    cv::Mat darkMask, brightMask;
+    cv::inRange(grayFrame, 0, 15, darkMask);
+    cv::inRange(grayFrame, 240, 255, brightMask);
+
+    metrics.darkPixelRatio = ((double)cv::countNonZero(darkMask) / totalPixels) * 100.0;
+    metrics.brightPixelRatio = ((double)cv::countNonZero(brightMask) / totalPixels) * 100.0;
+
+    cv::Mat laplacianMat, edgeMask;
+    cv::Laplacian(grayFrame, laplacianMat, CV_16S, 3);
+    cv::convertScaleAbs(laplacianMat, laplacianMat);
+    cv::threshold(laplacianMat, edgeMask, 20, 255, cv::THRESH_BINARY);
+    metrics.edgeDensity = ((double)cv::countNonZero(edgeMask) / totalPixels) * 100.0;
+
+    return metrics;
+}
+
+inline bool checkLightChange(const CameraMetrics& current, const CameraMetrics& base, double& brightnessDiff) {
+    brightnessDiff = std::abs(current.meanBrightness - base.meanBrightness);
+    double darkDiff = std::abs(current.darkPixelRatio - base.darkPixelRatio);
+    double brightDiff = std::abs(current.brightPixelRatio - base.brightPixelRatio);
+
+    return (brightnessDiff > THRESH_BRIGHTNESS_DIFF) || 
+           (darkDiff > THRESH_DARK_DIFF) || 
+           (brightDiff > THRESH_BRIGHT_DIFF);
+}
+
+inline bool checkObjectPresence(const cv::Mat& baseGray, const cv::Mat& currentGray, double& objectAreaRatio) {
+    cv::Mat bgDiff, fgMask;
+    cv::absdiff(baseGray, currentGray, bgDiff);
+    
+    cv::threshold(bgDiff, fgMask, BG_DIFF_THRESHOLD, 255, cv::THRESH_BINARY);
+    
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+    cv::morphologyEx(fgMask, fgMask, cv::MORPH_OPEN, kernel);
+
+    int totalPixels = fgMask.rows * fgMask.cols;
+    if (totalPixels == 0) {
+        objectAreaRatio = 0.0;
+        return false;
+    }
+
+    objectAreaRatio = ((double)cv::countNonZero(fgMask) / totalPixels) * 100.0;
+    return (objectAreaRatio > MIN_OBJECT_AREA_RATIO);
+}
+
+inline void updateTimer(bool condition, double& durationSec, double frameTimeSec) {
+    if (condition) {
+        durationSec += frameTimeSec;
+    } else {
+        durationSec = std::max(0.0, durationSec - frameTimeSec);
+    }
+}
+
+inline void drawOverlayAndAlerts(cv::Mat& frame, double brightnessDiff, double lightTimer, 
+                                 double objectAreaRatio, double objectTimer) {
+    // Overlay thông số
+    cv::rectangle(frame, cv::Point(10, 10), cv::Point(480, 85), cv::Scalar(0, 0, 0), cv::FILLED);
+    
+    std::string infoLight = "Light Diff: " + std::to_string(brightnessDiff).substr(0, 4) + 
+                            " (Timer: " + std::to_string(lightTimer).substr(0, 3) + "s)";
+    std::string infoObj = "Object Area: " + std::to_string(objectAreaRatio).substr(0, 4) + 
+                          "% (Timer: " + std::to_string(objectTimer).substr(0, 3) + "s)";
+
+    cv::putText(frame, infoLight, cv::Point(15, 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+    cv::putText(frame, infoObj, cv::Point(15, 65), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
+
+    int alertY = 95;
+
+    if (lightTimer >= ALERT_THRESHOLD_SEC) {
+        cv::rectangle(frame, cv::Point(10, alertY), cv::Point(550, alertY + 35), cv::Scalar(0, 0, 200), cv::FILLED);
+        std::string alertMsg = "CANH BAO: BIEN DOI DO SANG DOT NGOT (>3s)";
+        cv::putText(frame, alertMsg, cv::Point(15, alertY + 24), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2);
+        alertY += 45;
+    }
+
+    if (objectTimer >= ALERT_THRESHOLD_SEC) {
+        cv::rectangle(frame, cv::Point(10, alertY), cv::Point(550, alertY + 35), cv::Scalar(0, 100, 255), cv::FILLED);
+        std::string alertMsg = "CANH BAO: VAT THE MOI XUAT HIEN (>3s)";
+        cv::putText(frame, alertMsg, cv::Point(15, alertY + 24), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2);
+    }
 }
 
 #endif

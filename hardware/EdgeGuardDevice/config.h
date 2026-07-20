@@ -1,6 +1,7 @@
 #ifndef EDGEGUARD_CONFIG_H
 #define EDGEGUARD_CONFIG_H
 
+#include <string>
 // Network settings.
 const char *WIFI_SSID = "Ai đó";
 const char *WIFI_PASSWORD = "012345678";
@@ -76,5 +77,22 @@ const unsigned int RFID_READ_TONE_HZ = 2200;
 const unsigned long RFID_READ_TONE_MS = 100;
 
 extern bool publish_system_metrics;
+
+// Video path for testing on desktop
+const std::string VIDEO_PATH = "C:\\Users\\Admin\\Documents\\opencvtest\\camera video 2.mp4";
+
+// Baseline & Timer Configuration 
+const int WARMUP_FRAMES = 15;
+const double ALERT_THRESHOLD_SEC = 3.0;
+
+
+// Brightness/Darkness Test Threshold Configuration
+const double THRESH_BRIGHTNESS_DIFF = 35.0;
+const double THRESH_DARK_DIFF = 25.0;
+const double THRESH_BRIGHT_DIFF = 25.0;
+
+// Object Inspection Threshold Configuration
+const int BG_DIFF_THRESHOLD = 35;
+const double MIN_OBJECT_AREA_RATIO = 5.0;
 
 #endif
