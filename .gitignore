@@ -26,3 +26,4 @@ ai-models/data/processed/*
 !ai-models/data/processed/.gitkeep
 ai-models/artifacts/*
 !ai-models/artifacts/.gitkeep
+CameraCapture/CameraCapture.ino

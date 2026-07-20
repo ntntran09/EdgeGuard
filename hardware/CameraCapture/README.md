@@ -74,6 +74,8 @@ The video is assembled and buffered by the phone browser. It is not encoded, cac
 
 Only one unsent image is queued at a time. It is copied to PSRAM and, up to `MAX_CACHED_SNAPSHOT_BYTES`, persisted as `/pending.jpg` in LittleFS. Upload failures retain the same image and retry every 10 seconds; a reboot restores the pending file. Once both Storage and `event_images` confirm success, the cache file is deleted and the next capture is accepted.
 
+Uploaded JPEGs use sortable UTC filenames such as `capture_20260720_143052Z_0000000042.jpg`. If NTP time is not available yet, the firmware falls back to an `capture_unsynced_uptime_...jpg` name while retaining a unique sequence number.
+
 ## Firmware-hosted endpoints
 
 ```text
