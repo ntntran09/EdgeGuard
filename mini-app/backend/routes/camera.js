@@ -20,13 +20,15 @@ function endpointFromStatus(mqttService, kind) {
 
 function cameraTargets(mqttService) {
   let capture = endpointFromStatus(mqttService, 'captureUrl');
+  let eventFrame = endpointFromStatus(mqttService, 'eventFrameUrl');
   let stream = endpointFromStatus(mqttService, 'streamUrl');
   const health = endpointFromStatus(mqttService, 'healthUrl');
   const base = endpointFromStatus(mqttService, 'baseUrl');
 
   if (!capture && base) capture = new URL('/capture', base);
+  if (!eventFrame && base) eventFrame = new URL('/event-frame', base);
   if (!stream && base) stream = new URL('/stream', base);
-  return { base, capture, stream, health };
+  return { base, capture, eventFrame, stream, health };
 }
 
 function publicUrl(target) {
@@ -49,6 +51,7 @@ export function createCameraRouter(mqttService) {
       endpoints: {
         baseUrl: publicUrl(targets.base),
         captureUrl: publicUrl(targets.capture),
+        eventFrameUrl: publicUrl(targets.eventFrame),
         streamUrl: publicUrl(targets.stream),
         healthUrl: publicUrl(targets.health),
         frameProxyUrl: '/api/camera/frame',

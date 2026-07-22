@@ -23,6 +23,7 @@ interface MqttStatusPayload {
 interface MqttCameraEndpoints {
   baseUrl?: string;
   captureUrl?: string;
+  eventFrameUrl?: string;
   streamUrl?: string;
   healthUrl?: string;
   source?: string;
@@ -100,6 +101,7 @@ export async function GET() {
       cameraEndpoints: cameraEndpoints ? {
         baseUrl: cameraEndpoints.baseUrl,
         captureUrl: cameraEndpoints.captureUrl,
+        eventFrameUrl: cameraEndpoints.eventFrameUrl,
         streamUrl: cameraEndpoints.streamUrl,
         healthUrl: cameraEndpoints.healthUrl,
         frameProxyUrl: '/api/camera/frame',

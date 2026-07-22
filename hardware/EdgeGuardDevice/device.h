@@ -5,6 +5,8 @@
 #include "config.h"
 #include "actuators.h"
 
+extern void fomo_handleRecognitionResult(JsonDocument &doc);
+
 bool deviceAutoLockEnabled = true;
 volatile bool deviceCameraPublishEnabled = true;
 volatile bool deviceAiDetectionEnabled = true;
@@ -245,6 +247,7 @@ void device_handleCommand(String topic, String payload) {
   else if (topic.endsWith("/command/servo")) servo_command(doc);
   else if (topic.endsWith("/command/alarm")) alarm_command(doc);
   else if (topic.endsWith("/command/config")) device_applyConfig(doc);
+  else if (topic.endsWith("/command/vision-result")) fomo_handleRecognitionResult(doc);
   else if (topic.endsWith("/command/scan")) Serial.println("[Device] PN532 scans continuously");
   else if (topic.endsWith("/command/reboot")) {
     Serial.println("[Device] Rebooting");

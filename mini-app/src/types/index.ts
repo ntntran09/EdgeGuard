@@ -132,6 +132,7 @@ export interface CameraStatus {
 export interface CameraEndpoints {
   baseUrl?: string;
   captureUrl?: string;
+  eventFrameUrl?: string;
   streamUrl?: string;
   healthUrl?: string;
   frameProxyUrl: string;

@@ -375,6 +375,7 @@ export default function SettingsPage() {
                 <div><dt>MQTT topic</dt><dd>{cameraEndpoints.mqttTopicBase || '—'}/telemetry/endpoints</dd></div>
                 <div><dt>Camera gốc</dt><dd>{cameraEndpoints.baseUrl || '—'}</dd></div>
                 <div><dt>JPEG capture</dt><dd>{cameraEndpoints.captureUrl || '—'}</dd></div>
+                <div><dt>Event frame</dt><dd>{cameraEndpoints.eventFrameUrl || '—'}</dd></div>
                 <div><dt>MJPEG stream</dt><dd>{cameraEndpoints.streamUrl || '—'}</dd></div>
                 <div><dt>Health</dt><dd>{cameraEndpoints.healthUrl || '—'}</dd></div>
                 <div><dt>Server proxy</dt><dd>{cameraEndpoints.frameProxyUrl}</dd></div>

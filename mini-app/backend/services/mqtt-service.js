@@ -8,9 +8,8 @@ import {
 import { supabaseService } from './supabase-service.js';
 import { rekognitionService } from './rekognition-service.js';
 
-let lastRekognitionSearchTime = 0;
 let lastAiLogTime = 0;
-const REKOGNITION_COOLDOWN_MS = 10000;
+let lastAiLogEventKey = null;
 const AI_LOG_COOLDOWN_MS = 8000;
 
 const TELEMETRY_KEYS = {
@@ -21,6 +20,7 @@ const TELEMETRY_KEYS = {
   system: '/telemetry/system',
   endpoints: '/telemetry/endpoints',
   nfc: '/telemetry/nfc',
+  visionAlert: '/telemetry/vision-alert',
   modelInference: '/model/inference',
 };
 const MAX_OFFLINE_RFID_CARDS = 32;
@@ -109,6 +109,21 @@ function cameraCaptureEndpoint(summary) {
   return baseUrl ? new URL('/capture', baseUrl).toString() : null;
 }
 
+function cameraEventFrameEndpoint(summary, eventId) {
+  if (!Number.isInteger(eventId) || eventId <= 0) return null;
+  const endpoints = summary?.cameraEndpoints;
+  if (!endpoints || typeof endpoints !== 'object') return null;
+
+  const announcedUrl = normalizeDeviceEndpoint(endpoints.eventFrameUrl);
+  const baseUrl = normalizeDeviceEndpoint(endpoints.baseUrl);
+  const endpoint = announcedUrl || (baseUrl ? new URL('/event-frame', baseUrl).toString() : null);
+  if (!endpoint) return null;
+
+  const url = new URL(endpoint);
+  url.searchParams.set('event_id', String(eventId));
+  return url.toString();
+}
+
 function summarizeTelemetry(summary, key, parsed) {
   if (!parsed || typeof parsed !== 'object') {
     return;
@@ -165,11 +180,13 @@ function summarizeTelemetry(summary, key, parsed) {
     const captureUrl = normalizeDeviceEndpoint(parsed.capture_url);
     const streamUrl = normalizeDeviceEndpoint(parsed.stream_url);
     const healthUrl = normalizeDeviceEndpoint(parsed.health_url);
+    const eventFrameUrl = normalizeDeviceEndpoint(parsed.event_frame_url);
     const baseUrl = normalizeDeviceEndpoint(parsed.base_url);
-    if (captureUrl || streamUrl || healthUrl || baseUrl) {
+    if (captureUrl || streamUrl || healthUrl || eventFrameUrl || baseUrl) {
       summary.cameraEndpoints = {
         baseUrl,
         captureUrl,
+        eventFrameUrl,
         streamUrl,
         healthUrl,
         ip: typeof parsed.ip === 'string' ? parsed.ip : null,
@@ -333,13 +350,21 @@ export function createMqttService() {
     }
   }
 
-  async function captureEventImage() {
-    const captureUrl = cameraCaptureEndpoint(snapshot.summary);
+  async function captureEventImage({ eventId = null, exactFrame = false } = {}) {
+    const captureUrl = exactFrame
+      ? cameraEventFrameEndpoint(snapshot.summary, eventId)
+      : cameraCaptureEndpoint(snapshot.summary);
     const fallbackImage = snapshot.latestImage?.base64;
+
+    // Never associate an AI event with a newer fallback frame. If the device
+    // cannot return the frame tagged with this event_id, store no image.
+    if (exactFrame && !captureUrl) {
+      return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+    }
 
     // Nếu đã có frame MQTT mới (< 5s), dùng luôn, không cần fetch ESP32
     const frameAge = latestFrame ? Date.now() - new Date(latestFrame.receivedAt).getTime() : Infinity;
-    if (!captureUrl || frameAge < 5000) {
+    if (!exactFrame && (!captureUrl || frameAge < 5000)) {
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
         : { imagePath: null, source: 'unavailable' };
@@ -362,6 +387,11 @@ export function createMqttService() {
         throw new Error(`ESP32-CAM returned HTTP ${response.status}.`);
       }
 
+      const responseEventId = response.headers.get('x-edgeguard-event-id');
+      if (exactFrame && responseEventId !== String(eventId)) {
+        throw new Error(`ESP32-CAM returned frame ${responseEventId || '(missing id)'} for event ${eventId}.`);
+      }
+
       const contentType = (response.headers.get('content-type') || 'image/jpeg')
         .split(';', 1)[0]
         .trim()
@@ -372,28 +402,39 @@ export function createMqttService() {
 
       const frame = createTransientImageBuffer(Buffer.from(await response.arrayBuffer()), {
         contentType,
-        topic: `${topicBase}/camera/capture`,
-        source: 'camera_event_capture',
+        topic: exactFrame ? `${topicBase}/camera/event-frame` : `${topicBase}/camera/capture`,
+        source: exactFrame ? 'camera_exact_event_frame' : 'camera_event_capture',
         deviceId: config.mqtt.deviceId,
-        capturedAt: new Date().toISOString(),
+        ...(exactFrame ? {} : { capturedAt: new Date().toISOString() }),
       });
-      const publicFrame = { ...frame };
-      delete publicFrame.buffer;
-      latestFrame = frame;
-      snapshot.latestImage = publicFrame;
-      snapshot.summary.cameraReady = true;
-      snapshot.summary.cameraLastFrameAt = frame.receivedAt;
-      snapshot.summary.cameraLastFrameBytes = frame.buffer.length;
-      snapshot.summary.updatedAt = frame.receivedAt;
-      console.log(`[MQTT] Captured ${frame.bytes}-byte camera frame for AI event`);
+      if (!exactFrame) {
+        const publicFrame = { ...frame };
+        delete publicFrame.buffer;
+        latestFrame = frame;
+        snapshot.latestImage = publicFrame;
+        snapshot.summary.cameraReady = true;
+        snapshot.summary.cameraLastFrameAt = frame.receivedAt;
+        snapshot.summary.cameraLastFrameBytes = frame.buffer.length;
+        snapshot.summary.updatedAt = frame.receivedAt;
+      }
+      console.log(
+        `[MQTT] Captured ${frame.bytes}-byte ${exactFrame ? `exact frame for event ${eventId}` : 'camera frame'}`
+      );
 
       return {
         imagePath: frame.base64,
-        source: 'camera_event_capture',
+        source: exactFrame ? 'camera_exact_event_frame' : 'camera_event_capture',
         capturedAt: frame.capturedAt,
+        ...(exactFrame ? {
+          eventId,
+          frameUptimeMs: Number(response.headers.get('x-frame-uptime-ms')) || null,
+        } : {}),
       };
     } catch (error) {
       console.error('[MQTT] Could not capture a camera frame for AI event:', error);
+      if (exactFrame) {
+        return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+      }
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
         : { imagePath: null, source: 'capture_failed' };
@@ -403,7 +444,8 @@ export function createMqttService() {
   }
 
   async function recordAiInference(parsed, detections) {
-    const eventImage = await captureEventImage();
+    const eventId = Number(parsed.event_id);
+    const eventImage = await captureEventImage({ eventId, exactFrame: true });
 
     const isPersonDetected =
       String(parsed.label || '').toLowerCase().includes('person') ||
@@ -415,15 +457,49 @@ export function createMqttService() {
         return lbl.includes('person') || lbl.includes('human') || lbl.includes('người');
       });
 
+    const now = Date.now();
+    const eventKey = Number.isInteger(eventId) && eventId > 0
+      ? `${eventId}:${Number(parsed.uptime_ms) || 'unknown'}`
+      : null;
+    const shouldLogDetection = eventKey
+      ? eventKey !== lastAiLogEventKey
+      : now - lastAiLogTime > AI_LOG_COOLDOWN_MS;
+    if (shouldLogDetection) {
+      lastAiLogTime = now;
+      lastAiLogEventKey = eventKey;
+      await supabaseService.insertAiLog({
+        deviceId: config.mqtt.deviceId,
+        label: parsed.label,
+        confidence: Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score),
+        anomalyScore: parsed.anomaly_score,
+        objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
+        imagePath: eventImage.imagePath,
+        telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
+        metadata: {
+          ...parsed,
+          detections,
+          recognition_status: isPersonDetected ? 'pending' : 'not_applicable',
+          event_image_source: eventImage.source,
+          ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
+          ...(Number.isInteger(eventImage.eventId)
+            ? { event_image_event_id: eventImage.eventId }
+            : {}),
+          ...(Number.isFinite(eventImage.frameUptimeMs)
+            ? { event_image_frame_uptime_ms: eventImage.frameUptimeMs }
+            : {}),
+        },
+      });
+    }
+
     let rekognitionResults = [];
 
-    if (isPersonDetected && eventImage.imagePath && (Date.now() - lastRekognitionSearchTime > REKOGNITION_COOLDOWN_MS)) {
-      lastRekognitionSearchTime = Date.now();
+    if (isPersonDetected && eventImage.imagePath) {
       try {
         rekognitionResults = await rekognitionService.analyzeFrame(eventImage.imagePath, 75);
         
         const faceDetections = [];
         const knownNames = [];
+        let knownFaceCount = 0;
         let strangerCount = 0;
 
         for (const res of rekognitionResults) {
@@ -436,6 +512,7 @@ export function createMqttService() {
             if (knownFace) {
               recognizedName = knownFace.display_name;
               isKnown = true;
+              knownFaceCount++;
               if (!knownNames.includes(recognizedName)) {
                 knownNames.push(recognizedName);
               }
@@ -462,26 +539,34 @@ export function createMqttService() {
           }
         }
 
-        if (rekognitionResults.length > 0) {
-          let alertType = 'stranger_detected';
-          let severity = 'warning';
-          let message = `Nhận diện người: ${strangerCount} Người lạ`;
+        // FOMO may see a person whose face is not visible to Rekognition. Treat
+        // every unmatched/missing face as a stranger instead of silently
+        // accepting a partial match in a multi-person frame.
+        const expectedPeopleCount = Math.max(1, Number(parsed.people_count) || 0);
+        strangerCount = Math.max(strangerCount, expectedPeopleCount - knownFaceCount);
+        const allPeopleAreKnown = knownFaceCount >= expectedPeopleCount && strangerCount === 0;
 
-          if (knownNames.length > 0) {
-            alertType = 'face_recognized';
-            severity = 'info'; // Có người quen là Bình thường
-            message = `Nhận diện người: ${knownNames.join(', ')}`;
-            if (strangerCount > 0) {
-              message += ` và ${strangerCount} người lạ`;
-            }
-          }
+        if (Number.isInteger(eventId) && eventId >= 0) {
+          await publishDeviceCommand('vision-result', {
+            event_id: eventId,
+            verified: true,
+            known: allPeopleAreKnown,
+            known_names: knownNames,
+            stranger_count: strangerCount,
+          });
+        }
 
+        // A familiar person is informational and can be recorded immediately.
+        // Stranger alerts are emitted only after the device confirms that the
+        // scene stayed below the 60% recheck threshold for five seconds.
+        if (allPeopleAreKnown) {
           await insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
-            alertType: alertType,
-            message: message,
+            alertType: 'face_recognized',
+            message: `Nhận diện người quen: ${knownNames.join(', ')}`,
             thumbnailUrl: eventImage.imagePath,
-            severity: severity,
+            severity: 'info',
+            source: 'ai',
             metadata: {
               rekognition: rekognitionResults,
               recognized_name: knownNames.join(', ') || 'Người lạ',
@@ -494,29 +579,28 @@ export function createMqttService() {
 
       } catch (err) {
         console.error('[MQTT] Rekognition analyzeFrame inside recordAiInference failed:', err);
+        if (Number.isInteger(eventId) && eventId >= 0) {
+          await publishDeviceCommand('vision-result', {
+            event_id: eventId,
+            verified: false,
+            known: false,
+            stranger_count: 0,
+            reason: 'recognition_failed',
+          }).catch((publishError) => {
+            console.error('[MQTT] Failed to return Rekognition error to device', publishError);
+          });
+        }
       }
-    }
-
-    const now = Date.now();
-    if (now - lastAiLogTime > AI_LOG_COOLDOWN_MS) {
-      lastAiLogTime = now;
-      await supabaseService.insertAiLog({
-        deviceId: config.mqtt.deviceId,
-        label: parsed.label,
-        confidence: Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score),
-        anomalyScore: parsed.anomaly_score,
-        objectCount: detections.length || parsed.object_count || parsed.people_count || 0,
-        imagePath: eventImage.imagePath,
-        telegramMsgLink: snapshot.latestImage?.telegramMsgLink,
-        metadata: {
-          ...parsed,
-          detections,
-          rekognition: rekognitionResults,
-          event_image_source: eventImage.source,
-          ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
-        },
+    } else if (isPersonDetected && Number.isInteger(eventId) && eventId >= 0) {
+      await publishDeviceCommand('vision-result', {
+        event_id: eventId,
+        verified: false,
+        known: false,
+        stranger_count: 0,
+        reason: 'event_image_unavailable',
       });
     }
+
   }
 
   function metadataWithEventImage(metadata = {}, eventImage) {
@@ -524,6 +608,10 @@ export function createMqttService() {
       ...metadata,
       event_image_source: eventImage.source,
       ...(eventImage.capturedAt ? { event_image_captured_at: eventImage.capturedAt } : {}),
+      ...(Number.isInteger(eventImage.eventId) ? { event_image_event_id: eventImage.eventId } : {}),
+      ...(Number.isFinite(eventImage.frameUptimeMs)
+        ? { event_image_frame_uptime_ms: eventImage.frameUptimeMs }
+        : {}),
     };
   }
 
@@ -534,6 +622,31 @@ export function createMqttService() {
       thumbnailUrl: capturedImage.imagePath || alert.thumbnailUrl,
       metadata: metadataWithEventImage(alert.metadata, capturedImage),
     });
+  }
+
+  async function recordVisionAlert(parsed) {
+    const alertType = String(parsed.alert_type || parsed.label || '');
+    const allowedAlerts = new Set(['stranger_detected', 'object_left', 'camera_blocked']);
+    if (!allowedAlerts.has(alertType)) {
+      console.warn(`[MQTT] Ignored unsupported vision alert type: ${alertType || '(empty)'}`);
+      return;
+    }
+
+    const eventId = Number(parsed.event_id);
+    const eventImage = await captureEventImage({ eventId, exactFrame: true });
+    const alertMessages = {
+      stranger_detected: 'Phát hiện người lạ đứng yên trong vùng quan sát',
+      object_left: 'Phát hiện vật thể bị để lại trong vùng quan sát',
+      camera_blocked: 'Phát hiện camera bị che hoặc mất tầm nhìn',
+    };
+    await insertAlertWithEventImage({
+      deviceId: config.mqtt.deviceId,
+      alertType,
+      message: alertMessages[alertType],
+      severity: alertType === 'object_left' ? 'warning' : 'danger',
+      source: 'ai',
+      metadata: parsed,
+    }, eventImage);
   }
 
   async function handleRfidScan(tagId, metadata = {}) {
@@ -629,7 +742,11 @@ export function createMqttService() {
       snapshot.summary.updatedAt = receivedAt;
       summarizeTelemetry(snapshot.summary, key, parsed);
 
-      if (key === 'modelInference' && parsed && typeof parsed === 'object') {
+      if (key === 'visionAlert' && parsed && typeof parsed === 'object') {
+        recordVisionAlert(parsed).catch((error) => {
+          console.error('[MQTT] Failed to record vision alert', error);
+        });
+      } else if (key === 'modelInference' && parsed && typeof parsed === 'object') {
         const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
         const detections = Array.isArray(parsed.detections)
           ? parsed.detections.filter((detection) => (

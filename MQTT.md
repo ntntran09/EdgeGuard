@@ -46,6 +46,8 @@ Hardware to server:
 {base}/telemetry/power
 {base}/telemetry/system
 {base}/telemetry/nfc
+{base}/telemetry/endpoints
+{base}/telemetry/vision-alert
 ```
 
 Image topics:
@@ -132,6 +134,23 @@ AI worker to server and hardware:
 ```text
 {base}/model/inference
 ```
+
+FOMO person detections include an `event_id`. After checking AWS Rekognition,
+the backend returns the familiar-person result to the device on:
+
+```text
+{base}/command/vision-result
+```
+
+The device ignores a result whose `event_id` is no longer current. Stable
+stranger/object alerts and camera-occlusion alerts are published on
+`{base}/telemetry/vision-alert`.
+
+The endpoint announcement includes `event_frame_url`. For every model inference
+or vision alert, the backend requests `GET /event-frame?event_id=<id>` and accepts
+the JPEG only when `X-EdgeGuard-Event-Id` matches. The detection event is stored
+before face recognition starts; recognition results are therefore logged after
+the original detection and reuse the same source frame.
 
 Example inference payload:
 

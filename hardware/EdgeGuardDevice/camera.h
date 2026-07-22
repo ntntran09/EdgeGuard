@@ -1,12 +1,10 @@
 #ifndef EDGEGUARD_CAMERA_H
 #define EDGEGUARD_CAMERA_H
 
-#include <opencv2/opencv.hpp>
-#include <string>
-#include <algorithm>
 #include "libs.h"
 #include "config.h"
 #include "mqtt.h"
+#include "esp_heap_caps.h"
 
 extern volatile bool deviceCameraPublishEnabled;
 
@@ -18,14 +16,21 @@ uint32_t cameraPublishFailures = 0;
 uint8_t cameraCaptureFailures = 0;
 portMUX_TYPE cameraFailureMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t cameraMutex = nullptr;
+SemaphoreHandle_t cameraEventFrameMutex = nullptr;
 httpd_handle_t cameraHttpServer = nullptr;
 String cameraBaseUrl;
 String cameraCaptureUrl;
+String cameraEventFrameUrl;
 String cameraStreamUrl;
 String cameraHealthUrl;
 String cameraPublishedIp;
 bool cameraEndpointsPublished = false;
 unsigned long lastCameraEndpointAttempt = 0;
+uint8_t *cameraEventFrameBuffer = nullptr;
+size_t cameraEventFrameCapacity = 0;
+size_t cameraEventFrameLength = 0;
+uint32_t cameraEventFrameId = 0;
+unsigned long cameraEventFrameCapturedAt = 0;
 
 static const char *CAMERA_STREAM_CONTENT_TYPE =
   "multipart/x-mixed-replace;boundary=edgeguard-frame";
@@ -73,6 +78,46 @@ void camera_noteCapture(camera_fb_t *frame) {
   camera_clearFailures();
   lastCameraSuccessAt = millis();
   lastCameraFrameBytes = frame ? frame->len : 0;
+}
+
+bool camera_cacheEventFrame(
+  const uint8_t *jpeg,
+  size_t length,
+  uint32_t eventId,
+  unsigned long capturedAt
+) {
+  if (!jpeg || length == 0 || eventId == 0 || !cameraEventFrameMutex) return false;
+  if (xSemaphoreTake(cameraEventFrameMutex, pdMS_TO_TICKS(CAMERA_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    Serial.printf("[Camera Event] Cache busy for event %lu\n", static_cast<unsigned long>(eventId));
+    return false;
+  }
+
+  if (length > cameraEventFrameCapacity) {
+    uint8_t *replacement = static_cast<uint8_t *>(heap_caps_malloc(
+      length,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    ));
+    if (!replacement) {
+      xSemaphoreGive(cameraEventFrameMutex);
+      Serial.printf("[Camera Event] Could not allocate %u bytes\n", static_cast<unsigned int>(length));
+      return false;
+    }
+    if (cameraEventFrameBuffer) heap_caps_free(cameraEventFrameBuffer);
+    cameraEventFrameBuffer = replacement;
+    cameraEventFrameCapacity = length;
+  }
+
+  memcpy(cameraEventFrameBuffer, jpeg, length);
+  cameraEventFrameLength = length;
+  cameraEventFrameId = eventId;
+  cameraEventFrameCapturedAt = capturedAt;
+  xSemaphoreGive(cameraEventFrameMutex);
+  Serial.printf(
+    "[Camera Event] Cached exact frame for event %lu (%u bytes)\n",
+    static_cast<unsigned long>(eventId),
+    static_cast<unsigned int>(length)
+  );
+  return true;
 }
 
 esp_err_t camera_indexHandler(httpd_req_t *request) {
@@ -127,6 +172,57 @@ esp_err_t camera_captureHandler(httpd_req_t *request) {
   );
   esp_camera_fb_return(frame);
   camera_give();
+  return result;
+}
+
+esp_err_t camera_eventFrameHandler(httpd_req_t *request) {
+  char query[64] = {};
+  char eventIdText[24] = {};
+  if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK
+      || httpd_query_key_value(query, "event_id", eventIdText, sizeof(eventIdText)) != ESP_OK) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_send(request, "event_id is required", HTTPD_RESP_USE_STRLEN);
+  }
+
+  char *end = nullptr;
+  unsigned long requestedId = strtoul(eventIdText, &end, 10);
+  if (!eventIdText[0] || !end || *end != '\0' || requestedId == 0 || requestedId > UINT32_MAX) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_send(request, "event_id is invalid", HTTPD_RESP_USE_STRLEN);
+  }
+  if (!cameraEventFrameMutex
+      || xSemaphoreTake(cameraEventFrameMutex, pdMS_TO_TICKS(CAMERA_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_send(request, "Event frame is busy", HTTPD_RESP_USE_STRLEN);
+  }
+
+  if (!cameraEventFrameBuffer
+      || cameraEventFrameLength == 0
+      || cameraEventFrameId != static_cast<uint32_t>(requestedId)) {
+    xSemaphoreGive(cameraEventFrameMutex);
+    httpd_resp_set_status(request, "404 Not Found");
+    return httpd_resp_send(request, "Exact event frame is unavailable", HTTPD_RESP_USE_STRLEN);
+  }
+
+  char idHeader[24];
+  char capturedAtHeader[24];
+  snprintf(idHeader, sizeof(idHeader), "%lu", requestedId);
+  snprintf(
+    capturedAtHeader,
+    sizeof(capturedAtHeader),
+    "%lu",
+    static_cast<unsigned long>(cameraEventFrameCapturedAt)
+  );
+  httpd_resp_set_type(request, "image/jpeg");
+  camera_setNoCacheHeaders(request);
+  httpd_resp_set_hdr(request, "X-EdgeGuard-Event-Id", idHeader);
+  httpd_resp_set_hdr(request, "X-Frame-Uptime-Ms", capturedAtHeader);
+  esp_err_t result = httpd_resp_send(
+    request,
+    reinterpret_cast<const char *>(cameraEventFrameBuffer),
+    cameraEventFrameLength
+  );
+  xSemaphoreGive(cameraEventFrameMutex);
   return result;
 }
 
@@ -188,6 +284,7 @@ void camera_refreshUrls() {
   cameraPublishedIp = ip;
   cameraBaseUrl = "http://" + ip + ":" + String(CAMERA_HTTP_PORT);
   cameraCaptureUrl = cameraBaseUrl + "/capture";
+  cameraEventFrameUrl = cameraBaseUrl + "/event-frame";
   cameraStreamUrl = cameraBaseUrl + "/stream";
   cameraHealthUrl = cameraBaseUrl + "/health";
   cameraEndpointsPublished = false;
@@ -226,6 +323,12 @@ void camera_startHttpServer() {
   captureUri.handler = camera_captureHandler;
   httpd_register_uri_handler(cameraHttpServer, &captureUri);
 
+  httpd_uri_t eventFrameUri = {};
+  eventFrameUri.uri = "/event-frame";
+  eventFrameUri.method = HTTP_GET;
+  eventFrameUri.handler = camera_eventFrameHandler;
+  httpd_register_uri_handler(cameraHttpServer, &eventFrameUri);
+
   httpd_uri_t streamUri = {};
   streamUri.uri = "/stream";
   streamUri.method = HTTP_GET;
@@ -253,6 +356,7 @@ bool camera_publishEndpoints() {
   doc["port"] = CAMERA_HTTP_PORT;
   doc["base_url"] = cameraBaseUrl;
   doc["capture_url"] = cameraCaptureUrl;
+  doc["event_frame_url"] = cameraEventFrameUrl;
   doc["stream_url"] = cameraStreamUrl;
   doc["health_url"] = cameraHealthUrl;
   doc["live_mode"] = "jpeg-polling";
@@ -268,7 +372,8 @@ bool camera_publishEndpoints() {
 void camera_setup() {
   lastCameraInitAttempt = millis();
   if (!cameraMutex) cameraMutex = xSemaphoreCreateMutex();
-  if (!cameraMutex || !camera_take()) {
+  if (!cameraEventFrameMutex) cameraEventFrameMutex = xSemaphoreCreateMutex();
+  if (!cameraMutex || !cameraEventFrameMutex || !camera_take()) {
     Serial.println("[Camera] Could not acquire camera mutex");
     cameraReady = false;
     return;
@@ -339,106 +444,6 @@ void camera_loop() {
     lastCameraEndpointAttempt = now;
     camera_publishEndpoints();
   }
-}
-
-struct CameraMetrics {
-    double meanBrightness = 0.0;
-    double stdDevContrast = 0.0;
-    double darkPixelRatio = 0.0;
-    double brightPixelRatio = 0.0;
-    double edgeDensity = 0.0;
-};
-
-inline CameraMetrics computeMetrics(const cv::Mat& grayFrame) {
-    CameraMetrics metrics;
-    int totalPixels = grayFrame.rows * grayFrame.cols;
-    if (totalPixels == 0) return metrics;
-
-    cv::Scalar meanVal, stdDevVal;
-    cv::meanStdDev(grayFrame, meanVal, stdDevVal);
-    metrics.meanBrightness = meanVal[0];
-    metrics.stdDevContrast = stdDevVal[0];
-
-    cv::Mat darkMask, brightMask;
-    cv::inRange(grayFrame, 0, 15, darkMask);
-    cv::inRange(grayFrame, 240, 255, brightMask);
-
-    metrics.darkPixelRatio = ((double)cv::countNonZero(darkMask) / totalPixels) * 100.0;
-    metrics.brightPixelRatio = ((double)cv::countNonZero(brightMask) / totalPixels) * 100.0;
-
-    cv::Mat laplacianMat, edgeMask;
-    cv::Laplacian(grayFrame, laplacianMat, CV_16S, 3);
-    cv::convertScaleAbs(laplacianMat, laplacianMat);
-    cv::threshold(laplacianMat, edgeMask, 20, 255, cv::THRESH_BINARY);
-    metrics.edgeDensity = ((double)cv::countNonZero(edgeMask) / totalPixels) * 100.0;
-
-    return metrics;
-}
-
-inline bool checkLightChange(const CameraMetrics& current, const CameraMetrics& base, double& brightnessDiff) {
-    brightnessDiff = std::abs(current.meanBrightness - base.meanBrightness);
-    double darkDiff = std::abs(current.darkPixelRatio - base.darkPixelRatio);
-    double brightDiff = std::abs(current.brightPixelRatio - base.brightPixelRatio);
-
-    return (brightnessDiff > THRESH_BRIGHTNESS_DIFF) || 
-           (darkDiff > THRESH_DARK_DIFF) || 
-           (brightDiff > THRESH_BRIGHT_DIFF);
-}
-
-inline bool checkObjectPresence(const cv::Mat& baseGray, const cv::Mat& currentGray, double& objectAreaRatio) {
-    cv::Mat bgDiff, fgMask;
-    cv::absdiff(baseGray, currentGray, bgDiff);
-    
-    cv::threshold(bgDiff, fgMask, BG_DIFF_THRESHOLD, 255, cv::THRESH_BINARY);
-    
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
-    cv::morphologyEx(fgMask, fgMask, cv::MORPH_OPEN, kernel);
-
-    int totalPixels = fgMask.rows * fgMask.cols;
-    if (totalPixels == 0) {
-        objectAreaRatio = 0.0;
-        return false;
-    }
-
-    objectAreaRatio = ((double)cv::countNonZero(fgMask) / totalPixels) * 100.0;
-    return (objectAreaRatio > MIN_OBJECT_AREA_RATIO);
-}
-
-inline void updateTimer(bool condition, double& durationSec, double frameTimeSec) {
-    if (condition) {
-        durationSec += frameTimeSec;
-    } else {
-        durationSec = std::max(0.0, durationSec - frameTimeSec);
-    }
-}
-
-inline void drawOverlayAndAlerts(cv::Mat& frame, double brightnessDiff, double lightTimer, 
-                                 double objectAreaRatio, double objectTimer) {
-    // Overlay thông số
-    cv::rectangle(frame, cv::Point(10, 10), cv::Point(480, 85), cv::Scalar(0, 0, 0), cv::FILLED);
-    
-    std::string infoLight = "Light Diff: " + std::to_string(brightnessDiff).substr(0, 4) + 
-                            " (Timer: " + std::to_string(lightTimer).substr(0, 3) + "s)";
-    std::string infoObj = "Object Area: " + std::to_string(objectAreaRatio).substr(0, 4) + 
-                          "% (Timer: " + std::to_string(objectTimer).substr(0, 3) + "s)";
-
-    cv::putText(frame, infoLight, cv::Point(15, 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
-    cv::putText(frame, infoObj, cv::Point(15, 65), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
-
-    int alertY = 95;
-
-    if (lightTimer >= ALERT_THRESHOLD_SEC) {
-        cv::rectangle(frame, cv::Point(10, alertY), cv::Point(550, alertY + 35), cv::Scalar(0, 0, 200), cv::FILLED);
-        std::string alertMsg = "CANH BAO: BIEN DOI DO SANG DOT NGOT (>3s)";
-        cv::putText(frame, alertMsg, cv::Point(15, alertY + 24), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2);
-        alertY += 45;
-    }
-
-    if (objectTimer >= ALERT_THRESHOLD_SEC) {
-        cv::rectangle(frame, cv::Point(10, alertY), cv::Point(550, alertY + 35), cv::Scalar(0, 100, 255), cv::FILLED);
-        std::string alertMsg = "CANH BAO: VAT THE MOI XUAT HIEN (>3s)";
-        cv::putText(frame, alertMsg, cv::Point(15, alertY + 24), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255), 2);
-    }
 }
 
 #endif

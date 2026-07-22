@@ -1,7 +1,6 @@
 #ifndef EDGEGUARD_CONFIG_H
 #define EDGEGUARD_CONFIG_H
 
-#include <string>
 // Network settings.
 const char *WIFI_SSID = "Ai đó";
 const char *WIFI_PASSWORD = "012345678";
@@ -45,8 +44,25 @@ const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
 const uint16_t CAMERA_HTTP_PORT = 81;
 const unsigned long CAMERA_MUTEX_TIMEOUT_MS = 2500;
 const unsigned long CAMERA_ENDPOINT_RETRY_MS = 5000;
-const unsigned long FOMO_INTERVAL_MS = 1300;
 const unsigned long FOMO_INIT_RETRY_MS = 10000;
+// Lightweight frame analysis gates the expensive FOMO classifier. A sampled
+// pixel counts as changed when its grayscale value moves by this amount.
+const unsigned long CAMERA_ANALYSIS_INTERVAL_MS = 400;
+const uint8_t CAMERA_BASELINE_WARMUP_FRAMES = 5;
+const uint8_t CAMERA_CHANGE_SAMPLE_WIDTH = 20;
+const uint8_t CAMERA_CHANGE_SAMPLE_HEIGHT = 15;
+const uint8_t CAMERA_PIXEL_CHANGE_THRESHOLD = 24;
+const float CAMERA_FOMO_TRIGGER_CHANGE_PERCENT = 50.0f;
+const float CAMERA_FOMO_RECHECK_CHANGE_PERCENT = 60.0f;
+const unsigned long VISION_STABLE_ALERT_MS = 5000;
+// Occlusion is confirmed across several samples to avoid one-frame exposure
+// changes. Extreme darkness/brightness or a nearly textureless frame counts.
+const uint8_t CAMERA_BLOCKED_CONFIRM_SAMPLES = 3;
+const uint8_t CAMERA_BLOCKED_DARK_LUMA = 18;
+const uint8_t CAMERA_BLOCKED_BRIGHT_LUMA = 245;
+const float CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT = 90.0f;
+const float CAMERA_BLOCKED_MAX_STDDEV = 8.0f;
+const float CAMERA_BLOCKED_MAX_EDGE_PERCENT = 2.0f;
 // Keep latency-sensitive device/network work on Core 0 and reserve Core 1 for
 // the synchronous Edge Impulse classifier. The Arduino loop task starts on
 // Core 1 for this board, then deletes itself after the control task is ready.
@@ -77,22 +93,5 @@ const unsigned int RFID_READ_TONE_HZ = 2200;
 const unsigned long RFID_READ_TONE_MS = 100;
 
 extern bool publish_system_metrics;
-
-// Video path for testing on desktop
-const std::string VIDEO_PATH = "C:\\Users\\Admin\\Documents\\opencvtest\\camera video 2.mp4";
-
-// Baseline & Timer Configuration 
-const int WARMUP_FRAMES = 15;
-const double ALERT_THRESHOLD_SEC = 3.0;
-
-
-// Brightness/Darkness Test Threshold Configuration
-const double THRESH_BRIGHTNESS_DIFF = 35.0;
-const double THRESH_DARK_DIFF = 25.0;
-const double THRESH_BRIGHT_DIFF = 25.0;
-
-// Object Inspection Threshold Configuration
-const int BG_DIFF_THRESHOLD = 35;
-const double MIN_OBJECT_AREA_RATIO = 5.0;
 
 #endif
