@@ -3,7 +3,7 @@
 import { DEFAULT_CONFIDENCE_THRESHOLD } from "@/lib/constants/fomo";
 import type { NormalizedSample } from "@/lib/edge-impulse/types";
 import type { ClassPresenceMetric } from "@/lib/metrics/presence";
-import { optimizeGlobalThreshold, type ThresholdOptimization } from "@/lib/metrics/threshold-optimizer";
+import { optimizeGlobalThreshold } from "@/lib/metrics/threshold-optimizer";
 import { clampThreshold } from "@/lib/utils";
 import { RotateCcw, Sparkles } from "lucide-react";
 import { useState } from "react";
@@ -15,14 +15,12 @@ export function ThresholdControls({
   metrics,
   confidenceThreshold,
   onChange,
-  onOptimize,
 }: {
   samples: NormalizedSample[];
   classes: string[];
   metrics: ClassPresenceMetric[];
   confidenceThreshold: number;
   onChange: (threshold: number) => void;
-  onOptimize: (values: Record<string, ThresholdOptimization>) => void;
 }) {
   const [message, setMessage] = useState("");
   const update = (value: number) => {
@@ -31,7 +29,6 @@ export function ThresholdControls({
   };
   const optimize = () => {
     const best = optimizeGlobalThreshold(samples);
-    onOptimize({ global: best });
     onChange(best.threshold);
     setMessage("Đã áp dụng threshold global có macro F1 tốt nhất trên dữ liệu hiện tại.");
   };

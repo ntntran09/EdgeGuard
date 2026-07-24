@@ -4,7 +4,6 @@ import { DEFAULT_CONFIDENCE_THRESHOLD } from "@/lib/constants/fomo";
 import type { NormalizedDataset } from "@/lib/edge-impulse/types";
 import type { PresenceReport } from "@/lib/export/types";
 import { evaluatePresence } from "@/lib/metrics/presence";
-import type { ThresholdOptimization } from "@/lib/metrics/threshold-optimizer";
 import { useMemo, useState } from "react";
 import { ClassMetricsTable } from "./class-metrics-table";
 import { ConnectionPanel, type LoadedContext } from "./connection-panel";
@@ -12,7 +11,6 @@ import { EvaluationNotice } from "./evaluation-notice";
 import { ExportMenu } from "./export-menu";
 import { SampleResultsTable } from "./sample-results-table";
 import { SummaryCards } from "./summary-cards";
-import { ThresholdChart } from "./threshold-chart";
 import { ThresholdControls } from "./threshold-controls";
 
 const VI_TIME_FORMATTER = new Intl.DateTimeFormat("vi-VN", {
@@ -29,7 +27,6 @@ export function Dashboard() {
   const [data, setData] = useState<NormalizedDataset | null>(null);
   const [context, setContext] = useState<LoadedContext | null>(null);
   const [confidenceThreshold, setConfidenceThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
-  const [optimizations, setOptimizations] = useState<Record<string, ThresholdOptimization>>({});
 
   const evaluation = useMemo(
     () => (data ? evaluatePresence(data.samples, confidenceThreshold) : null),
@@ -57,13 +54,11 @@ export function Dashboard() {
     setData(next);
     setContext(loaded);
     setConfidenceThreshold(threshold);
-    setOptimizations({});
   };
 
   const handleClear = () => {
     setData(null);
     setContext(null);
-    setOptimizations({});
     setConfidenceThreshold(DEFAULT_CONFIDENCE_THRESHOLD);
   };
 
@@ -75,9 +70,6 @@ export function Dashboard() {
             Edge Impulse Presence Evaluator
           </div>
           <h1 className="text-3xl font-black md:text-5xl">Đánh giá FOMO theo Presence</h1>
-          <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-300 md:text-base">
-            Chỉ dùng Project ID, API key và Confidence Threshold. Impulse ID luôn là 1, model variant luôn là int8, class cố định là human, package và backpack.
-          </p>
         </div>
       </header>
 
@@ -120,9 +112,7 @@ export function Dashboard() {
               metrics={evaluation.classMetrics}
               confidenceThreshold={confidenceThreshold}
               onChange={setConfidenceThreshold}
-              onOptimize={setOptimizations}
             />
-            <ThresholdChart classes={evaluation.classes} optimizations={optimizations} />
             <SampleResultsTable
               samples={data.samples}
               results={evaluation.sampleResults}
