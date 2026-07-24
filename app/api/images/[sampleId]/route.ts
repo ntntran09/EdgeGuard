@@ -12,6 +12,8 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sampleId: string }> },
 ) {
+  let debugSampleId = "";
+  let debugSourceUrl: string | undefined;
   try {
     const sessionId = request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value;
     const session = getEdgeImpulseSession(sessionId);
@@ -22,8 +24,10 @@ export async function GET(
       );
     }
     const { sampleId } = await params;
+    debugSampleId = sampleId;
     const afterInputBlock = request.nextUrl.searchParams.get("afterInputBlock") === "true";
     const sourceUrl = getEdgeImpulseImageSource(sessionId, sampleId);
+    debugSourceUrl = sourceUrl;
     const image = await getSampleImage(session, sampleId, afterInputBlock, sourceUrl ? [sourceUrl] : []);
     return new NextResponse(image.bytes, {
       headers: {
@@ -37,6 +41,21 @@ export async function GET(
       error instanceof EdgeImpulseError
         ? error
         : new EdgeImpulseError("Không thể tải ảnh sample.", "SAMPLE_IMAGE_FAILED", 500);
-    return NextResponse.json({ error: safe.message, code: safe.code }, { status: safe.status });
+    let sourceHost: string | undefined;
+    try {
+      sourceHost = debugSourceUrl ? new URL(debugSourceUrl).hostname : undefined;
+    } catch {
+      sourceHost = "invalid-url";
+    }
+    return NextResponse.json(
+      {
+        error: safe.message,
+        code: safe.code,
+        sampleId: debugSampleId,
+        hasMetadataSource: Boolean(debugSourceUrl),
+        sourceHost,
+      },
+      { status: safe.status },
+    );
   }
 }

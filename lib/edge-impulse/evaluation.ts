@@ -10,6 +10,7 @@ import type { NormalizedDataset } from "@/lib/edge-impulse/types";
 import { setEdgeImpulseImageSources, type ServerSession } from "@/lib/edge-impulse/session";
 
 const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
+const RAW_DATA_CATEGORIES = ["testing", "validation", "training"] as const;
 
 function filenameKey(filename: string): string {
   return filename.trim().toLowerCase().replace(/\\/g, "/").split("/").pop() ?? filename.trim().toLowerCase();
@@ -20,6 +21,18 @@ function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
     return sample.thumbnailUrl;
   }
   return `/api/images/${encodeURIComponent(sample.imageSampleId ?? sample.id)}`;
+}
+
+async function loadRawDataMetadata(credentials: { projectId: number; apiKey: string }): Promise<NormalizedDataset | undefined> {
+  const rawItems: unknown[] = [];
+  for (const category of RAW_DATA_CATEGORIES) {
+    try {
+      rawItems.push(...await getAllRawData(credentials, category));
+    } catch {
+      // Some projects do not expose every category; keep probing the rest.
+    }
+  }
+  return rawItems.length ? normalizeEdgeImpulseResponse({ samples: rawItems }, "testing") : undefined;
 }
 
 function labelsInDataset(dataset: NormalizedDataset): string[] {
@@ -61,15 +74,14 @@ export async function loadEvaluationDataset(session: ServerSession, sessionId?: 
   const normalized = normalizeEdgeImpulseResponse(payload, "testing");
   const needsGroundTruth = normalized.samples.every((sample) => sample.groundTruthBoxes.length === 0);
   if (needsGroundTruth) {
-    const rawItems = await getAllRawData(credentials, "all");
-    if (!rawItems.length) {
+    const rawDataset = await loadRawDataMetadata(credentials);
+    if (!rawDataset) {
       throw new EdgeImpulseError(
         "Không thể tải dữ liệu Model Testing từ Edge Impulse.",
         "MODEL_TESTING_LOAD_FAILED",
         502,
       );
     }
-    const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
     const groundTruthById = new Map(rawDataset.samples.map((sample) => [sample.id, sample.groundTruthBoxes]));
     const groundTruthByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample.groundTruthBoxes]));
     const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
@@ -86,9 +98,8 @@ export async function loadEvaluationDataset(session: ServerSession, sessionId?: 
   }
   if (!needsGroundTruth) {
     try {
-      const rawItems = await getAllRawData(credentials, "all");
-      if (rawItems.length) {
-        const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
+      const rawDataset = await loadRawDataMetadata(credentials);
+      if (rawDataset) {
         const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
         const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
         const rawSampleByFilename = new Map(rawDataset.samples.map((sample) => [filenameKey(sample.filename), sample]));
