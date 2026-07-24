@@ -163,7 +163,6 @@ export function classifySample(credentials: EdgeImpulseCredentials, sampleId: st
 
 export function detectImageContentType(bytes: ArrayBuffer, contentType = ""): string | null {
   const normalized = contentType.split(";")[0].trim().toLowerCase();
-  if (normalized.startsWith("image/")) return normalized;
   const view = new Uint8Array(bytes);
   if (view.length >= 3 && view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) return "image/jpeg";
   if (
@@ -183,6 +182,8 @@ export function detectImageContentType(bytes: ArrayBuffer, contentType = ""): st
     String.fromCharCode(...view.slice(8, 12)) === "WEBP"
   ) return "image/webp";
   if (view.length >= 3 && String.fromCharCode(...view.slice(0, 3)) === "GIF") return "image/gif";
+  const textPrefix = new TextDecoder().decode(view.slice(0, Math.min(view.length, 256))).trimStart();
+  if (normalized === "image/svg+xml" && textPrefix.startsWith("<svg")) return "image/svg+xml";
   return null;
 }
 
@@ -217,15 +218,16 @@ export async function getSampleImage(
       cache: "no-store",
     });
     if (!response.ok) throw friendlyError(response.status);
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.startsWith("image/")) {
+    const bytes = await response.arrayBuffer();
+    const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+    if (!contentType) {
       throw new EdgeImpulseError(
         "Edge Impulse không trả về định dạng ảnh hợp lệ.",
         "INVALID_IMAGE_CONTENT_TYPE",
         502,
       );
     }
-    return { bytes: await response.arrayBuffer(), contentType };
+    return { bytes, contentType };
   } catch (error) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
       for (const fallbackPath of paths.slice(1)) {

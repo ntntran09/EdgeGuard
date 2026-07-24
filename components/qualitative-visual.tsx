@@ -252,6 +252,21 @@ function useImageSize(imageUrl?: string): ImageSize | undefined {
   return size;
 }
 
+async function imageProxyError(imageUrl?: string): Promise<string> {
+  if (!imageUrl?.startsWith("/api/")) return "Image element could not decode the source.";
+  try {
+    const response = await fetch(imageUrl, { cache: "no-store" });
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("json")) {
+      const data = (await response.json()) as { error?: string; code?: string };
+      return `${response.status} ${data.code ?? "IMAGE_PROXY_ERROR"}${data.error ? `: ${data.error}` : ""}`;
+    }
+    return `${response.status} ${response.statusText || "IMAGE_PROXY_ERROR"} (${contentType || "no content-type"})`;
+  } catch (error) {
+    return error instanceof Error ? error.message : "Image proxy request failed.";
+  }
+}
+
 function VisualFrame({
   title,
   subtitle,
@@ -271,8 +286,10 @@ function VisualFrame({
 }) {
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number }>();
   const [imageError, setImageError] = useState(false);
+  const [imageErrorText, setImageErrorText] = useState("");
   useEffect(() => {
     setImageError(false);
+    setImageErrorText("");
     setNaturalSize(undefined);
   }, [imageUrl]);
   const allBoxes = layers.flatMap((layer) => layer.boxes);
@@ -297,7 +314,7 @@ function VisualFrame({
       </div>
       <div className="max-h-[62vh] overflow-auto bg-[linear-gradient(45deg,#182334_25%,transparent_25%),linear-gradient(-45deg,#182334_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#182334_75%),linear-gradient(-45deg,transparent_75%,#182334_75%)] bg-[length:20px_20px] bg-[position:0_0,0_10px,10px_-10px,-10px_0px] p-3">
         {!imageUrl || imageError ? (
-          <div className="flex min-h-72 flex-col items-center justify-center rounded-xl bg-slate-900 p-6 text-center text-sm text-slate-400">
+          <div className="flex min-h-72 flex-col items-center justify-center rounded-xl bg-slate-900 p-6 text-center text-sm text-slate-400" title={imageErrorText}>
             <ImageOff className="mb-3 size-9" />
             <strong className="text-slate-200">Không tải được ảnh sample</strong>
             <span className="mt-1 max-w-sm text-xs">
@@ -319,7 +336,10 @@ function VisualFrame({
                     height: event.currentTarget.naturalHeight,
                   })
                 }
-                onError={() => setImageError(true)}
+                onError={() => {
+                  setImageError(true);
+                  void imageProxyError(imageUrl).then(setImageErrorText);
+                }}
               />
               <svg
                 viewBox={`0 0 ${width} ${height}`}

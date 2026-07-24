@@ -10,11 +10,12 @@ const display = (labels: string[]) => (labels.length ? labels.join(", ") : "—"
 
 function SampleThumbnail({ sample }: { sample?: NormalizedSample }) {
   const [failed, setFailed] = useState(false);
+  const [error, setError] = useState("");
   if (!sample?.thumbnailUrl || failed) {
-    return <div className="flex size-12 items-center justify-center rounded-lg bg-slate-100 text-slate-400"><ImageIcon className="size-5" /></div>;
+    return <div className="flex size-12 items-center justify-center rounded-lg bg-slate-100 text-slate-400" title={error || "Khong tai duoc anh"}><ImageIcon className="size-5" /></div>;
   }
   // eslint-disable-next-line @next/next/no-img-element -- Authenticated local image proxy.
-  return <img src={sample.thumbnailUrl} alt={sample.filename} className="size-12 rounded-lg border border-slate-200 object-cover" loading="lazy" onError={() => setFailed(true)} />;
+  return <img src={sample.thumbnailUrl} alt={sample.filename} className="size-12 rounded-lg border border-slate-200 object-cover" loading="lazy" onError={() => { setError(sample.thumbnailUrl ?? ""); setFailed(true); }} />;
 }
 
 export function SampleResultsTable({

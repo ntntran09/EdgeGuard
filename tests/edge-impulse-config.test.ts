@@ -34,7 +34,7 @@ describe("Fixed Edge Impulse configuration", () => {
   });
 
   it("detects image content type from headers or magic bytes", () => {
-    expect(detectImageContentType(new Uint8Array([1, 2, 3]).buffer, "image/jpeg; charset=binary")).toBe("image/jpeg");
+    expect(detectImageContentType(new Uint8Array([1, 2, 3]).buffer, "image/jpeg; charset=binary")).toBeNull();
     expect(detectImageContentType(new Uint8Array([0xff, 0xd8, 0xff, 0x00]).buffer, "application/octet-stream")).toBe("image/jpeg");
     expect(detectImageContentType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer)).toBe("image/png");
     expect(detectImageContentType(new Uint8Array([1, 2, 3]).buffer, "application/json")).toBeNull();
