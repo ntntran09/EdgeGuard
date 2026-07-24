@@ -1,6 +1,7 @@
 import { EdgeImpulseError, getSampleImage } from "@/lib/edge-impulse/client";
 import {
   EDGE_IMPULSE_SESSION_COOKIE,
+  getEdgeImpulseImageSource,
   getEdgeImpulseSession,
 } from "@/lib/edge-impulse/session";
 import { NextRequest, NextResponse } from "next/server";
@@ -12,7 +13,8 @@ export async function GET(
   { params }: { params: Promise<{ sampleId: string }> },
 ) {
   try {
-    const session = getEdgeImpulseSession(request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value);
+    const sessionId = request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value;
+    const session = getEdgeImpulseSession(sessionId);
     if (!session) {
       return NextResponse.json(
         { error: "Phiên Edge Impulse đã hết hạn. Hãy cấu hình lại project.", code: "NO_SESSION" },
@@ -21,7 +23,8 @@ export async function GET(
     }
     const { sampleId } = await params;
     const afterInputBlock = request.nextUrl.searchParams.get("afterInputBlock") === "true";
-    const image = await getSampleImage(session, sampleId, afterInputBlock);
+    const sourceUrl = getEdgeImpulseImageSource(sessionId, sampleId);
+    const image = await getSampleImage(session, sampleId, afterInputBlock, sourceUrl ? [sourceUrl] : []);
     return new NextResponse(image.bytes, {
       headers: {
         "Content-Type": image.contentType,

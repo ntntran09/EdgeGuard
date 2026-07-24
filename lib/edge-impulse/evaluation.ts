@@ -7,7 +7,7 @@ import {
 } from "@/lib/edge-impulse/client";
 import { normalizeEdgeImpulseResponse } from "@/lib/edge-impulse/normalize";
 import type { NormalizedDataset } from "@/lib/edge-impulse/types";
-import type { ServerSession } from "@/lib/edge-impulse/session";
+import { setEdgeImpulseImageSources, type ServerSession } from "@/lib/edge-impulse/session";
 
 const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
 
@@ -16,10 +16,7 @@ function filenameKey(filename: string): string {
 }
 
 function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
-  if (
-    sample.thumbnailUrl &&
-    (/^https?:\/\//.test(sample.thumbnailUrl) || sample.thumbnailUrl.startsWith("/demo/"))
-  ) {
+  if (sample.thumbnailUrl?.startsWith("/demo/")) {
     return sample.thumbnailUrl;
   }
   return `/api/images/${encodeURIComponent(sample.imageSampleId ?? sample.id)}`;
@@ -58,7 +55,7 @@ export function assertRequiredClasses(dataset: NormalizedDataset): void {
   }
 }
 
-export async function loadEvaluationDataset(session: ServerSession): Promise<NormalizedDataset> {
+export async function loadEvaluationDataset(session: ServerSession, sessionId?: string): Promise<NormalizedDataset> {
   const credentials = { projectId: session.projectId, apiKey: session.apiKey };
   const payload = await getModelTestingResults(credentials);
   const normalized = normalizeEdgeImpulseResponse(payload, "testing");
@@ -116,6 +113,13 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
         ? buildShowClassificationUrl(session.projectId, Number(sample.id))
         : undefined,
     }));
+  setEdgeImpulseImageSources(
+    sessionId,
+    normalized.samples.map((sample) => ({
+      keys: [sample.id, sample.imageSampleId ?? ""],
+      url: sample.thumbnailUrl,
+    })),
+  );
   if (!samples.length) {
     throw new EdgeImpulseError("Dataset testing không có sample để đánh giá.", "EMPTY_DATASET", 404);
   }

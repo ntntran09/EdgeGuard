@@ -27,16 +27,23 @@ export type SafeProjectConfiguration = {
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const globalSessions = globalThis as typeof globalThis & {
   __presenceEdgeImpulseSessions?: Map<string, ServerSession>;
+  __presenceEdgeImpulseImageSources?: Map<string, Map<string, string>>;
 };
 
 const sessions =
   globalSessions.__presenceEdgeImpulseSessions ??
   (globalSessions.__presenceEdgeImpulseSessions = new Map<string, ServerSession>());
+const imageSources =
+  globalSessions.__presenceEdgeImpulseImageSources ??
+  (globalSessions.__presenceEdgeImpulseImageSources = new Map<string, Map<string, string>>());
 
 function removeExpiredSessions() {
   const now = Date.now();
   for (const [id, session] of sessions) {
-    if (session.expiresAt <= now) sessions.delete(id);
+    if (session.expiresAt <= now) {
+      sessions.delete(id);
+      imageSources.delete(id);
+    }
   }
 }
 
@@ -83,11 +90,36 @@ export function updateEdgeImpulseSession(
 export function deleteEdgeImpulseSession(id: string | undefined): void {
   if (!id) return;
   sessions.delete(id);
+  imageSources.delete(id);
 }
 
 export function clearEvaluationCachesForProject(projectId: number | undefined): void {
   void projectId;
-  // Evaluation and image data are proxied on demand in memory only today.
+  imageSources.clear();
+}
+
+export function setEdgeImpulseImageSources(
+  sessionId: string | undefined,
+  sources: Array<{ keys: string[]; url: string | undefined }>,
+): void {
+  if (!sessionId) return;
+  const next = new Map<string, string>();
+  for (const source of sources) {
+    if (!source.url) continue;
+    for (const key of source.keys) {
+      if (key) next.set(key, source.url);
+    }
+  }
+  imageSources.set(sessionId, next);
+}
+
+export function getEdgeImpulseImageSource(
+  sessionId: string | undefined,
+  key: string,
+): string | undefined {
+  if (!sessionId) return undefined;
+  removeExpiredSessions();
+  return imageSources.get(sessionId)?.get(key);
 }
 
 export function toSafeProjectConfiguration(

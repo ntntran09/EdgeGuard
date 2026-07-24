@@ -11,14 +11,15 @@ export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = getEdgeImpulseSession(request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value);
+    const sessionId = request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value;
+    const session = getEdgeImpulseSession(sessionId);
     if (!session) {
       return NextResponse.json(
         { ok: false, error: "Phiên Edge Impulse đã hết hạn. Hãy cấu hình lại project.", code: "NO_SESSION" },
         { status: 401 },
       );
     }
-    const dataset = await loadEvaluationDataset(session);
+    const dataset = await loadEvaluationDataset(session, sessionId);
     return NextResponse.json({
       ok: true,
       ...dataset,

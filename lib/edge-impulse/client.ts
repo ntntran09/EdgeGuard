@@ -204,10 +204,44 @@ export function detectImageContentType(bytes: ArrayBuffer, contentType = ""): st
   return null;
 }
 
+function normalizeImageSourceUrl(source: string): string | null {
+  const value = source.trim();
+  if (!value) return null;
+  try {
+    if (/^https?:\/\//i.test(value)) return new URL(value).toString();
+    if (value.startsWith("/v1/")) return new URL(value, "https://studio.edgeimpulse.com").toString();
+    if (value.startsWith("/api/")) return new URL(value, BASE_URL).toString();
+    if (value.startsWith("/")) return new URL(value, "https://studio.edgeimpulse.com").toString();
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchImageUrl(
+  credentials: EdgeImpulseCredentials,
+  url: string,
+  signal: AbortSignal,
+): Promise<{ bytes: ArrayBuffer; contentType: string } | null> {
+  const parsed = new URL(url);
+  const headers: Record<string, string> = { Accept: "image/jpeg,image/png,image/webp,image/*,*/*" };
+  if (parsed.hostname.endsWith("edgeimpulse.com")) headers["x-api-key"] = credentials.apiKey;
+  const response = await fetch(parsed, {
+    headers,
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const bytes = await response.arrayBuffer();
+  const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+  return contentType ? { bytes, contentType } : null;
+}
+
 export async function getSampleImage(
   credentials: EdgeImpulseCredentials,
   sampleId: string,
   afterInputBlock = false,
+  sourceUrls: string[] = [],
 ): Promise<{ bytes: ArrayBuffer; contentType: string }> {
   validateCredentials(credentials);
   if (!/^\d+$/.test(sampleId)) {
@@ -219,6 +253,9 @@ export async function getSampleImage(
   const processedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { afterInputBlock: true }));
   const plainProcessedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { includeImpulseId: false, afterInputBlock: true }));
   const rawUrl = new URL(buildRawSampleUrl(credentials.projectId, sampleNumber));
+  const sourceCandidates = sourceUrls
+    .map(normalizeImageSourceUrl)
+    .filter((value): value is string => Boolean(value));
   const paths = [
     `${imageUrl.pathname}${imageUrl.search}`,
     `${plainImageUrl.pathname}${plainImageUrl.search}`,
@@ -231,6 +268,10 @@ export async function getSampleImage(
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const started = Date.now();
   try {
+    for (const sourceUrl of sourceCandidates) {
+      const image = await fetchImageUrl(credentials, sourceUrl, controller.signal);
+      if (image) return image;
+    }
     const response = await fetch(`${BASE_URL}${path}`, {
       headers: { Accept: "image/jpeg,image/png,image/webp,image/*,*/*", "x-api-key": credentials.apiKey },
       signal: controller.signal,
@@ -249,6 +290,14 @@ export async function getSampleImage(
     return { bytes, contentType };
   } catch (error) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
+      for (const sourceUrl of sourceCandidates) {
+        try {
+          const image = await fetchImageUrl(credentials, sourceUrl, controller.signal);
+          if (image) return image;
+        } catch {
+          // Try the raw-data endpoints before surfacing the original error.
+        }
+      }
       for (const fallbackPath of paths.slice(1)) {
         try {
           const response = await fetch(`${BASE_URL}${fallbackPath}`, {
