@@ -259,7 +259,7 @@ async function imageProxyError(imageUrl?: string): Promise<string> {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("json")) {
       const data = (await response.json()) as { error?: string; code?: string };
-      return `${response.status} ${data.code ?? "IMAGE_PROXY_ERROR"}${data.error ? `: ${data.error}` : ""}`;
+      return `${response.status} ${data.code ?? "IMAGE_PROXY_ERROR"}${data.error ? `: ${data.error}` : ""} ${JSON.stringify(data)}`;
     }
     return `${response.status} ${response.statusText || "IMAGE_PROXY_ERROR"} (${contentType || "no content-type"})`;
   } catch (error) {

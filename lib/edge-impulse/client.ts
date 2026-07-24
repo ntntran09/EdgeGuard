@@ -156,7 +156,7 @@ export async function getAllRawData(
       category,
       limit: String(limit),
       offset: String(offset),
-      impulseId: String(EDGE_IMPULSE_CONFIG.impulseId),
+      dataType: "image",
     });
     const path = `/api/${credentials.projectId}/raw-data?${params.toString()}`;
     const payload = await request(credentials, path);

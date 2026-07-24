@@ -13,7 +13,25 @@ const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
 const RAW_DATA_CATEGORIES = ["testing", "validation", "training"] as const;
 
 function filenameKey(filename: string): string {
-  return filename.trim().toLowerCase().replace(/\\/g, "/").split("/").pop() ?? filename.trim().toLowerCase();
+  const basename = filename.trim().toLowerCase().replace(/\\/g, "/").split("/").pop() ?? filename.trim().toLowerCase();
+  return basename
+    .replace(/\.(json|cbor)$/i, "")
+    .replace(/\.(jpe?g|png|webp|gif|bmp)$/i, "");
+}
+
+function matchingRawSample(
+  rawSamples: NormalizedDataset["samples"],
+  sample: NormalizedDataset["samples"][number],
+): NormalizedDataset["samples"][number] | undefined {
+  const sampleKey = filenameKey(sample.filename);
+  return rawSamples.find((raw) => {
+    const rawKey = filenameKey(raw.filename);
+    return raw.id === sample.id ||
+      raw.filename === sample.filename ||
+      rawKey === sampleKey ||
+      rawKey.includes(sampleKey) ||
+      sampleKey.includes(rawKey);
+  });
 }
 
 function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
@@ -87,14 +105,23 @@ export async function loadEvaluationDataset(session: ServerSession, sessionId?: 
     const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
     const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
     const rawSampleByFilename = new Map(rawDataset.samples.map((sample) => [filenameKey(sample.filename), sample]));
-    normalized.samples = normalized.samples.map((sample) => ({
-      ...sample,
-      groundTruthBoxes: groundTruthById.get(sample.id) ?? groundTruthByName.get(sample.filename) ?? [],
-      imageSampleId: rawSampleById.get(sample.id)?.id ?? rawSampleByName.get(sample.filename)?.id ?? rawSampleByFilename.get(filenameKey(sample.filename))?.id ?? sample.imageSampleId,
-      thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl ?? rawSampleByFilename.get(filenameKey(sample.filename))?.thumbnailUrl,
-      imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageWidth,
-      imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageHeight,
-    }));
+    normalized.samples = normalized.samples.map((sample) => {
+      const rawSample =
+        rawSampleById.get(sample.id) ??
+        rawSampleByName.get(sample.filename) ??
+        rawSampleByFilename.get(filenameKey(sample.filename)) ??
+        matchingRawSample(rawDataset.samples, sample);
+      return {
+        ...sample,
+        groundTruthBoxes: sample.groundTruthBoxes.length
+          ? sample.groundTruthBoxes
+          : groundTruthById.get(sample.id) ?? groundTruthByName.get(sample.filename) ?? rawSample?.groundTruthBoxes ?? [],
+        imageSampleId: rawSample?.id ?? sample.imageSampleId,
+        thumbnailUrl: sample.thumbnailUrl ?? rawSample?.thumbnailUrl,
+        imageWidth: sample.imageWidth ?? rawSample?.imageWidth,
+        imageHeight: sample.imageHeight ?? rawSample?.imageHeight,
+      };
+    });
   }
   if (!needsGroundTruth) {
     try {
@@ -103,13 +130,20 @@ export async function loadEvaluationDataset(session: ServerSession, sessionId?: 
         const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
         const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
         const rawSampleByFilename = new Map(rawDataset.samples.map((sample) => [filenameKey(sample.filename), sample]));
-        normalized.samples = normalized.samples.map((sample) => ({
-          ...sample,
-          imageSampleId: rawSampleById.get(sample.id)?.id ?? rawSampleByName.get(sample.filename)?.id ?? rawSampleByFilename.get(filenameKey(sample.filename))?.id ?? sample.imageSampleId,
-          thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl ?? rawSampleByFilename.get(filenameKey(sample.filename))?.thumbnailUrl,
-          imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageWidth,
-          imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageHeight,
-        }));
+        normalized.samples = normalized.samples.map((sample) => {
+          const rawSample =
+            rawSampleById.get(sample.id) ??
+            rawSampleByName.get(sample.filename) ??
+            rawSampleByFilename.get(filenameKey(sample.filename)) ??
+            matchingRawSample(rawDataset.samples, sample);
+          return {
+            ...sample,
+            imageSampleId: rawSample?.id ?? sample.imageSampleId,
+            thumbnailUrl: sample.thumbnailUrl ?? rawSample?.thumbnailUrl,
+            imageWidth: sample.imageWidth ?? rawSample?.imageWidth,
+            imageHeight: sample.imageHeight ?? rawSample?.imageHeight,
+          };
+        });
       }
     } catch {
       // Raw-data metadata is only used to improve image display when metrics already have labels.
