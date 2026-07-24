@@ -44,6 +44,8 @@ const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
 const uint16_t CAMERA_HTTP_PORT = 81;
 const unsigned long CAMERA_MUTEX_TIMEOUT_MS = 2500;
 const unsigned long CAMERA_ENDPOINT_RETRY_MS = 5000;
+const size_t CAMERA_MQTT_CHUNK_BYTES = 1024;
+const size_t CAMERA_MAX_MQTT_FRAME_BYTES = 60000;
 const unsigned long FOMO_INIT_RETRY_MS = 10000;
 // Lightweight frame analysis gates the expensive FOMO classifier. A sampled
 // pixel counts as changed when its grayscale value moves by this amount.
@@ -52,7 +54,7 @@ const uint8_t CAMERA_BASELINE_WARMUP_FRAMES = 5;
 const uint8_t CAMERA_CHANGE_SAMPLE_WIDTH = 20;
 const uint8_t CAMERA_CHANGE_SAMPLE_HEIGHT = 15;
 const uint8_t CAMERA_PIXEL_CHANGE_THRESHOLD = 24;
-const float CAMERA_FOMO_TRIGGER_CHANGE_PERCENT = 50.0f;
+const float CAMERA_FOMO_TRIGGER_CHANGE_PERCENT = 30.0f;
 const float CAMERA_FOMO_RECHECK_CHANGE_PERCENT = 60.0f;
 const unsigned long VISION_STABLE_ALERT_MS = 5000;
 // Occlusion is confirmed across several samples to avoid one-frame exposure

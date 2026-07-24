@@ -41,6 +41,8 @@ const size_t FOMO_MQTT_PAYLOAD_BYTES = 896;
 const size_t FOMO_ALERT_PAYLOAD_BYTES = 512;
 
 struct FomoPublishMessage {
+  uint32_t eventId;
+  bool eventFrameCached;
   size_t length;
   char payload[FOMO_MQTT_PAYLOAD_BYTES];
 };
@@ -531,10 +533,12 @@ void fomo_publishResult(
   JsonDocument doc;
   JsonArray detections = doc["detections"].to<JsonArray>();
   size_t publishedCount = 0;
+  bool publishPeopleOnly = summary.peopleCount > 0;
 
   for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
     const ei_impulse_result_bounding_box_t &box = result.bounding_boxes[i];
     if (box.value <= FOMO_MIN_CONFIDENCE) continue;
+    if (publishPeopleOnly && strcmp(box.label, "human") != 0) continue;
     if (publishedCount >= FOMO_MAX_PUBLISHED_DETECTIONS) continue;
 
     JsonObject item = detections.add<JsonObject>();
@@ -550,14 +554,15 @@ void fomo_publishResult(
     publishedCount++;
   }
 
-  doc["label"] = fomo_eventLabel(summary.bestLabel);
-  doc["model_label"] = summary.bestLabel;
-  doc["object_type"] = fomo_objectType(summary.bestLabel);
+  const char *publishedLabel = publishPeopleOnly ? "human" : summary.bestLabel;
+  doc["label"] = fomo_eventLabel(publishedLabel);
+  doc["model_label"] = publishedLabel;
+  doc["object_type"] = fomo_objectType(publishedLabel);
   doc["confidence"] = summary.bestConfidence;
-  doc["object_count"] = summary.detectionCount;
+  doc["object_count"] = publishPeopleOnly ? summary.peopleCount : summary.detectionCount;
   doc["people_count"] = summary.peopleCount;
-  doc["bag_count"] = summary.bagCount;
-  doc["package_count"] = summary.packageCount;
+  doc["bag_count"] = publishPeopleOnly ? 0 : summary.bagCount;
+  doc["package_count"] = publishPeopleOnly ? 0 : summary.packageCount;
   doc["event_id"] = eventId;
   doc["frame_change_percent"] = triggerChangePercent;
   doc["recheck_change_percent"] = CAMERA_FOMO_RECHECK_CHANGE_PERCENT;
@@ -570,6 +575,8 @@ void fomo_publishResult(
   doc["event_frame_cached"] = eventFrameCached;
 
   FomoPublishMessage message = {};
+  message.eventId = eventId;
+  message.eventFrameCached = eventFrameCached;
   message.length = serializeJson(doc, message.payload, sizeof(message.payload));
   if (message.length == 0 || message.length >= sizeof(message.payload)) {
     Serial.println("[FOMO] Result JSON is too large");
@@ -608,6 +615,7 @@ FomoInferenceSummary fomo_runInference(
   }
 
   summary.completed = true;
+  float bestPersonConfidence = 0.0f;
   uint32_t inferenceNumber = ++fomoInferenceCount;
   Serial.printf(
     "[FOMO] #%lu event %lu after %.1f%% change, in %lu ms (DSP %d ms, NN %d ms)\n",
@@ -624,7 +632,10 @@ FomoInferenceSummary fomo_runInference(
     if (box.value <= FOMO_MIN_CONFIDENCE) continue;
 
     summary.detectionCount++;
-    if (strcmp(box.label, "human") == 0) summary.peopleCount++;
+    if (strcmp(box.label, "human") == 0) {
+      summary.peopleCount++;
+      if (box.value > bestPersonConfidence) bestPersonConfidence = box.value;
+    }
     else if (strcmp(box.label, "backpack") == 0) summary.bagCount++;
     else if (strcmp(box.label, "package") == 0) summary.packageCount++;
 
@@ -646,6 +657,15 @@ FomoInferenceSummary fomo_runInference(
       box.x + (box.width / 2.0f),
       box.y + (box.height / 2.0f)
     );
+  }
+
+  // A mixed person/object frame belongs to the person-recognition pipeline.
+  // Keep object boxes out of the published overlay and use the strongest
+  // person confidence for the top-level event.
+  if (summary.peopleCount > 0) {
+    summary.bestConfidence = bestPersonConfidence;
+    strncpy(summary.bestLabel, "human", sizeof(summary.bestLabel));
+    summary.bestLabel[sizeof(summary.bestLabel) - 1] = '\0';
   }
 
   if (summary.detectionCount == 0) Serial.println("[FOMO]   no person, bag or package");
@@ -791,6 +811,16 @@ void fomo_processFrame(
   bool shouldClassify = fomoVisionState == FOMO_VISION_MONITORING
     ? analysis.changePercent > requiredChange
     : analysis.changePercent >= requiredChange;
+
+  // Once an object/stranger timer has started, finish that stability window
+  // before another frame-change (even above the trigger) may run FOMO again.
+  if (!fomoVisionAlertSent && fomoStableSince != 0) {
+    if (now - fomoStableSince >= VISION_STABLE_ALERT_MS) {
+      fomo_maybeAlertForStableDetection(now, analysis);
+    }
+    return;
+  }
+
   if (shouldClassify) {
     fomo_classifyCurrentFrame(now, frameWidth, frameHeight, analysis);
     return;
@@ -864,14 +894,31 @@ void fomo_loop() {
 
   FomoPublishMessage inferenceMessage = {};
   if (fomoPublishQueue
-      && xQueueReceive(fomoPublishQueue, &inferenceMessage, 0) == pdTRUE
-      && !mqttClient.publish(
-        mqtt_topic("/model/inference").c_str(),
-        reinterpret_cast<const uint8_t *>(inferenceMessage.payload),
-        inferenceMessage.length,
-        false
-      )) {
-    Serial.println("[FOMO] MQTT result publish failed");
+      && xQueueReceive(fomoPublishQueue, &inferenceMessage, 0) == pdTRUE) {
+    if (inferenceMessage.eventFrameCached
+        && !camera_publishEventFrame(inferenceMessage.eventId)) {
+      if (!mqttClient.connected()) {
+        // A partial streaming PUBLISH invalidates the socket. Retry the image
+        // and inference together after reconnecting.
+        xQueueOverwrite(fomoPublishQueue, &inferenceMessage);
+        return;
+      }
+      // An oversized/busy MQTT frame can still be retrieved through HTTP.
+      Serial.printf(
+        "[FOMO] Event %lu will use HTTP image retrieval only\n",
+        static_cast<unsigned long>(inferenceMessage.eventId)
+      );
+    }
+
+    if (!mqttClient.publish(
+          mqtt_topic("/model/inference").c_str(),
+          reinterpret_cast<const uint8_t *>(inferenceMessage.payload),
+          inferenceMessage.length,
+          false
+        )) {
+      xQueueOverwrite(fomoPublishQueue, &inferenceMessage);
+      Serial.println("[FOMO] MQTT result publish failed");
+    }
   }
 
   FomoAlertMessage alertMessage = {};

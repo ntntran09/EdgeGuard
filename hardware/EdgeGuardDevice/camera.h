@@ -120,6 +120,57 @@ bool camera_cacheEventFrame(
   return true;
 }
 
+bool camera_publishEventFrame(uint32_t eventId) {
+  if (!mqttClient.connected() || eventId == 0 || !cameraEventFrameMutex) return false;
+  if (xSemaphoreTake(cameraEventFrameMutex, pdMS_TO_TICKS(CAMERA_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    Serial.printf("[Camera Event] MQTT frame busy for event %lu\n", static_cast<unsigned long>(eventId));
+    return false;
+  }
+
+  if (!cameraEventFrameBuffer
+      || cameraEventFrameLength == 0
+      || cameraEventFrameLength > CAMERA_MAX_MQTT_FRAME_BYTES
+      || cameraEventFrameId != eventId) {
+    xSemaphoreGive(cameraEventFrameMutex);
+    Serial.printf(
+      "[Camera Event] MQTT frame unavailable for event %lu\n",
+      static_cast<unsigned long>(eventId)
+    );
+    return false;
+  }
+
+  String topic = mqtt_topic("/image/event/") + String(eventId);
+  bool ok = mqttClient.beginPublish(topic.c_str(), cameraEventFrameLength, false);
+  size_t written = 0;
+  while (ok && written < cameraEventFrameLength) {
+    size_t chunkSize = min(CAMERA_MQTT_CHUNK_BYTES, cameraEventFrameLength - written);
+    size_t chunkWritten = mqttClient.write(cameraEventFrameBuffer + written, chunkSize);
+    ok = chunkWritten == chunkSize;
+    written += chunkWritten;
+    delay(0);
+  }
+  if (ok) ok = mqttClient.endPublish() == 1;
+  xSemaphoreGive(cameraEventFrameMutex);
+
+  if (!ok) {
+    cameraPublishFailures++;
+    // A partial streaming PUBLISH leaves the MQTT socket out of sync.
+    mqttClient.disconnect();
+    Serial.printf(
+      "[Camera Event] MQTT publish failed for event %lu\n",
+      static_cast<unsigned long>(eventId)
+    );
+    return false;
+  }
+
+  Serial.printf(
+    "[Camera Event] Published event %lu through MQTT (%u bytes)\n",
+    static_cast<unsigned long>(eventId),
+    static_cast<unsigned int>(written)
+  );
+  return true;
+}
+
 esp_err_t camera_indexHandler(httpd_req_t *request) {
   static const char page[] =
     "<!doctype html><html><head><meta name=viewport content='width=device-width'>"

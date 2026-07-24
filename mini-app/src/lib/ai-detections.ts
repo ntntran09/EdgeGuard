@@ -16,6 +16,15 @@ export function normalizeAiDetections(payload: unknown): AiDetection[] {
 
   const inputWidth = finiteNumber(payload.input_width) || 96;
   const inputHeight = finiteNumber(payload.input_height) || 96;
+  const hasPerson = payload.detections.some((value) => (
+    isRecord(value)
+    && (
+      value.type === 'person'
+      || value.label === 'person'
+      || value.label === 'human'
+    )
+    && (finiteNumber(value.confidence) ?? 0) > AI_MIN_CONFIDENCE
+  ));
 
   return payload.detections.flatMap((value) => {
     if (!isRecord(value)) return [];
@@ -26,9 +35,11 @@ export function normalizeAiDetections(payload: unknown): AiDetection[] {
     const width = finiteNumber(value.width);
     const height = finiteNumber(value.height);
     const isFaceBox = typeof value.type === 'string' && value.type.startsWith('face_');
+    const isPerson = value.type === 'person' || value.label === 'person' || value.label === 'human';
     if (
       confidence === undefined
       || (!isFaceBox && confidence <= AI_MIN_CONFIDENCE)
+      || (hasPerson && !isPerson && !isFaceBox)
       || x === undefined
       || y === undefined
       || width === undefined

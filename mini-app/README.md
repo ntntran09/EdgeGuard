@@ -21,7 +21,7 @@ manual-uploads/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
 
 The main `EdgeGuardDevice` firmware serves `/capture`, `/event-frame`, `/stream`, and `/health` on port 81. Whenever its Wi-Fi address changes, it publishes the complete endpoint set to the retained MQTT topic `{topic-base}/telemetry/endpoints`. The backend consumes that announcement and proxies JPEG frames through `/api/camera/frame`, so `CAMERA_STREAM_URL` and `CAMERA_CAPTURE_URL` are not required in `.env`.
 
-AI events use `/event-frame?event_id=<id>` rather than `/capture`. Firmware caches the original JPEG used for FOMO and the backend verifies `X-EdgeGuard-Event-Id` before saving it or sending it to Rekognition. The raw detection is inserted before recognition begins. If the tagged frame cannot be retrieved, the event is stored without an image; a newer live frame is never substituted.
+AI events prefer `/event-frame?event_id=<id>` rather than `/capture`. Firmware caches the original JPEG used for FOMO, publishes that exact frame outbound to `{topic-base}/image/event/<id>`, and only then publishes the inference JSON. The backend verifies `X-EdgeGuard-Event-Id` when HTTP is available; if HTTP is missing, unreachable, busy, or returns the wrong ID, it falls back to the MQTT frame carrying the same event ID. The raw detection is inserted before recognition begins. If neither exact source is available, the event is stored without an image; a newer live frame is never substituted.
 
 Open **Settings → System → Dynamic connection paths** to inspect the MQTT topic, device URLs, and server proxy currently in use. The dashboard polls individual JPEG frames because this is more reliable than holding a long-lived MJPEG connection through the application server.
 

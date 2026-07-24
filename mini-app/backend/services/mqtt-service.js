@@ -27,6 +27,8 @@ const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
 const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
 const LIVE_FRAME_MAX_AGE_MS = 5000;
+const EVENT_FRAME_MAX_AGE_MS = 60 * 1000;
+const MAX_CACHED_EVENT_FRAMES = 8;
 const AI_MIN_CONFIDENCE = 0.7;
 const EVENT_IMAGE_CAPTURE_TIMEOUT_MS = 6000;
 
@@ -224,6 +226,7 @@ export function createMqttService() {
     config: `${topicBase}/command/config`,
     imageRaw: `${topicBase}/image`,
     imageJson: `${topicBase}/image/json`,
+    eventImage: `${topicBase}/image/event/+`,
     telemetry: Object.fromEntries(
       Object.entries(TELEMETRY_KEYS).map(([key, suffix]) => [key, `${topicBase}${suffix}`])
     ),
@@ -245,6 +248,7 @@ export function createMqttService() {
   let client = null;
   let deviceAccessConfig = buildDeviceAccessPayload();
   let latestFrame = null;
+  const eventFrames = new Map();
   const frameSubscribers = new Set();
 
   function publish(topic, payload, options = {}) {
@@ -322,10 +326,15 @@ export function createMqttService() {
   }
 
   async function handleImageMessage(topic, payload) {
+    const eventTopicPrefix = `${topicBase}/image/event/`;
+    const eventId = topic.startsWith(eventTopicPrefix)
+      ? Number(topic.slice(eventTopicPrefix.length))
+      : null;
     const metadata = {
       topic,
       source: 'mqtt',
       deviceId: config.mqtt.deviceId,
+      ...(Number.isInteger(eventId) && eventId > 0 ? { eventId } : {}),
     };
 
     const frame = topic === topics.imageJson
@@ -333,6 +342,21 @@ export function createMqttService() {
       : createTransientImageBuffer(payload, metadata);
     const publicFrame = { ...frame };
     delete publicFrame.buffer;
+
+    if (Number.isInteger(eventId) && eventId > 0) {
+      eventFrames.set(eventId, frame);
+      const now = Date.now();
+      for (const [cachedEventId, cachedFrame] of eventFrames) {
+        const receivedAt = Date.parse(cachedFrame.receivedAt);
+        if (eventFrames.size > MAX_CACHED_EVENT_FRAMES
+            || !Number.isFinite(receivedAt)
+            || now - receivedAt > EVENT_FRAME_MAX_AGE_MS) {
+          eventFrames.delete(cachedEventId);
+        }
+      }
+      console.log(`[MQTT] Cached exact ${frame.bytes}-byte frame for event ${eventId}`);
+      return;
+    }
 
     latestFrame = frame;
     snapshot.latestImage = publicFrame;
@@ -355,11 +379,25 @@ export function createMqttService() {
       ? cameraEventFrameEndpoint(snapshot.summary, eventId)
       : cameraCaptureEndpoint(snapshot.summary);
     const fallbackImage = snapshot.latestImage?.base64;
+    const mqttEventFrame = exactFrame ? eventFrames.get(eventId) : null;
+    const mqttEventReceivedAt = mqttEventFrame ? Date.parse(mqttEventFrame.receivedAt) : NaN;
+    const mqttEventImage = mqttEventFrame
+      && Number.isFinite(mqttEventReceivedAt)
+      && Date.now() - mqttEventReceivedAt <= EVENT_FRAME_MAX_AGE_MS
+      ? {
+          imagePath: mqttEventFrame.base64,
+          source: 'mqtt_exact_event_frame',
+          capturedAt: mqttEventFrame.capturedAt || mqttEventFrame.receivedAt,
+          eventId,
+        }
+      : null;
 
     // Never associate an AI event with a newer fallback frame. If the device
-    // cannot return the frame tagged with this event_id, store no image.
+    // cannot return the frame tagged with this event_id over HTTP, use only
+    // the same event_id received through MQTT.
     if (exactFrame && !captureUrl) {
-      return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+      return mqttEventImage
+        ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
     }
 
     // Nếu đã có frame MQTT mới (< 5s), dùng luôn, không cần fetch ESP32
@@ -433,7 +471,8 @@ export function createMqttService() {
     } catch (error) {
       console.error('[MQTT] Could not capture a camera frame for AI event:', error);
       if (exactFrame) {
-        return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+        return mqttEventImage
+          ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
       }
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
@@ -820,6 +859,7 @@ export function createMqttService() {
         ...Object.values(topics.telemetry),
         topics.imageRaw,
         topics.imageJson,
+        topics.eventImage,
       ];
 
       client.subscribe(subscriptions, { qos: 0 }, (error) => {
@@ -837,7 +877,9 @@ export function createMqttService() {
     });
 
     client.on('message', (topic, payload, packet) => {
-      if (topic === topics.imageRaw || topic === topics.imageJson) {
+      if (topic === topics.imageRaw
+          || topic === topics.imageJson
+          || topic.startsWith(`${topicBase}/image/event/`)) {
         if (packet.retain) {
           console.warn(`[MQTT] Removing stale retained image on ${topic}; waiting for a fresh camera frame`);
           client.publish(topic, Buffer.alloc(0), { qos: 1, retain: true }, (error) => {
