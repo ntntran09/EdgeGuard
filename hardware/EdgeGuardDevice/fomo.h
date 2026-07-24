@@ -15,6 +15,7 @@
 #include <string.h>
 
 extern volatile bool deviceAiDetectionEnabled;
+extern String deviceFomoHttpResultUrl;
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #error "This Edge Impulse export conflicts with TensorFlow Lite Micro in ESP32 Arduino core 3.x; use core 2.0.17"
@@ -919,7 +920,12 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
   request.setConnectTimeout(FOMO_HTTP_CONNECT_TIMEOUT_MS);
   request.setTimeout(FOMO_HTTP_RESPONSE_TIMEOUT_MS);
   request.setReuse(false);
-  if (!request.begin(FOMO_HTTP_RESULT_URL)) {
+  if (!deviceFomoHttpResultUrl.length()) {
+    Serial.println("[FOMO HTTP] Missing inference URL; waiting for MQTT config");
+    return false;
+  }
+
+  if (!request.begin(deviceFomoHttpResultUrl)) {
     Serial.println("[FOMO HTTP] Could not initialize request");
     return false;
   }

@@ -13,6 +13,7 @@ volatile bool deviceAiDetectionEnabled = true;
 unsigned long deviceAutoLockMs = DEFAULT_AUTO_LOCK_MS;
 int deviceLockAngle = SERVO_LOCK_ANGLE;
 int deviceUnlockAngle = SERVO_UNLOCK_ANGLE;
+String deviceFomoHttpResultUrl = DEFAULT_FOMO_HTTP_RESULT_URL;
 String deviceRfidAllowlist[MAX_OFFLINE_RFID_CARDS];
 size_t deviceRfidAllowlistCount = 0;
 String deviceRfidAllowlistCsv;
@@ -100,6 +101,12 @@ String device_buildRfidCsv(JsonArrayConst allowlist) {
   return csv;
 }
 
+bool device_isHttpUrl(const String &value) {
+  return value.length() > 0
+    && value.length() <= 180
+    && (value.startsWith("http://") || value.startsWith("https://"));
+}
+
 void device_setup() {
   Preferences preferences;
   if (preferences.begin("edgeguard", true)) {
@@ -109,6 +116,10 @@ void device_setup() {
     deviceAutoLockMs = preferences.getULong("lockms", DEFAULT_AUTO_LOCK_MS);
     deviceLockAngle = preferences.getInt("lockang", SERVO_LOCK_ANGLE);
     deviceUnlockAngle = preferences.getInt("unlockang", SERVO_UNLOCK_ANGLE);
+    deviceFomoHttpResultUrl = preferences.getString("fomourl", DEFAULT_FOMO_HTTP_RESULT_URL);
+    if (!device_isHttpUrl(deviceFomoHttpResultUrl)) {
+      deviceFomoHttpResultUrl = DEFAULT_FOMO_HTTP_RESULT_URL;
+    }
     device_loadRfidCsv(preferences.getString("rfiduids", ""));
     preferences.end();
   }
@@ -148,6 +159,7 @@ void device_applyConfig(JsonDocument &doc) {
   bool persistAutoLockMs = false;
   bool persistLockAngle = false;
   bool persistUnlockAngle = false;
+  bool persistFomoHttpUrl = false;
   bool persistRfidAllowlist = false;
 
   if (source["auto_lock_enabled"].is<bool>()) {
@@ -191,13 +203,30 @@ void device_applyConfig(JsonDocument &doc) {
     deviceUnlockAngle = next;
   }
 
+  const char *nextFomoUrl = nullptr;
+  if (source["fomo_inference_url"].is<const char *>()) {
+    nextFomoUrl = source["fomo_inference_url"];
+  } else if (source["fomo_http_result_url"].is<const char *>()) {
+    nextFomoUrl = source["fomo_http_result_url"];
+  }
+  if (nextFomoUrl) {
+    String normalizedUrl = String(nextFomoUrl);
+    normalizedUrl.trim();
+    if (device_isHttpUrl(normalizedUrl)) {
+      persistFomoHttpUrl = normalizedUrl != deviceFomoHttpResultUrl;
+      deviceFomoHttpResultUrl = normalizedUrl;
+    } else {
+      Serial.println("[Device] Ignored invalid FOMO HTTP URL from config");
+    }
+  }
+
   if (source["rfid_allowlist"].is<JsonArrayConst>()) {
     String next = device_buildRfidCsv(source["rfid_allowlist"].as<JsonArrayConst>());
     persistRfidAllowlist = next != deviceRfidAllowlistCsv;
     if (persistRfidAllowlist) device_loadRfidCsv(next);
   }
 
-  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistRfidAllowlist) {
+  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistFomoHttpUrl || persistRfidAllowlist) {
     Preferences preferences;
     if (preferences.begin("edgeguard", false)) {
       if (persistAutoLock) preferences.putBool("autolock", deviceAutoLockEnabled);
@@ -206,6 +235,7 @@ void device_applyConfig(JsonDocument &doc) {
       if (persistAutoLockMs) preferences.putULong("lockms", deviceAutoLockMs);
       if (persistLockAngle) preferences.putInt("lockang", deviceLockAngle);
       if (persistUnlockAngle) preferences.putInt("unlockang", deviceUnlockAngle);
+      if (persistFomoHttpUrl) preferences.putString("fomourl", deviceFomoHttpResultUrl);
       if (persistRfidAllowlist) {
         preferences.putString("rfiduids", deviceRfidAllowlistCsv);
         String storedRfidCsv = preferences.getString("rfiduids", "");
@@ -232,6 +262,7 @@ void device_applyConfig(JsonDocument &doc) {
     deviceAiDetectionEnabled ? "on" : "off",
     static_cast<unsigned int>(deviceRfidAllowlistCount)
   );
+  Serial.printf("[Device] FOMO HTTP URL: %s\n", deviceFomoHttpResultUrl.c_str());
   device_printRfidAllowlist("Current");
 }
 

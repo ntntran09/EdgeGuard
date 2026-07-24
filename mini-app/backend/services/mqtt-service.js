@@ -60,6 +60,8 @@ export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
     auto_lock_ms: autoLockMs,
     camera_publish_enabled: settings.camera_image_publish_enabled !== false,
     ai_detection_enabled: settings.ai_detection_enabled === true,
+    backend_url: config.backend.publicUrl,
+    fomo_inference_url: config.backend.fomoInferenceUrl,
     lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
     unlock_angle: clampNumber(config.access.unlockAngle, 0, 180, 90),
     rfid_allowlist: [...new Set(rfidAllowlist.map(normalizeTagId).filter(Boolean))]
@@ -305,6 +307,7 @@ export function createMqttService() {
       + `after ${deviceAccessConfig.auto_lock_ms} ms, camera live view `
       + `${deviceAccessConfig.camera_publish_enabled ? 'on' : 'off'}, AI detection `
       + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, `
+      + `FOMO HTTP ${deviceAccessConfig.fomo_inference_url}, `
       + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
     );
     return { synced: true, config: deviceAccessConfig };
@@ -985,6 +988,8 @@ export function createMqttService() {
     },
     publishConfig(payload) {
       return publish(topics.config, JSON.stringify({
+        backend_url: config.backend.publicUrl,
+        fomo_inference_url: config.backend.fomoInferenceUrl,
         ...payload,
         requested_at: new Date().toISOString(),
         source: 'api',

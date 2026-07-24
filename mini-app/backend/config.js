@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import dotenv from 'dotenv';
@@ -23,8 +24,56 @@ function booleanFromEnv(name, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
+function normalizeHttpBaseUrl(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.pathname = '/';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function privateIpv4Rank(address) {
+  if (address.startsWith('192.168.')) return 1;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(address)) return 2;
+  if (address.startsWith('10.')) return 3;
+  if (address.startsWith('169.254.')) return 9;
+  return 4;
+}
+
+function detectLanIpv4() {
+  const addresses = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((item) => item && !item.internal && item.family === 'IPv4')
+    .map((item) => item.address)
+    .sort((left, right) => privateIpv4Rank(left) - privateIpv4Rank(right));
+  return addresses[0] || '127.0.0.1';
+}
+
+function appendUrlPath(baseUrl, pathname) {
+  return new URL(pathname, `${baseUrl.replace(/\/$/, '')}/`).toString();
+}
+
+const serverPort = numberFromEnv('PORT', 3000);
+const configuredBackendUrl = normalizeHttpBaseUrl(
+  process.env.FOMO_HTTP_BASE_URL
+    || process.env.BACKEND_PUBLIC_URL
+    || process.env.NEXT_PUBLIC_BACKEND_URL
+    || process.env.BACKEND_URL
+);
+const backendPublicUrl = configuredBackendUrl || `http://${detectLanIpv4()}:${serverPort}`;
+
 export const config = {
-  port: numberFromEnv('PORT', 3000),
+  port: serverPort,
+  backend: {
+    publicUrl: backendPublicUrl,
+    fomoInferenceUrl: appendUrlPath(backendPublicUrl, '/api/fomo/inference'),
+  },
   supabase: {
     url: process.env.SUPABASE_URL,
     serviceKey: process.env.SUPABASE_SERVICE_KEY,

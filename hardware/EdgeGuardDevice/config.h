@@ -8,9 +8,7 @@ const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_DEVICE_ID = "device_001";
 const char *MQTT_TOPIC_BASE = "/EdgeGuard/device_001";
-// The computer currently has 172.20.10.3 on the same Wi-Fi network. Update
-// this URL whenever the backend computer receives a different LAN address.
-const char *FOMO_HTTP_RESULT_URL = "http://172.20.10.3:3000/api/fomo/inference";
+const char *DEFAULT_FOMO_HTTP_RESULT_URL = "http://172.20.10.3:3000/api/fomo/inference";
 const unsigned long FOMO_HTTP_RETRY_MS = 2000;
 const uint16_t FOMO_HTTP_CONNECT_TIMEOUT_MS = 2000;
 const uint16_t FOMO_HTTP_RESPONSE_TIMEOUT_MS = 4000;
