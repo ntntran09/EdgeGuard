@@ -64,7 +64,7 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
   const normalized = normalizeEdgeImpulseResponse(payload, "testing");
   const needsGroundTruth = normalized.samples.every((sample) => sample.groundTruthBoxes.length === 0);
   if (needsGroundTruth) {
-    const rawItems = await getAllRawData(credentials, "testing");
+    const rawItems = await getAllRawData(credentials, "all");
     if (!rawItems.length) {
       throw new EdgeImpulseError(
         "Không thể tải dữ liệu Model Testing từ Edge Impulse.",
@@ -89,7 +89,7 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
   }
   if (!needsGroundTruth) {
     try {
-      const rawItems = await getAllRawData(credentials, "testing");
+      const rawItems = await getAllRawData(credentials, "all");
       if (rawItems.length) {
         const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
         const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));

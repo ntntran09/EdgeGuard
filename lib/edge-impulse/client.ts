@@ -147,7 +147,7 @@ export function getModelTestingResults(
 
 export async function getAllRawData(
   credentials: EdgeImpulseCredentials,
-  category: "testing" | "validation",
+  category: "testing" | "validation" | "all",
   limit = 200,
 ): Promise<unknown[]> {
   const items: unknown[] = [];
