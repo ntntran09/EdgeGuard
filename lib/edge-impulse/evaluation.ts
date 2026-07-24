@@ -11,6 +11,16 @@ import type { ServerSession } from "@/lib/edge-impulse/session";
 
 const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
 
+function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
+  if (
+    sample.thumbnailUrl &&
+    (/^https?:\/\//.test(sample.thumbnailUrl) || sample.thumbnailUrl.startsWith("/demo/"))
+  ) {
+    return sample.thumbnailUrl;
+  }
+  return `/api/images/${encodeURIComponent(sample.id)}`;
+}
+
 function labelsInDataset(dataset: NormalizedDataset): string[] {
   return [
     ...new Set([
@@ -69,7 +79,7 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
     .filter((sample) => !sample.category || sample.category === "testing")
     .map((sample) => ({
       ...sample,
-      thumbnailUrl: `/api/images/${encodeURIComponent(sample.id)}`,
+      thumbnailUrl: browserImageUrl(sample),
       classificationUrl: /^\d+$/.test(sample.id)
         ? buildShowClassificationUrl(session.projectId, Number(sample.id))
         : undefined,

@@ -320,6 +320,11 @@ function VisualFrame({
             <span className="mt-1 max-w-sm text-xs">
               Hãy tải lại kết quả để làm mới phiên ảnh Edge Impulse.
             </span>
+            {imageErrorText && (
+              <code className="mt-3 max-w-xl rounded-lg bg-slate-950 px-3 py-2 text-[11px] text-amber-200">
+                {imageErrorText}
+              </code>
+            )}
           </div>
         ) : (
           <div className="mx-auto" style={{ width: `${zoom * 100}%`, minWidth: "100%" }}>
