@@ -89,31 +89,41 @@ export default function DashboardPage() {
     setToast({ msg, kind });
   }, []);
 
-  const loadDashboard = useCallback(async () => {
+  const loadEvents = useCallback(async () => {
     try {
-      const [eventsRes, statusRes] = await Promise.all([
-        api.getEvents(),
-        api.getStatus(),
-      ]);
+      const eventsRes = await api.getEvents();
       setEvents(eventsRes.events || []);
-      setStatus(statusRes);
     } catch (error) {
-      console.error('Failed to load dashboard', error);
+      console.error('Failed to load events', error);
       setEvents([]);
+    }
+  }, []);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      setStatus(await api.getStatus());
+    } catch (error) {
+      console.error('Failed to load status', error);
       setStatus(null);
     }
   }, []);
+
+  const loadDashboard = useCallback(async () => {
+    await Promise.all([loadEvents(), loadStatus()]);
+  }, [loadEvents, loadStatus]);
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
       void loadDashboard();
     }, 0);
-    const interval = window.setInterval(loadDashboard, 5000);
+    const eventsInterval = window.setInterval(loadEvents, 5000);
+    const statusInterval = window.setInterval(loadStatus, 1500);
     return () => {
       window.clearTimeout(timerId);
-      window.clearInterval(interval);
+      window.clearInterval(eventsInterval);
+      window.clearInterval(statusInterval);
     };
-  }, [loadDashboard]);
+  }, [loadDashboard, loadEvents, loadStatus]);
 
   useEffect(() => () => {
     if (cameraFrameTimerRef.current !== null) window.clearTimeout(cameraFrameTimerRef.current);

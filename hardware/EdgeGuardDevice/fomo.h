@@ -111,6 +111,7 @@ volatile FomoVisionState fomoVisionState = FOMO_VISION_WARMUP;
 QueueHandle_t fomoHttpQueue = nullptr;
 QueueHandle_t fomoAlertQueue = nullptr;
 QueueHandle_t fomoRecognitionQueue = nullptr;
+QueueHandle_t fomoEventFrameQueue = nullptr;
 TaskHandle_t fomoTaskHandle = nullptr;
 unsigned long lastFomoHttpAttempt = 0;
 bool fomoReferenceValid = false;
@@ -194,7 +195,8 @@ void fomo_setup() {
   fomoHttpQueue = xQueueCreate(1, sizeof(FomoHttpMessage));
   fomoAlertQueue = xQueueCreate(4, sizeof(FomoAlertMessage));
   fomoRecognitionQueue = xQueueCreate(4, sizeof(FomoRecognitionMessage));
-  if (!fomoHttpQueue || !fomoAlertQueue || !fomoRecognitionQueue) {
+  fomoEventFrameQueue = xQueueCreate(1, sizeof(uint32_t));
+  if (!fomoHttpQueue || !fomoAlertQueue || !fomoRecognitionQueue || !fomoEventFrameQueue) {
     fomoReady = false;
     Serial.println("[FOMO] Could not create vision queues; inference task disabled");
     return;
@@ -448,6 +450,9 @@ bool fomo_queueVisionAlert(
     Serial.println("[Vision] Alert queue is full");
     return false;
   }
+  if (eventFrameCached && fomoEventFrameQueue) {
+    xQueueOverwrite(fomoEventFrameQueue, &eventId);
+  }
   Serial.printf("[Vision] Queued %s alert for event %lu\n", alertType, static_cast<unsigned long>(eventId));
   return true;
 }
@@ -593,6 +598,9 @@ void fomo_publishResult(
   // Only the newest inference is relevant. A backend response carries event_id,
   // so a face result for an older frame cannot mutate the current state.
   xQueueOverwrite(fomoHttpQueue, &message);
+  if (eventFrameCached && fomoEventFrameQueue) {
+    xQueueOverwrite(fomoEventFrameQueue, &eventId);
+  }
 }
 
 FomoInferenceSummary fomo_runInference(
@@ -958,6 +966,17 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
 
 void fomo_loop() {
   if (!mqttClient.connected()) return;
+
+  uint32_t eventFrameId = 0;
+  if (fomoEventFrameQueue
+      && xQueueReceive(fomoEventFrameQueue, &eventFrameId, 0) == pdTRUE) {
+    if (camera_publishEventFrame(eventFrameId)) {
+      Serial.printf(
+        "[Camera Event] Published exact frame for event %lu over MQTT\n",
+        static_cast<unsigned long>(eventFrameId)
+      );
+    }
+  }
 
   FomoAlertMessage alertMessage = {};
   if (fomoAlertQueue

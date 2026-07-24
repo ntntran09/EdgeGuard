@@ -5,7 +5,7 @@ import { normalizeAiDetections } from '@/lib/ai-detections';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
-const AI_DETECTION_MAX_AGE_MS = 5000;
+const AI_DETECTION_MAX_AGE_MS = 6000;
 
 interface MqttInferenceSnapshot {
   receivedAt?: string;

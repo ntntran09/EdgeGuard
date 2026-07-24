@@ -59,21 +59,37 @@ function appendUrlPath(baseUrl, pathname) {
   return new URL(pathname, `${baseUrl.replace(/\/$/, '')}/`).toString();
 }
 
+function normalizeIpv4Address(value) {
+  if (typeof value !== 'string') return null;
+  const address = value.startsWith('::ffff:') ? value.slice(7) : value;
+  const octets = address.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((octet) => (
+    !Number.isInteger(octet) || octet < 0 || octet > 255
+  ))) {
+    return null;
+  }
+  if (address === '0.0.0.0' || address.startsWith('127.')) return null;
+  return address;
+}
+
 const serverPort = numberFromEnv('PORT', 3000);
 const configuredBackendUrl = normalizeHttpBaseUrl(
   process.env.FOMO_HTTP_BASE_URL
     || process.env.BACKEND_PUBLIC_URL
-    || process.env.NEXT_PUBLIC_BACKEND_URL
-    || process.env.BACKEND_URL
 );
-const backendPublicUrl = configuredBackendUrl || `http://${detectLanIpv4()}:${serverPort}`;
+
+export function backendConfigForAddress(address) {
+  const publicUrl = configuredBackendUrl
+    || `http://${normalizeIpv4Address(address) || detectLanIpv4()}:${serverPort}`;
+  return {
+    publicUrl,
+    fomoInferenceUrl: appendUrlPath(publicUrl, '/api/fomo/inference'),
+  };
+}
 
 export const config = {
   port: serverPort,
-  backend: {
-    publicUrl: backendPublicUrl,
-    fomoInferenceUrl: appendUrlPath(backendPublicUrl, '/api/fomo/inference'),
-  },
+  backend: backendConfigForAddress(),
   supabase: {
     url: process.env.SUPABASE_URL,
     serviceKey: process.env.SUPABASE_SERVICE_KEY,

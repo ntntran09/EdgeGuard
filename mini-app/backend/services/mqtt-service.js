@@ -1,6 +1,6 @@
 import mqtt from 'mqtt';
 
-import { config, mqttUrl } from '../config.js';
+import { backendConfigForAddress, config, mqttUrl } from '../config.js';
 import {
   createTransientImageBuffer,
   createTransientImageFromJson,
@@ -37,7 +37,11 @@ function clampNumber(value, minimum, maximum, fallback) {
   return Math.min(maximum, Math.max(minimum, number));
 }
 
-export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
+export function buildDeviceAccessPayload(
+  settings = {},
+  rfidAllowlist = [],
+  backend = config.backend
+) {
   const fallbackAutoLockMs = clampNumber(
     config.access.unlockMs,
     MIN_AUTO_LOCK_MS,
@@ -60,8 +64,8 @@ export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
     auto_lock_ms: autoLockMs,
     camera_publish_enabled: settings.camera_image_publish_enabled !== false,
     ai_detection_enabled: settings.ai_detection_enabled === true,
-    backend_url: config.backend.publicUrl,
-    fomo_inference_url: config.backend.fomoInferenceUrl,
+    backend_url: backend.publicUrl,
+    fomo_inference_url: backend.fomoInferenceUrl,
     lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
     unlock_angle: clampNumber(config.access.unlockAngle, 0, 180, 90),
     rfid_allowlist: [...new Set(rfidAllowlist.map(normalizeTagId).filter(Boolean))]
@@ -252,6 +256,10 @@ export function createMqttService() {
   const eventFrames = new Map();
   const frameSubscribers = new Set();
 
+  function currentBackendConfig() {
+    return backendConfigForAddress(client?.stream?.localAddress);
+  }
+
   function publish(topic, payload, options = {}) {
     if (!client || !client.connected) {
       throw new Error('MQTT client is not connected.');
@@ -288,13 +296,32 @@ export function createMqttService() {
       config.mqtt.deviceId,
       MAX_OFFLINE_RFID_CARDS
     );
+    const backend = currentBackendConfig();
     if (!storedConfig) {
-      return { synced: false, reason: 'database_unavailable' };
+      const networkConfig = {
+        backend_url: backend.publicUrl,
+        fomo_inference_url: backend.fomoInferenceUrl,
+      };
+      await publish(topics.config, JSON.stringify({
+        ...networkConfig,
+        requested_at: new Date().toISOString(),
+        source: 'network_config_sync',
+      }), { qos: 1, retain: true });
+      console.warn(
+        `[MQTT] Device settings unavailable; synced network config only: FOMO HTTP ${networkConfig.fomo_inference_url}`
+      );
+      return {
+        synced: true,
+        settingsSynced: false,
+        reason: 'database_unavailable',
+        config: networkConfig,
+      };
     }
 
     deviceAccessConfig = buildDeviceAccessPayload(
       storedConfig.settings,
-      storedConfig.rfidAllowlist
+      storedConfig.rfidAllowlist,
+      backend
     );
     await publish(topics.config, JSON.stringify({
       ...deviceAccessConfig,
@@ -381,21 +408,25 @@ export function createMqttService() {
       ? cameraEventFrameEndpoint(snapshot.summary, eventId)
       : cameraCaptureEndpoint(snapshot.summary);
     const fallbackImage = snapshot.latestImage?.base64;
-    const mqttEventFrame = exactFrame ? eventFrames.get(eventId) : null;
-    const mqttEventReceivedAt = mqttEventFrame ? Date.parse(mqttEventFrame.receivedAt) : NaN;
-    const mqttEventImage = mqttEventFrame
-      && Number.isFinite(mqttEventReceivedAt)
-      && Date.now() - mqttEventReceivedAt <= EVENT_FRAME_MAX_AGE_MS
-      ? {
-          imagePath: mqttEventFrame.base64,
-          source: 'mqtt_exact_event_frame',
-          capturedAt: mqttEventFrame.capturedAt || mqttEventFrame.receivedAt,
-          eventId,
-        }
-      : null;
+    const cachedMqttEventImage = () => {
+      const mqttEventFrame = exactFrame ? eventFrames.get(eventId) : null;
+      const receivedAt = mqttEventFrame ? Date.parse(mqttEventFrame.receivedAt) : NaN;
+      return mqttEventFrame
+        && Number.isFinite(receivedAt)
+        && Date.now() - receivedAt <= EVENT_FRAME_MAX_AGE_MS
+        ? {
+            imagePath: mqttEventFrame.base64,
+            source: 'mqtt_exact_event_frame',
+            capturedAt: mqttEventFrame.capturedAt || mqttEventFrame.receivedAt,
+            eventId,
+          }
+        : null;
+    };
+    const mqttEventImage = cachedMqttEventImage();
+
+    if (mqttEventImage) return mqttEventImage;
 
     if (exactFrame && !captureUrl) {
-      if (mqttEventImage) return mqttEventImage;
       const fallbackCapture = await captureEventImage();
       return {
         ...fallbackCapture,
@@ -477,7 +508,8 @@ export function createMqttService() {
     } catch (error) {
       console.error('[MQTT] Could not capture a camera frame for AI event:', error);
       if (exactFrame) {
-        if (mqttEventImage) return mqttEventImage;
+        const cachedAfterHttpFailure = cachedMqttEventImage();
+        if (cachedAfterHttpFailure) return cachedAfterHttpFailure;
         const fallbackCapture = await captureEventImage();
         return {
           ...fallbackCapture,
@@ -987,10 +1019,11 @@ export function createMqttService() {
       return publishDeviceCommand(safeCommand, payload);
     },
     publishConfig(payload) {
+      const backend = currentBackendConfig();
       return publish(topics.config, JSON.stringify({
-        backend_url: config.backend.publicUrl,
-        fomo_inference_url: config.backend.fomoInferenceUrl,
         ...payload,
+        backend_url: backend.publicUrl,
+        fomo_inference_url: backend.fomoInferenceUrl,
         requested_at: new Date().toISOString(),
         source: 'api',
       }), { retain: true });
