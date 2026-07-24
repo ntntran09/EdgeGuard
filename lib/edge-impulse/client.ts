@@ -149,6 +149,7 @@ export async function getAllRawData(
   credentials: EdgeImpulseCredentials,
   category: "testing" | "validation" | "training",
   limit = 200,
+  filters: { filename?: string; search?: string } = {},
 ): Promise<unknown[]> {
   const items: unknown[] = [];
   for (let offset = 0; ; offset += limit) {
@@ -158,6 +159,8 @@ export async function getAllRawData(
       offset: String(offset),
       dataType: "image",
     });
+    if (filters.filename) params.set("filename", filters.filename);
+    if (filters.search) params.set("search", filters.search);
     const path = `/api/${credentials.projectId}/raw-data?${params.toString()}`;
     const payload = await request(credentials, path);
     const record = payload as Record<string, unknown>;

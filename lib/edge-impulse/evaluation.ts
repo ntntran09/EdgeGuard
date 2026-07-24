@@ -38,7 +38,8 @@ function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
   if (sample.thumbnailUrl?.startsWith("/demo/")) {
     return sample.thumbnailUrl;
   }
-  return `/api/images/${encodeURIComponent(sample.imageSampleId ?? sample.id)}`;
+  const params = new URLSearchParams({ filename: sample.filename });
+  return `/api/images/${encodeURIComponent(sample.imageSampleId ?? sample.id)}?${params.toString()}`;
 }
 
 async function loadRawDataMetadata(credentials: { projectId: number; apiKey: string }): Promise<NormalizedDataset | undefined> {
