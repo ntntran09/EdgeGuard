@@ -16,6 +16,7 @@ export type NormalizedSample = {
   category: "validation" | "testing" | string;
   groundTruthBoxes: Box[];
   predictions: Prediction[];
+  imageSampleId?: string;
   thumbnailUrl?: string;
   classificationUrl?: string;
   imageWidth?: number;

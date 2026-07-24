@@ -11,6 +11,10 @@ import type { ServerSession } from "@/lib/edge-impulse/session";
 
 const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
 
+function filenameKey(filename: string): string {
+  return filename.trim().toLowerCase().replace(/\\/g, "/").split("/").pop() ?? filename.trim().toLowerCase();
+}
+
 function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
   if (
     sample.thumbnailUrl &&
@@ -18,7 +22,7 @@ function browserImageUrl(sample: NormalizedDataset["samples"][number]): string {
   ) {
     return sample.thumbnailUrl;
   }
-  return `/api/images/${encodeURIComponent(sample.id)}`;
+  return `/api/images/${encodeURIComponent(sample.imageSampleId ?? sample.id)}`;
 }
 
 function labelsInDataset(dataset: NormalizedDataset): string[] {
@@ -73,12 +77,14 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
     const groundTruthByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample.groundTruthBoxes]));
     const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
     const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
+    const rawSampleByFilename = new Map(rawDataset.samples.map((sample) => [filenameKey(sample.filename), sample]));
     normalized.samples = normalized.samples.map((sample) => ({
       ...sample,
       groundTruthBoxes: groundTruthById.get(sample.id) ?? groundTruthByName.get(sample.filename) ?? [],
-      thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl,
-      imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth,
-      imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight,
+      imageSampleId: rawSampleById.get(sample.id)?.id ?? rawSampleByName.get(sample.filename)?.id ?? rawSampleByFilename.get(filenameKey(sample.filename))?.id ?? sample.imageSampleId,
+      thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl ?? rawSampleByFilename.get(filenameKey(sample.filename))?.thumbnailUrl,
+      imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageWidth,
+      imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageHeight,
     }));
   }
   if (!needsGroundTruth) {
@@ -88,11 +94,13 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
         const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
         const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
         const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
+        const rawSampleByFilename = new Map(rawDataset.samples.map((sample) => [filenameKey(sample.filename), sample]));
         normalized.samples = normalized.samples.map((sample) => ({
           ...sample,
-          thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl,
-          imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth,
-          imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight,
+          imageSampleId: rawSampleById.get(sample.id)?.id ?? rawSampleByName.get(sample.filename)?.id ?? rawSampleByFilename.get(filenameKey(sample.filename))?.id ?? sample.imageSampleId,
+          thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl ?? rawSampleByFilename.get(filenameKey(sample.filename))?.thumbnailUrl,
+          imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageWidth,
+          imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight ?? rawSampleByFilename.get(filenameKey(sample.filename))?.imageHeight,
         }));
       }
     } catch {

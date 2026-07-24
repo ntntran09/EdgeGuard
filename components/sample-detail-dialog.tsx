@@ -44,7 +44,7 @@ export function SampleDetailDialog({
         <div className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-slate-200 bg-white/95 p-4 backdrop-blur md:px-6">
           <div className="min-w-0">
             <h2 className="truncate text-lg font-black">{result.filename}</h2>
-            <p className="muted text-xs">Sample ID: {result.sampleId}</p>
+            <p className="muted text-xs">Sample ID: {result.sampleId}{sample.imageSampleId && sample.imageSampleId !== result.sampleId ? ` · Image ID: ${sample.imageSampleId}` : ""}</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <button

@@ -39,6 +39,7 @@ describe("Edge Impulse normalizer", () => {
     });
     expect(result.samples[0]).toMatchObject({
       id: "9182",
+      imageSampleId: "9182",
       filename: "camera.jpg",
       imageWidth: 320,
       imageHeight: 320,
@@ -46,6 +47,26 @@ describe("Edge Impulse normalizer", () => {
     });
     expect(result.samples[0].groundTruthBoxes).toHaveLength(1);
     expect(result.samples[0].predictions[0]).toMatchObject({ label: "human", score: 0.83 });
+  });
+
+  it("Ä‘á»c URL thumbnail/video tá»« raw-data metadata", () => {
+    const result = normalizeEdgeImpulseResponse({
+      success: true,
+      samples: [
+        {
+          id: 77,
+          filename: "raw-image.jpg",
+          category: "testing",
+          thumbnailVideoFull: "https://example.test/raw-image.jpg",
+          boundingBoxes: [{ label: "human" }],
+        },
+      ],
+    });
+    expect(result.samples[0]).toMatchObject({
+      id: "77",
+      imageSampleId: "77",
+      thumbnailUrl: "https://example.test/raw-image.jpg",
+    });
   });
 
   it("suy ra classes từ sample khi payload Model Testing không có labels top-level", () => {
