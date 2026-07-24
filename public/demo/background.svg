@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs><linearGradient id="s" y2="1"><stop stop-color="#b9d8e8"/><stop offset="1" stop-color="#edf3f5"/></linearGradient></defs>
+  <rect width="256" height="174" fill="url(#s)"/><rect y="174" width="256" height="82" fill="#748b83"/>
+  <rect x="24" y="63" width="92" height="101" rx="3" fill="#d8c5a3"/><path d="M16 64h108L99 37H43z" fill="#916849"/>
+  <rect x="39" y="91" width="24" height="31" fill="#7195aa"/><rect x="77" y="91" width="24" height="31" fill="#7195aa"/>
+  <path d="M0 205h256M0 230h256" stroke="#5c736b" stroke-width="2"/><text x="10" y="247" font-family="Arial" font-size="9" fill="white">DEMO · background</text>
+</svg>

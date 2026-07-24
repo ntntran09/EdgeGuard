@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#dce8e8"/><rect y="199" width="256" height="57" fill="#7f918b"/>
+  <path d="M53 96l74-29 77 29-75 33z" fill="#dfc27c"/><path d="M53 96l76 33v67l-76-34z" fill="#b9904d"/><path d="M204 96l-75 33v67l75-34z" fill="#c9a459"/>
+  <path d="M127 68v60M88 82l76 32v69" stroke="#8b6b30" stroke-width="3"/><rect x="72" y="126" width="39" height="24" fill="#f3e8c8"/>
+  <text x="10" y="247" font-family="Arial" font-size="9" fill="white">DEMO · package</text>
+</svg>
