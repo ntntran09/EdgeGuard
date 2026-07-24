@@ -45,6 +45,7 @@ nextApp.prepare().then(() => {
   // Mount existing API routes
   app.use('/api/camera', createCameraRouter(mqttService));
   app.use('/api/fomo', jsonParser, createFomoRouter(mqttService));
+  app.use('/fomo', jsonParser, createFomoRouter(mqttService));
   app.use('/api/mqtt', jsonParser, createMqttRouter(mqttService));
   app.use('/api/images', jsonParser, createImagesRouter());
 

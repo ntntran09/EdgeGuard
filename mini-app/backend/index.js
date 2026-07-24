@@ -34,6 +34,7 @@ app.get('/health', (_request, response) => {
 app.use('/api/mqtt', createMqttRouter(mqttService));
 app.use('/api/camera', createCameraRouter(mqttService));
 app.use('/api/fomo', createFomoRouter(mqttService));
+app.use('/fomo', createFomoRouter(mqttService));
 app.use('/api/images', createImagesRouter());
 
 app.use((error, _request, response, _next) => {

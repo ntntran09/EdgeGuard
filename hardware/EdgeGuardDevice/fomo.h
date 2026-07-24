@@ -543,6 +543,8 @@ void fomo_publishResult(
     if (publishPeopleOnly && strcmp(box.label, "human") != 0) continue;
     if (publishedCount >= FOMO_MAX_PUBLISHED_DETECTIONS) continue;
 
+    float centerX = box.x + (box.width / 2.0f);
+    float centerY = box.y + (box.height / 2.0f);
     JsonObject item = detections.add<JsonObject>();
     item["label"] = box.label;
     item["type"] = fomo_objectType(box.label);
@@ -551,8 +553,10 @@ void fomo_publishResult(
     item["y"] = box.y;
     item["width"] = box.width;
     item["height"] = box.height;
-    item["centroid_x"] = box.x + (box.width / 2.0f);
-    item["centroid_y"] = box.y + (box.height / 2.0f);
+    item["centroid_x"] = centerX;
+    item["centroid_y"] = centerY;
+    item["center_x"] = centerX;
+    item["center_y"] = centerY;
     publishedCount++;
   }
 
@@ -803,6 +807,12 @@ void fomo_processFrame(
       fomoVisionState = FOMO_VISION_MONITORING;
       Serial.println("[Vision] Camera baseline ready");
     }
+    return;
+  }
+
+  if (lastFomoInferenceAt != 0
+      && now - lastFomoInferenceAt < FOMO_CHANGE_CHECK_COOLDOWN_MS) {
+    fomo_useCurrentFrameAsReference();
     return;
   }
 

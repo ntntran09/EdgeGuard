@@ -391,12 +391,16 @@ export function createMqttService() {
         }
       : null;
 
-    // Never associate an AI event with a newer fallback frame. If the device
-    // cannot return the frame tagged with this event_id over HTTP, use only
-    // the same event_id received through MQTT.
     if (exactFrame && !captureUrl) {
-      return mqttEventImage
-        ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+      if (mqttEventImage) return mqttEventImage;
+      const fallbackCapture = await captureEventImage();
+      return {
+        ...fallbackCapture,
+        source: fallbackCapture.imagePath
+          ? `fallback_${fallbackCapture.source}`
+          : 'exact_event_frame_unavailable',
+        eventId,
+      };
     }
 
     // Nếu đã có frame MQTT mới (< 5s), dùng luôn, không cần fetch ESP32
@@ -470,8 +474,15 @@ export function createMqttService() {
     } catch (error) {
       console.error('[MQTT] Could not capture a camera frame for AI event:', error);
       if (exactFrame) {
-        return mqttEventImage
-          ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+        if (mqttEventImage) return mqttEventImage;
+        const fallbackCapture = await captureEventImage();
+        return {
+          ...fallbackCapture,
+          source: fallbackCapture.imagePath
+            ? `fallback_${fallbackCapture.source}`
+            : 'exact_event_frame_unavailable',
+          eventId,
+        };
       }
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }

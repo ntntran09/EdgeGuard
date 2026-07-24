@@ -24,7 +24,7 @@ function booleanFromEnv(name, fallback = false) {
 }
 
 export const config = {
-  port: numberFromEnv('PORT', 4000),
+  port: numberFromEnv('PORT', 3000),
   supabase: {
     url: process.env.SUPABASE_URL,
     serviceKey: process.env.SUPABASE_SERVICE_KEY,

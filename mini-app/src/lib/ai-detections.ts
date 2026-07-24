@@ -48,8 +48,14 @@ export function normalizeAiDetections(payload: unknown): AiDetection[] {
       return [];
     }
 
-    const centroidX = finiteNumber(value.centroid_x) ?? x + width / 2;
-    const centroidY = finiteNumber(value.centroid_y) ?? y + height / 2;
+    const centroidX = finiteNumber(value.centroid_x)
+      ?? finiteNumber(value.center_x)
+      ?? finiteNumber(value.cx)
+      ?? x + width / 2;
+    const centroidY = finiteNumber(value.centroid_y)
+      ?? finiteNumber(value.center_y)
+      ?? finiteNumber(value.cy)
+      ?? y + height / 2;
 
     return [{
       label: typeof value.label === 'string' ? value.label : 'unknown',

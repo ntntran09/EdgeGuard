@@ -2,7 +2,8 @@ import 'server-only';
 
 function backendBaseUrl() {
   return process.env.BACKEND_URL
-    || `http://127.0.0.1:${process.env.PORT || '4000'}`;
+    || process.env.NEXT_PUBLIC_BACKEND_URL
+    || `http://127.0.0.1:${process.env.PORT || '3000'}`;
 }
 
 export function backendApiUrl(path: string) {

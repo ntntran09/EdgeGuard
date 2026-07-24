@@ -9,7 +9,7 @@ function isPlainObject(value) {
 export function createFomoRouter(mqttService) {
   const router = Router();
 
-  router.post('/inference', (request, response) => {
+  function receiveInference(request, response) {
     const deviceId = request.get('X-EdgeGuard-Device-Id');
     if (deviceId !== config.mqtt.deviceId) {
       response.status(401).json({ error: 'Unknown EdgeGuard device.' });
@@ -42,7 +42,9 @@ export function createFomoRouter(mqttService) {
       transport: 'http',
       eventId,
     });
-  });
+  }
+
+  router.post(['/', '/inference', '/result', '/results'], receiveInference);
 
   return router;
 }

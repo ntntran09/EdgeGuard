@@ -56,6 +56,7 @@ const unsigned long FOMO_INIT_RETRY_MS = 10000;
 // Lightweight frame analysis gates the expensive FOMO classifier. A sampled
 // pixel counts as changed when its grayscale value moves by this amount.
 const unsigned long CAMERA_ANALYSIS_INTERVAL_MS = 400;
+const unsigned long FOMO_CHANGE_CHECK_COOLDOWN_MS = 1500;
 const uint8_t CAMERA_BASELINE_WARMUP_FRAMES = 5;
 const uint8_t CAMERA_CHANGE_SAMPLE_WIDTH = 20;
 const uint8_t CAMERA_CHANGE_SAMPLE_HEIGHT = 15;
