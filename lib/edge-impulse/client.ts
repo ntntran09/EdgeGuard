@@ -42,6 +42,18 @@ function friendlyError(status: number): EdgeImpulseError {
   return new EdgeImpulseError("Edge Impulse từ chối yêu cầu.", "UPSTREAM_REQUEST_FAILED", 502);
 }
 
+function friendlyImageError(status: number): EdgeImpulseError {
+  if (status === 401 || status === 403)
+    return new EdgeImpulseError("Cannot authenticate image request. Check Project ID and API key.", "UNAUTHORIZED", status);
+  if (status === 404)
+    return new EdgeImpulseError("Sample image was not found on Edge Impulse raw-data endpoints.", "SAMPLE_IMAGE_NOT_FOUND", 404);
+  if (status === 429)
+    return new EdgeImpulseError("Edge Impulse is rate limiting image requests. Try again shortly.", "RATE_LIMITED", 429);
+  if (status >= 500)
+    return new EdgeImpulseError("Edge Impulse image server returned an error. Try again later.", "UPSTREAM_IMAGE_SERVER_ERROR", 502);
+  return new EdgeImpulseError("Edge Impulse rejected the image request.", "IMAGE_REQUEST_FAILED", 502);
+}
+
 async function request(
   credentials: EdgeImpulseCredentials,
   path: string,
@@ -98,11 +110,16 @@ export function buildSampleInfoUrl(projectId: number, sampleId: number): string 
   return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}?${params.toString()}`;
 }
 
-export function buildSampleImageUrl(projectId: number, sampleId: number): string {
-  const params = new URLSearchParams({
-    impulseId: String(EDGE_IMPULSE_CONFIG.impulseId),
-  });
-  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/image?${params.toString()}`;
+export function buildSampleImageUrl(
+  projectId: number,
+  sampleId: number,
+  options: { afterInputBlock?: boolean; includeImpulseId?: boolean } = {},
+): string {
+  const params = new URLSearchParams();
+  if (options.includeImpulseId ?? true) params.set("impulseId", String(EDGE_IMPULSE_CONFIG.impulseId));
+  if (options.afterInputBlock) params.set("afterInputBlock", "true");
+  const query = params.toString();
+  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/image${query ? `?${query}` : ""}`;
 }
 
 export function buildRawSampleUrl(projectId: number, sampleId: number): string {
@@ -197,14 +214,16 @@ export async function getSampleImage(
     throw new EdgeImpulseError("Sample ID không hợp lệ.", "INVALID_SAMPLE_ID", 400);
   }
   const sampleNumber = Number(sampleId);
-  const imageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber));
-  if (afterInputBlock) imageUrl.searchParams.set("afterInputBlock", "true");
-  const processedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber));
-  processedImageUrl.searchParams.set("afterInputBlock", "true");
+  const imageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { afterInputBlock }));
+  const plainImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { includeImpulseId: false, afterInputBlock }));
+  const processedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { afterInputBlock: true }));
+  const plainProcessedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { includeImpulseId: false, afterInputBlock: true }));
   const rawUrl = new URL(buildRawSampleUrl(credentials.projectId, sampleNumber));
   const paths = [
     `${imageUrl.pathname}${imageUrl.search}`,
+    `${plainImageUrl.pathname}${plainImageUrl.search}`,
     ...(!afterInputBlock ? [`${processedImageUrl.pathname}${processedImageUrl.search}`] : []),
+    ...(!afterInputBlock ? [`${plainProcessedImageUrl.pathname}${plainProcessedImageUrl.search}`] : []),
     `${rawUrl.pathname}${rawUrl.search}`,
   ];
   const path = paths[0];
@@ -217,7 +236,7 @@ export async function getSampleImage(
       signal: controller.signal,
       cache: "no-store",
     });
-    if (!response.ok) throw friendlyError(response.status);
+    if (!response.ok) throw friendlyImageError(response.status);
     const bytes = await response.arrayBuffer();
     const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
     if (!contentType) {

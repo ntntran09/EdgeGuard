@@ -58,7 +58,8 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
   const credentials = { projectId: session.projectId, apiKey: session.apiKey };
   const payload = await getModelTestingResults(credentials);
   const normalized = normalizeEdgeImpulseResponse(payload, "testing");
-  if (normalized.samples.every((sample) => sample.groundTruthBoxes.length === 0)) {
+  const needsGroundTruth = normalized.samples.every((sample) => sample.groundTruthBoxes.length === 0);
+  if (needsGroundTruth) {
     const rawItems = await getAllRawData(credentials, "testing");
     if (!rawItems.length) {
       throw new EdgeImpulseError(
@@ -70,10 +71,33 @@ export async function loadEvaluationDataset(session: ServerSession): Promise<Nor
     const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
     const groundTruthById = new Map(rawDataset.samples.map((sample) => [sample.id, sample.groundTruthBoxes]));
     const groundTruthByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample.groundTruthBoxes]));
+    const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
+    const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
     normalized.samples = normalized.samples.map((sample) => ({
       ...sample,
       groundTruthBoxes: groundTruthById.get(sample.id) ?? groundTruthByName.get(sample.filename) ?? [],
+      thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl,
+      imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth,
+      imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight,
     }));
+  }
+  if (!needsGroundTruth) {
+    try {
+      const rawItems = await getAllRawData(credentials, "testing");
+      if (rawItems.length) {
+        const rawDataset = normalizeEdgeImpulseResponse({ samples: rawItems }, "testing");
+        const rawSampleById = new Map(rawDataset.samples.map((sample) => [sample.id, sample]));
+        const rawSampleByName = new Map(rawDataset.samples.map((sample) => [sample.filename, sample]));
+        normalized.samples = normalized.samples.map((sample) => ({
+          ...sample,
+          thumbnailUrl: sample.thumbnailUrl ?? rawSampleById.get(sample.id)?.thumbnailUrl ?? rawSampleByName.get(sample.filename)?.thumbnailUrl,
+          imageWidth: sample.imageWidth ?? rawSampleById.get(sample.id)?.imageWidth ?? rawSampleByName.get(sample.filename)?.imageWidth,
+          imageHeight: sample.imageHeight ?? rawSampleById.get(sample.id)?.imageHeight ?? rawSampleByName.get(sample.filename)?.imageHeight,
+        }));
+      }
+    } catch {
+      // Raw-data metadata is only used to improve image display when metrics already have labels.
+    }
   }
   const samples = normalized.samples
     .filter((sample) => !sample.category || sample.category === "testing")

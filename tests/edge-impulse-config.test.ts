@@ -27,6 +27,8 @@ describe("Fixed Edge Impulse configuration", () => {
     expect(resultUrl.searchParams.get("variant")).toBe("int8");
     expect(buildSampleInfoUrl(1066469, 7)).toContain("impulseId=1");
     expect(buildSampleImageUrl(1066469, 7)).toContain("impulseId=1");
+    expect(buildSampleImageUrl(1066469, 7, { includeImpulseId: false })).toBe("https://studio.edgeimpulse.com/v1/api/1066469/raw-data/7/image");
+    expect(buildSampleImageUrl(1066469, 7, { afterInputBlock: true })).toContain("afterInputBlock=true");
     expect(buildRawSampleUrl(1066469, 7)).toBe("https://studio.edgeimpulse.com/v1/api/1066469/raw-data/7/raw");
     expect(buildShowClassificationUrl(1066469, 7)).toContain("/public/1066469/live/impulse/1/classification");
     expect(buildShowClassificationUrl(1066469, 7)).toContain("modelVariant=int8");
