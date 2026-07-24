@@ -105,6 +105,10 @@ export function buildSampleImageUrl(projectId: number, sampleId: number): string
   return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/image?${params.toString()}`;
 }
 
+export function buildRawSampleUrl(projectId: number, sampleId: number): string {
+  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/raw`;
+}
+
 export function buildShowClassificationUrl(projectId: number, sampleId: number): string {
   const params = new URLSearchParams({
     modelVariant: EDGE_IMPULSE_CONFIG.modelVariant,
@@ -157,6 +161,31 @@ export function classifySample(credentials: EdgeImpulseCredentials, sampleId: st
   });
 }
 
+export function detectImageContentType(bytes: ArrayBuffer, contentType = ""): string | null {
+  const normalized = contentType.split(";")[0].trim().toLowerCase();
+  if (normalized.startsWith("image/")) return normalized;
+  const view = new Uint8Array(bytes);
+  if (view.length >= 3 && view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) return "image/jpeg";
+  if (
+    view.length >= 8 &&
+    view[0] === 0x89 &&
+    view[1] === 0x50 &&
+    view[2] === 0x4e &&
+    view[3] === 0x47 &&
+    view[4] === 0x0d &&
+    view[5] === 0x0a &&
+    view[6] === 0x1a &&
+    view[7] === 0x0a
+  ) return "image/png";
+  if (
+    view.length >= 12 &&
+    String.fromCharCode(...view.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...view.slice(8, 12)) === "WEBP"
+  ) return "image/webp";
+  if (view.length >= 3 && String.fromCharCode(...view.slice(0, 3)) === "GIF") return "image/gif";
+  return null;
+}
+
 export async function getSampleImage(
   credentials: EdgeImpulseCredentials,
   sampleId: string,
@@ -166,15 +195,24 @@ export async function getSampleImage(
   if (!/^\d+$/.test(sampleId)) {
     throw new EdgeImpulseError("Sample ID không hợp lệ.", "INVALID_SAMPLE_ID", 400);
   }
-  const imageUrl = new URL(buildSampleImageUrl(credentials.projectId, Number(sampleId)));
+  const sampleNumber = Number(sampleId);
+  const imageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber));
   if (afterInputBlock) imageUrl.searchParams.set("afterInputBlock", "true");
-  const path = `${imageUrl.pathname}${imageUrl.search}`;
+  const processedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber));
+  processedImageUrl.searchParams.set("afterInputBlock", "true");
+  const rawUrl = new URL(buildRawSampleUrl(credentials.projectId, sampleNumber));
+  const paths = [
+    `${imageUrl.pathname}${imageUrl.search}`,
+    ...(!afterInputBlock ? [`${processedImageUrl.pathname}${processedImageUrl.search}`] : []),
+    `${rawUrl.pathname}${rawUrl.search}`,
+  ];
+  const path = paths[0];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const started = Date.now();
   try {
     const response = await fetch(`${BASE_URL}${path}`, {
-      headers: { Accept: "image/jpeg,image/png", "x-api-key": credentials.apiKey },
+      headers: { Accept: "image/jpeg,image/png,image/webp,image/*,*/*", "x-api-key": credentials.apiKey },
       signal: controller.signal,
       cache: "no-store",
     });
@@ -189,6 +227,23 @@ export async function getSampleImage(
     }
     return { bytes: await response.arrayBuffer(), contentType };
   } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      for (const fallbackPath of paths.slice(1)) {
+        try {
+          const response = await fetch(`${BASE_URL}${fallbackPath}`, {
+            headers: { Accept: "image/jpeg,image/png,image/webp,image/*,*/*", "x-api-key": credentials.apiKey },
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (!response.ok) continue;
+          const bytes = await response.arrayBuffer();
+          const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+          if (contentType) return { bytes, contentType };
+        } catch {
+          // Try the next image source before surfacing the original error.
+        }
+      }
+    }
     const safeError =
       error instanceof EdgeImpulseError
         ? error

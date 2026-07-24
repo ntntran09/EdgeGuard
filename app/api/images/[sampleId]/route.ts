@@ -20,7 +20,8 @@ export async function GET(
       );
     }
     const { sampleId } = await params;
-    const image = await getSampleImage(session, sampleId);
+    const afterInputBlock = request.nextUrl.searchParams.get("afterInputBlock") === "true";
+    const image = await getSampleImage(session, sampleId, afterInputBlock);
     return new NextResponse(image.bytes, {
       headers: {
         "Content-Type": image.contentType,

@@ -189,7 +189,7 @@ function inferDimension(boxes: Box[], axis: "width" | "height") {
 }
 
 function predictionImageUrl(imageUrl?: string) {
-  if (!imageUrl?.startsWith("/api/edge-impulse/sample-image")) return imageUrl;
+  if (!imageUrl?.startsWith("/api/edge-impulse/sample-image") && !imageUrl?.startsWith("/api/images/")) return imageUrl;
   return `${imageUrl}${imageUrl.includes("?") ? "&" : "?"}afterInputBlock=true`;
 }
 
