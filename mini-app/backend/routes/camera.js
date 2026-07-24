@@ -121,7 +121,7 @@ export function createCameraRouter(mqttService) {
     }
   });
 
-  router.get('/stream', (request, response, next) => {
+  router.get('/stream', (request, response) => {
     const { stream } = cameraTargets(mqttService);
     if (!stream) {
       response.status(503).json({
@@ -174,14 +174,20 @@ export function createCameraRouter(mqttService) {
         response.destroy(error);
         return;
       }
-      next(error);
+      const timedOut = error.message === 'ESP32-CAM stream timed out.';
+      console.error('[Camera] Stream proxy failed:', error);
+      response.status(timedOut ? 504 : 502).json({
+        error: timedOut
+          ? 'ESP32-CAM stream timed out.'
+          : 'Cannot connect to the camera stream announced through MQTT.',
+      });
     });
 
     const closeUpstream = () => {
       upstreamResponse?.destroy();
       upstreamRequest.destroy();
     };
-    request.once('close', closeUpstream);
+    request.once('aborted', closeUpstream);
     response.once('close', closeUpstream);
     upstreamRequest.end();
   });

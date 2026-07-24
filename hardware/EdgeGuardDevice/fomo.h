@@ -35,16 +35,16 @@ const size_t FOMO_CAMERA_BUFFER_BYTES =
   FOMO_CAMERA_FRAME_WIDTH * FOMO_CAMERA_FRAME_HEIGHT * FOMO_CAMERA_BYTES_PER_PIXEL;
 const size_t FOMO_FRAME_SAMPLE_COUNT =
   CAMERA_CHANGE_SAMPLE_WIDTH * CAMERA_CHANGE_SAMPLE_HEIGHT;
-// Three bounding boxes plus the pipeline metadata can exceed 768 bytes. Keep
-// this below PubSubClient's configured 1024-byte packet buffer.
-const size_t FOMO_MQTT_PAYLOAD_BYTES = 896;
+// Three bounding boxes plus the pipeline metadata fit comfortably in one
+// small HTTP request while avoiding MQTT packet-size constraints.
+const size_t FOMO_HTTP_PAYLOAD_BYTES = 896;
 const size_t FOMO_ALERT_PAYLOAD_BYTES = 512;
 
-struct FomoPublishMessage {
+struct FomoHttpMessage {
   uint32_t eventId;
   bool eventFrameCached;
   size_t length;
-  char payload[FOMO_MQTT_PAYLOAD_BYTES];
+  char payload[FOMO_HTTP_PAYLOAD_BYTES];
 };
 
 struct FomoAlertMessage {
@@ -107,10 +107,11 @@ volatile uint16_t lastFomoBagCount = 0;
 volatile uint16_t lastFomoPackageCount = 0;
 volatile float lastFomoFrameChangePercent = 0.0f;
 volatile FomoVisionState fomoVisionState = FOMO_VISION_WARMUP;
-QueueHandle_t fomoPublishQueue = nullptr;
+QueueHandle_t fomoHttpQueue = nullptr;
 QueueHandle_t fomoAlertQueue = nullptr;
 QueueHandle_t fomoRecognitionQueue = nullptr;
 TaskHandle_t fomoTaskHandle = nullptr;
+unsigned long lastFomoHttpAttempt = 0;
 bool fomoReferenceValid = false;
 bool fomoAiWasEnabled = false;
 bool fomoVisionAlertSent = false;
@@ -124,6 +125,7 @@ float fomoTrackedConfidence = 0.0f;
 bool fomoTrackedFrameCached = false;
 
 void fomo_task(void *parameter);
+bool fomo_postHttpResult(const FomoHttpMessage &message);
 
 void fomo_noteFailure() {
   fomoInferenceFailures++;
@@ -188,10 +190,10 @@ bool fomo_allocateBuffer() {
 void fomo_setup() {
   fomo_allocateBuffer();
 
-  fomoPublishQueue = xQueueCreate(1, sizeof(FomoPublishMessage));
+  fomoHttpQueue = xQueueCreate(1, sizeof(FomoHttpMessage));
   fomoAlertQueue = xQueueCreate(4, sizeof(FomoAlertMessage));
   fomoRecognitionQueue = xQueueCreate(4, sizeof(FomoRecognitionMessage));
-  if (!fomoPublishQueue || !fomoAlertQueue || !fomoRecognitionQueue) {
+  if (!fomoHttpQueue || !fomoAlertQueue || !fomoRecognitionQueue) {
     fomoReady = false;
     Serial.println("[FOMO] Could not create vision queues; inference task disabled");
     return;
@@ -528,7 +530,7 @@ void fomo_publishResult(
   float triggerChangePercent,
   bool eventFrameCached
 ) {
-  if (!fomoPublishQueue || summary.detectionCount == 0) return;
+  if (!fomoHttpQueue || summary.detectionCount == 0) return;
 
   JsonDocument doc;
   JsonArray detections = doc["detections"].to<JsonArray>();
@@ -574,7 +576,7 @@ void fomo_publishResult(
   doc["published_detection_count"] = publishedCount;
   doc["event_frame_cached"] = eventFrameCached;
 
-  FomoPublishMessage message = {};
+  FomoHttpMessage message = {};
   message.eventId = eventId;
   message.eventFrameCached = eventFrameCached;
   message.length = serializeJson(doc, message.payload, sizeof(message.payload));
@@ -585,7 +587,7 @@ void fomo_publishResult(
 
   // Only the newest inference is relevant. A backend response carries event_id,
   // so a face result for an older frame cannot mutate the current state.
-  xQueueOverwrite(fomoPublishQueue, &message);
+  xQueueOverwrite(fomoHttpQueue, &message);
 }
 
 FomoInferenceSummary fomo_runInference(
@@ -837,6 +839,17 @@ void fomo_task(void *parameter) {
     unsigned long now = millis();
     fomo_applyRecognitionResults();
 
+    FomoHttpMessage inferenceMessage = {};
+    if (fomoHttpQueue
+        && WiFi.status() == WL_CONNECTED
+        && (lastFomoHttpAttempt == 0 || now - lastFomoHttpAttempt >= FOMO_HTTP_RETRY_MS)
+        && xQueueReceive(fomoHttpQueue, &inferenceMessage, 0) == pdTRUE) {
+      lastFomoHttpAttempt = now;
+      if (!fomo_postHttpResult(inferenceMessage)) {
+        xQueueOverwrite(fomoHttpQueue, &inferenceMessage);
+      }
+    }
+
     if (!deviceAiDetectionEnabled) {
       if (fomoAiWasEnabled) {
         fomo_resetVisionPipeline();
@@ -889,37 +902,46 @@ void fomo_handleRecognitionResult(JsonDocument &doc) {
   }
 }
 
+bool fomo_postHttpResult(const FomoHttpMessage &message) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient request;
+  request.setConnectTimeout(FOMO_HTTP_CONNECT_TIMEOUT_MS);
+  request.setTimeout(FOMO_HTTP_RESPONSE_TIMEOUT_MS);
+  request.setReuse(false);
+  if (!request.begin(FOMO_HTTP_RESULT_URL)) {
+    Serial.println("[FOMO HTTP] Could not initialize request");
+    return false;
+  }
+
+  request.addHeader("Content-Type", "application/json");
+  request.addHeader("X-EdgeGuard-Device-Id", MQTT_DEVICE_ID);
+  int status = request.POST(
+    reinterpret_cast<uint8_t *>(const_cast<char *>(message.payload)),
+    message.length
+  );
+  request.end();
+
+  if (status >= 200 && status < 300) {
+    Serial.printf(
+      "[FOMO HTTP] Sent event %lu (%u bytes), status %d\n",
+      static_cast<unsigned long>(message.eventId),
+      static_cast<unsigned int>(message.length),
+      status
+    );
+    return true;
+  }
+
+  Serial.printf(
+    "[FOMO HTTP] Event %lu failed, status %d; retrying\n",
+    static_cast<unsigned long>(message.eventId),
+    status
+  );
+  return false;
+}
+
 void fomo_loop() {
   if (!mqttClient.connected()) return;
-
-  FomoPublishMessage inferenceMessage = {};
-  if (fomoPublishQueue
-      && xQueueReceive(fomoPublishQueue, &inferenceMessage, 0) == pdTRUE) {
-    if (inferenceMessage.eventFrameCached
-        && !camera_publishEventFrame(inferenceMessage.eventId)) {
-      if (!mqttClient.connected()) {
-        // A partial streaming PUBLISH invalidates the socket. Retry the image
-        // and inference together after reconnecting.
-        xQueueOverwrite(fomoPublishQueue, &inferenceMessage);
-        return;
-      }
-      // An oversized/busy MQTT frame can still be retrieved through HTTP.
-      Serial.printf(
-        "[FOMO] Event %lu will use HTTP image retrieval only\n",
-        static_cast<unsigned long>(inferenceMessage.eventId)
-      );
-    }
-
-    if (!mqttClient.publish(
-          mqtt_topic("/model/inference").c_str(),
-          reinterpret_cast<const uint8_t *>(inferenceMessage.payload),
-          inferenceMessage.length,
-          false
-        )) {
-      xQueueOverwrite(fomoPublishQueue, &inferenceMessage);
-      Serial.println("[FOMO] MQTT result publish failed");
-    }
-  }
 
   FomoAlertMessage alertMessage = {};
   if (fomoAlertQueue

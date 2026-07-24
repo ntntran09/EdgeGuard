@@ -21,7 +21,6 @@ const TELEMETRY_KEYS = {
   endpoints: '/telemetry/endpoints',
   nfc: '/telemetry/nfc',
   visionAlert: '/telemetry/vision-alert',
-  modelInference: '/model/inference',
 };
 const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
@@ -785,21 +784,6 @@ export function createMqttService() {
         recordVisionAlert(parsed).catch((error) => {
           console.error('[MQTT] Failed to record vision alert', error);
         });
-      } else if (key === 'modelInference' && parsed && typeof parsed === 'object') {
-        const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
-        const detections = Array.isArray(parsed.detections)
-          ? parsed.detections.filter((detection) => (
-              detection
-              && typeof detection === 'object'
-              && Number(detection.confidence) > AI_MIN_CONFIDENCE
-            ))
-          : [];
-
-        if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
-          recordAiInference(parsed, detections).catch((error) => {
-            console.error('[MQTT] Failed to record AI inference', error);
-          });
-        }
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
           insertAlertWithEventImage({
@@ -836,6 +820,35 @@ export function createMqttService() {
           console.error('[MQTT] Failed to handle legacy RFID scan', error);
         });
       }
+    }
+  }
+
+  function receiveFomoInference(parsed) {
+    const receivedAt = new Date().toISOString();
+    const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
+    const detections = Array.isArray(parsed.detections)
+      ? parsed.detections.filter((detection) => (
+          detection
+          && typeof detection === 'object'
+          && Number(detection.confidence) > AI_MIN_CONFIDENCE
+        ))
+      : [];
+
+    snapshot.connection.lastMessageAt = receivedAt;
+    snapshot.topics.modelInference = {
+      topic: '/api/fomo/inference',
+      raw: JSON.stringify(parsed),
+      parsed,
+      receivedAt,
+      transport: 'http',
+    };
+    snapshot.summary.updatedAt = receivedAt;
+    summarizeTelemetry(snapshot.summary, 'modelInference', parsed);
+
+    if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
+      recordAiInference(parsed, detections).catch((error) => {
+        console.error('[FOMO HTTP] Failed to record AI inference', error);
+      });
     }
   }
 
@@ -946,6 +959,7 @@ export function createMqttService() {
       if (latestFrame && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS) subscriber(latestFrame);
       return () => frameSubscribers.delete(subscriber);
     },
+    receiveFomoInference,
     publishJson(topic, message, options = {}) {
       return publish(topic, JSON.stringify(message), options);
     },

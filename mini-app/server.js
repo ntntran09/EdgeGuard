@@ -6,6 +6,7 @@ import next from 'next';
 // Adjust imports for the moved backend files
 import { config } from './backend/config.js';
 import { createCameraRouter } from './backend/routes/camera.js';
+import { createFomoRouter } from './backend/routes/fomo.js';
 import { createImagesRouter } from './backend/routes/images.js';
 import { createMqttRouter } from './backend/routes/mqtt.js';
 import { createMqttService } from './backend/services/mqtt-service.js';
@@ -43,6 +44,7 @@ nextApp.prepare().then(() => {
 
   // Mount existing API routes
   app.use('/api/camera', createCameraRouter(mqttService));
+  app.use('/api/fomo', jsonParser, createFomoRouter(mqttService));
   app.use('/api/mqtt', jsonParser, createMqttRouter(mqttService));
   app.use('/api/images', jsonParser, createImagesRouter());
 

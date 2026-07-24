@@ -127,16 +127,20 @@ MQTT. It hosts its own UI/API, caches pending JPEGs in LittleFS, and uploads
 directly to Supabase. This document only describes the main EdgeGuard device
 and legacy MQTT image topics.
 
-## AI Topics
+## AI transport
 
-AI worker to server and hardware:
+The ESP32 sends FOMO inference JSON directly to the backend:
 
 ```text
-{base}/model/inference
+POST /api/fomo/inference
+X-EdgeGuard-Device-Id: device_001
+Content-Type: application/json
 ```
 
-FOMO person detections include an `event_id`. After checking AWS Rekognition,
-the backend returns the familiar-person result to the device on:
+The inference and its exact cached JPEG are not sent through MQTT. After the
+HTTP inference is accepted, the backend retrieves
+`GET /event-frame?event_id=<id>` from the device. For person detections, the
+backend returns the AWS Rekognition result to the device on:
 
 ```text
 {base}/command/vision-result
@@ -205,6 +209,7 @@ Configuration messages are retained so devices can receive the latest config aft
 - `POST /api/mqtt/command`: publish a named command to the device.
 - `POST /api/mqtt/config`: publish retained device configuration.
 - `POST /api/mqtt/send`: publish a custom MQTT message for development.
+- `POST /api/fomo/inference`: accept FOMO inference JSON from the ESP32 over HTTP.
 - `GET /api/images`: list locally saved images.
 - `GET /api/images/:filename`: download a saved image.
 - `POST /api/images`: save a JSON base64 image through HTTP for testing.

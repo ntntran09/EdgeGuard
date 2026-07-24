@@ -16,8 +16,8 @@ void edgeguard_runControlLoops() {
   actuators_loop();
   pn532_loop();
   camera_loop();
-  // FOMO inference runs on Core 1. This only drains its result queue so every
-  // PubSubClient operation remains serialized on the Core 0 control task.
+  // FOMO inference and its HTTP result delivery run on Core 1. This loop only
+  // drains MQTT vision alerts, keeping PubSubClient serialized on Core 0.
   fomo_loop();
   sensors_loop();
   device_loop();

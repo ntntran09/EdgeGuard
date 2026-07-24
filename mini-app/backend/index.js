@@ -4,6 +4,7 @@ import morgan from 'morgan';
 
 import { config } from './config.js';
 import { createCameraRouter } from './routes/camera.js';
+import { createFomoRouter } from './routes/fomo.js';
 import { createImagesRouter } from './routes/images.js';
 import { createMqttRouter } from './routes/mqtt.js';
 import { createMqttService } from './services/mqtt-service.js';
@@ -32,6 +33,7 @@ app.get('/health', (_request, response) => {
 
 app.use('/api/mqtt', createMqttRouter(mqttService));
 app.use('/api/camera', createCameraRouter(mqttService));
+app.use('/api/fomo', createFomoRouter(mqttService));
 app.use('/api/images', createImagesRouter());
 
 app.use((error, _request, response, _next) => {
