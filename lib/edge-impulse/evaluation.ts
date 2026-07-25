@@ -10,7 +10,7 @@ import type { NormalizedDataset } from "@/lib/edge-impulse/types";
 import { setEdgeImpulseImageSources, type ServerSession } from "@/lib/edge-impulse/session";
 
 const SUPPORTED_LABEL_VALUES: readonly string[] = SUPPORTED_LABEL_LIST;
-const RAW_DATA_CATEGORIES = ["testing", "validation", "training"] as const;
+const RAW_DATA_CATEGORIES = ["all", "testing", "validation", "training", "post-processing"] as const;
 
 function filenameKey(filename: string): string {
   const basename = filename.trim().toLowerCase().replace(/\\/g, "/").split("/").pop() ?? filename.trim().toLowerCase();
@@ -19,18 +19,42 @@ function filenameKey(filename: string): string {
     .replace(/\.(jpe?g|png|webp|gif|bmp)$/i, "");
 }
 
+function filenameVariants(filename: string): string[] {
+  const full = filename.trim();
+  const key = filenameKey(full);
+  const beforeRoboflowHash = key.split(".rf.")[0] ?? key;
+  const restoredImageExtension = beforeRoboflowHash
+    .replace(/_jpg$/i, ".jpg")
+    .replace(/_jpeg$/i, ".jpeg")
+    .replace(/_png$/i, ".png")
+    .replace(/_webp$/i, ".webp");
+  const numericPrefix = beforeRoboflowHash.match(/^\d+/)?.[0];
+  return [...new Set([
+    full,
+    key,
+    beforeRoboflowHash,
+    restoredImageExtension,
+    filenameKey(restoredImageExtension),
+    numericPrefix,
+  ].filter((value): value is string => Boolean(value)))];
+}
+
 function matchingRawSample(
   rawSamples: NormalizedDataset["samples"],
   sample: NormalizedDataset["samples"][number],
 ): NormalizedDataset["samples"][number] | undefined {
   const sampleKey = filenameKey(sample.filename);
+  const sampleVariants = filenameVariants(sample.filename);
   return rawSamples.find((raw) => {
     const rawKey = filenameKey(raw.filename);
+    const rawVariants = filenameVariants(raw.filename);
     return raw.id === sample.id ||
       raw.filename === sample.filename ||
       rawKey === sampleKey ||
       rawKey.includes(sampleKey) ||
-      sampleKey.includes(rawKey);
+      sampleKey.includes(rawKey) ||
+      rawVariants.some((variant) => sampleVariants.includes(variant)) ||
+      rawVariants.some((variant) => sampleVariants.some((sampleVariant) => variant.includes(sampleVariant) || sampleVariant.includes(variant)));
   });
 }
 

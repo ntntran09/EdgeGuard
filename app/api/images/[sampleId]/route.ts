@@ -7,7 +7,7 @@ import {
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-const RAW_DATA_CATEGORIES = ["testing", "validation", "training"] as const;
+const RAW_DATA_CATEGORIES = ["all", "testing", "validation", "training", "post-processing"] as const;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -30,6 +30,26 @@ function filenameKey(filename: string): string {
   return basename
     .replace(/\.(json|cbor)$/i, "")
     .replace(/\.(jpe?g|png|webp|gif|bmp)$/i, "");
+}
+
+function filenameVariants(filename: string): string[] {
+  const full = filename.trim();
+  const key = filenameKey(full);
+  const beforeRoboflowHash = key.split(".rf.")[0] ?? key;
+  const restoredImageExtension = beforeRoboflowHash
+    .replace(/_jpg$/i, ".jpg")
+    .replace(/_jpeg$/i, ".jpeg")
+    .replace(/_png$/i, ".png")
+    .replace(/_webp$/i, ".webp");
+  const numericPrefix = beforeRoboflowHash.match(/^\d+/)?.[0];
+  return [...new Set([
+    full,
+    key,
+    beforeRoboflowHash,
+    restoredImageExtension,
+    filenameKey(restoredImageExtension),
+    numericPrefix,
+  ].filter((value): value is string => Boolean(value)))];
 }
 
 function imageSourceFrom(value: unknown): { id?: string; url?: string; filename?: string } | null {
@@ -62,10 +82,9 @@ function imageSourceFrom(value: unknown): { id?: string; url?: string; filename?
 async function findDataAcquisitionImage(
   credentials: EdgeImpulseCredentials,
   filename: string,
-): Promise<{ id?: string; url?: string } | null> {
-  const full = filename.trim();
-  const root = filenameKey(full);
-  const terms = [...new Set([full, root].filter(Boolean))];
+): Promise<{ id?: string; url?: string; terms: string[] } | null> {
+  const root = filenameKey(filename);
+  const terms = filenameVariants(filename);
   for (const category of RAW_DATA_CATEGORIES) {
     for (const term of terms) {
       for (const filters of [{ filename: term }, { search: term }]) {
@@ -76,9 +95,9 @@ async function findDataAcquisitionImage(
             sources.find((source) => source.filename && filenameKey(source.filename) === root) ??
             sources.find((source) => source.filename && filenameKey(source.filename).includes(root)) ??
             sources.find((source) => source.filename && root.includes(filenameKey(source.filename)));
-          if (exact?.id || exact?.url) return { id: exact.id, url: exact.url };
+          if (exact?.id || exact?.url) return { id: exact.id, url: exact.url, terms };
           const first = sources.find((source) => source.id || source.url);
-          if (first) return { id: first.id, url: first.url };
+          if (first) return { id: first.id, url: first.url, terms };
         } catch {
           // Try the next category/filter pair.
         }
@@ -94,6 +113,9 @@ export async function GET(
 ) {
   let debugSampleId = "";
   let debugSourceUrl: string | undefined;
+  let debugFilename = "";
+  let debugSearchTerms: string[] = [];
+  let debugLookupId: string | undefined;
   try {
     const sessionId = request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value;
     const session = getEdgeImpulseSession(sessionId);
@@ -107,7 +129,11 @@ export async function GET(
     debugSampleId = sampleId;
     const afterInputBlock = request.nextUrl.searchParams.get("afterInputBlock") === "true";
     const filename = request.nextUrl.searchParams.get("filename") ?? "";
+    debugFilename = filename;
+    debugSearchTerms = filename ? filenameVariants(filename) : [];
     const lookup = filename ? await findDataAcquisitionImage(session, filename) : null;
+    debugLookupId = lookup?.id;
+    debugSearchTerms = lookup?.terms ?? debugSearchTerms;
     const imageSampleId = lookup?.id ?? sampleId;
     const sourceUrl = getEdgeImpulseImageSource(sessionId, sampleId) ?? getEdgeImpulseImageSource(sessionId, imageSampleId) ?? lookup?.url;
     debugSourceUrl = sourceUrl;
@@ -136,6 +162,9 @@ export async function GET(
         error: safe.message,
         code: safe.code,
         sampleId: debugSampleId,
+        filename: debugFilename || undefined,
+        searchTerms: debugSearchTerms,
+        lookupId: debugLookupId,
         hasMetadataSource: Boolean(debugSourceUrl),
         sourceHost,
       },

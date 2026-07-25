@@ -147,7 +147,7 @@ export function getModelTestingResults(
 
 export async function getAllRawData(
   credentials: EdgeImpulseCredentials,
-  category: "testing" | "validation" | "training",
+  category: "testing" | "validation" | "training" | "post-processing" | "all",
   limit = 200,
   filters: { filename?: string; search?: string } = {},
 ): Promise<unknown[]> {
