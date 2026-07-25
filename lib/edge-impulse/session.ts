@@ -24,10 +24,15 @@ export type SafeProjectConfiguration = {
   supportedLabels: typeof SUPPORTED_LABEL_LIST;
 };
 
+type ImageSourceMetadata = {
+  url?: string;
+  filename?: string;
+};
+
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const globalSessions = globalThis as typeof globalThis & {
   __presenceEdgeImpulseSessions?: Map<string, ServerSession>;
-  __presenceEdgeImpulseImageSources?: Map<string, Map<string, string>>;
+  __presenceEdgeImpulseImageSources?: Map<string, Map<string, ImageSourceMetadata>>;
 };
 
 const sessions =
@@ -35,7 +40,7 @@ const sessions =
   (globalSessions.__presenceEdgeImpulseSessions = new Map<string, ServerSession>());
 const imageSources =
   globalSessions.__presenceEdgeImpulseImageSources ??
-  (globalSessions.__presenceEdgeImpulseImageSources = new Map<string, Map<string, string>>());
+  (globalSessions.__presenceEdgeImpulseImageSources = new Map<string, Map<string, ImageSourceMetadata>>());
 
 function removeExpiredSessions() {
   const now = Date.now();
@@ -100,14 +105,13 @@ export function clearEvaluationCachesForProject(projectId: number | undefined): 
 
 export function setEdgeImpulseImageSources(
   sessionId: string | undefined,
-  sources: Array<{ keys: string[]; url: string | undefined }>,
+  sources: Array<{ keys: string[]; url: string | undefined; filename?: string }>,
 ): void {
   if (!sessionId) return;
-  const next = new Map<string, string>();
+  const next = new Map<string, ImageSourceMetadata>();
   for (const source of sources) {
-    if (!source.url) continue;
     for (const key of source.keys) {
-      if (key) next.set(key, source.url);
+      if (key) next.set(key, { url: source.url, filename: source.filename });
     }
   }
   imageSources.set(sessionId, next);
@@ -117,6 +121,15 @@ export function getEdgeImpulseImageSource(
   sessionId: string | undefined,
   key: string,
 ): string | undefined {
+  if (!sessionId) return undefined;
+  removeExpiredSessions();
+  return imageSources.get(sessionId)?.get(key)?.url;
+}
+
+export function getEdgeImpulseImageMetadata(
+  sessionId: string | undefined,
+  key: string,
+): ImageSourceMetadata | undefined {
   if (!sessionId) return undefined;
   removeExpiredSessions();
   return imageSources.get(sessionId)?.get(key);
