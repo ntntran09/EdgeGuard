@@ -248,6 +248,10 @@ function bytePreview(bytes: ArrayBuffer): string {
   return `${hex}${text.trim() ? ` | ${text}` : ""}`;
 }
 
+export function studioApiPath(url: URL): string {
+  return `${url.pathname}${url.search}`.replace(/^\/v1(?=\/api\/)/, "");
+}
+
 export async function getSampleImage(
   credentials: EdgeImpulseCredentials,
   sampleId: string,
@@ -268,11 +272,11 @@ export async function getSampleImage(
     .map(normalizeImageSourceUrl)
     .filter((value): value is string => Boolean(value));
   const paths = [
-    `${imageUrl.pathname}${imageUrl.search}`,
-    `${plainImageUrl.pathname}${plainImageUrl.search}`,
-    ...(!afterInputBlock ? [`${processedImageUrl.pathname}${processedImageUrl.search}`] : []),
-    ...(!afterInputBlock ? [`${plainProcessedImageUrl.pathname}${plainProcessedImageUrl.search}`] : []),
-    `${rawUrl.pathname}${rawUrl.search}`,
+    studioApiPath(imageUrl),
+    studioApiPath(plainImageUrl),
+    ...(!afterInputBlock ? [studioApiPath(processedImageUrl)] : []),
+    ...(!afterInputBlock ? [studioApiPath(plainProcessedImageUrl)] : []),
+    studioApiPath(rawUrl),
   ];
   const attempts: Array<Record<string, unknown>> = [];
   const path = paths[0];

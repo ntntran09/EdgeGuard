@@ -7,6 +7,7 @@ import {
   buildSampleInfoUrl,
   buildShowClassificationUrl,
   detectImageContentType,
+  studioApiPath,
 } from "@/lib/edge-impulse/client";
 import { describe, expect, it } from "vitest";
 
@@ -30,6 +31,7 @@ describe("Fixed Edge Impulse configuration", () => {
     expect(buildSampleImageUrl(1066469, 7, { includeImpulseId: false })).toBe("https://studio.edgeimpulse.com/v1/api/1066469/raw-data/7/image");
     expect(buildSampleImageUrl(1066469, 7, { afterInputBlock: true })).toContain("afterInputBlock=true");
     expect(buildRawSampleUrl(1066469, 7)).toBe("https://studio.edgeimpulse.com/v1/api/1066469/raw-data/7/raw");
+    expect(studioApiPath(new URL(buildRawSampleUrl(1066469, 7)))).toBe("/api/1066469/raw-data/7/raw");
     expect(buildShowClassificationUrl(1066469, 7)).toContain("/public/1066469/live/impulse/1/classification");
     expect(buildShowClassificationUrl(1066469, 7)).toContain("modelVariant=int8");
     expect(buildModelTestingUrl(1066469)).toBe("https://studio.edgeimpulse.com/public/1066469/live/impulse/1/validation");
