@@ -69,6 +69,50 @@ export async function POST(request: Request) {
   return NextResponse.json({ ok: true, user: mapTelegramUser(data) }, { status: 201 });
 }
 
+export async function PATCH(request: Request) {
+  const requester = await requireAdmin(request);
+  if (!requester.ok) {
+    return NextResponse.json({ ok: false, error: 'Chỉ admin mới được cấp quyền người dùng' }, { status: 403 });
+  }
+
+  const { id, isActive } = await request.json();
+  if (!id || typeof isActive !== 'boolean') {
+    return NextResponse.json({ ok: false, error: 'id và isActive là bắt buộc' }, { status: 422 });
+  }
+  if (!isSupabaseConfigured) {
+    return NextResponse.json({ ok: false, error: 'Supabase is not configured' }, { status: 503 });
+  }
+
+  const { data: target, error: lookupError } = await supabase
+    .from('telegram_device_users')
+    .select('*')
+    .eq('device_id', DEVICE_ID)
+    .eq('id', id)
+    .maybeSingle();
+  if (lookupError || !target) {
+    return NextResponse.json({ ok: false, error: lookupError?.message || 'User not found' }, { status: 404 });
+  }
+
+  const bootstrapAdminIds = (process.env.ADMIN_TELEGRAM_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (target.role === 'admin' || bootstrapAdminIds.includes(String(target.telegram_id))) {
+    return NextResponse.json({ ok: false, error: 'Không thể thay đổi quyền admin gốc' }, { status: 409 });
+  }
+
+  const { data, error } = await supabase
+    .from('telegram_device_users')
+    .update({ is_active: isActive })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
+  }
+
+  return NextResponse.json({ ok: true, user: mapTelegramUser(data) });
+}
 export async function DELETE(request: Request) {
   const requester = await requireAdmin(request);
   if (!requester.ok) {

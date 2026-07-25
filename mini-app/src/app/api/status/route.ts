@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 import { normalizeAiDetections } from '@/lib/ai-detections';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
@@ -52,6 +52,7 @@ export async function GET() {
   try {
     const [res, settingsResult] = await Promise.all([
       fetch(backendApiUrl('/api/mqtt/status'), {
+        headers: backendApiHeaders(),
         cache: 'no-store',
       }),
       isSupabaseConfigured

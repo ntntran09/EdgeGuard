@@ -12,9 +12,9 @@ import {
   SettingsFilledIcon,
   ShieldFilledIcon,
 } from '@/components/icons/FilledIcons';
-import type { AlertConfig, CameraEndpoints, KnownFace, PendingRfidScan, RfidCard } from '@/types';
+import type { AlertConfig, CameraEndpoints, KnownFace, PendingRfidScan, RfidCard, TelegramDeviceUser } from '@/types';
 
-type SettingsSection = 'menu' | 'system' | 'rfid' | 'faces';
+type SettingsSection = 'menu' | 'system' | 'users' | 'rfid' | 'faces';
 const MAX_FACE_IMAGE_BYTES = 2.5 * 1024 * 1024;
 
 function ToggleSwitch({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
@@ -66,6 +66,7 @@ export default function SettingsPage() {
   const [cards, setCards] = useState<RfidCard[]>([]);
   const [pending, setPending] = useState<PendingRfidScan[]>([]);
   const [faces, setFaces] = useState<KnownFace[]>([]);
+  const [telegramUsers, setTelegramUsers] = useState<TelegramDeviceUser[]>([]);
   const [cameraEndpoints, setCameraEndpoints] = useState<CameraEndpoints | null>(null);
   const [alertConfig, setAlertConfig] = useState<AlertConfig>({
     objectLeftAlertEnabled: true,
@@ -98,17 +99,19 @@ export default function SettingsPage() {
   const loadSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [cardsRes, settingsRes, facesRes, statusRes] = await Promise.all([
+      const [cardsRes, settingsRes, facesRes, statusRes, usersRes] = await Promise.all([
         api.getCards(),
         api.getSettings(),
         api.getFaces(),
         api.getStatus().catch(() => null),
+        api.getUsers(),
       ]);
 
       setCards(cardsRes.cards || []);
       setPending(cardsRes.pending || []);
       setFaces(facesRes.faces || []);
       setCameraEndpoints(statusRes?.cameraEndpoints || null);
+      setTelegramUsers(usersRes.users || []);
       if (settingsRes.settings) {
         setAlertConfig((prev) => ({
           ...prev,
@@ -251,11 +254,25 @@ export default function SettingsPage() {
     }
   };
 
+  const handleUserAccess = async (user: TelegramDeviceUser) => {
+    setActionLoading(true);
+    try {
+      const result = await api.updateUserAccess(user.id, !user.isActive);
+      setTelegramUsers((current) => current.map((item) => item.id === user.id ? result.user : item));
+      showToast(user.isActive ? 'Đã thu hồi quyền dashboard' : 'Đã cấp quyền dashboard');
+    } catch {
+      showToast('Không thể cập nhật quyền người dùng');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (isLoading) return <div className="empty-state">Đang tải cài đặt...</div>;
 
   const titleMap: Record<SettingsSection, string> = {
     menu: 'Cài đặt',
     system: 'Hệ thống',
+    users: 'Người dùng Telegram',
     rfid: 'RFID/NFC',
     faces: 'Gương mặt quen',
   };
@@ -281,6 +298,14 @@ export default function SettingsPage() {
           <button className="settings-menu-card" onClick={() => setSection('system')}>
             <SettingsFilledIcon size={24} />
             <span><strong>Hệ thống</strong><small>Tự động khóa, cảnh báo AI và camera</small></span>
+            <ChevronRightFilledIcon size={18} />
+          </button>
+          <button className="settings-menu-card" onClick={() => setSection('users')}>
+            <ShieldFilledIcon size={24} />
+            <span>
+              <strong>Người dùng Telegram</strong>
+              <small>{telegramUsers.filter((user) => !user.isActive).length} tài khoản chờ duyệt</small>
+            </span>
             <ChevronRightFilledIcon size={18} />
           </button>
           <button className="settings-menu-card" onClick={() => setSection('rfid')}>
@@ -387,6 +412,47 @@ export default function SettingsPage() {
         </section>
       )}
 
+      {section === 'users' && (
+        <section className="settings-detail-panel">
+          <div className="panel-heading">
+            <div>
+              <h2 className="text-heading-3">Quyền truy cập dashboard</h2>
+              <p className="text-caption">Tài khoản gửi /start sẽ xuất hiện tại đây. Chỉ cấp quyền cho người bạn tin cậy.</p>
+            </div>
+            <span className="badge badge-info">{telegramUsers.length} tài khoản</span>
+          </div>
+          <div className="rfid-list">
+            {telegramUsers.length === 0 ? (
+              <div className="empty-state">Chưa có tài khoản Telegram nào gửi /start.</div>
+            ) : telegramUsers.map((user) => (
+              <div className="rfid-card-row" key={user.id}>
+                <div className="rfid-icon"><ShieldFilledIcon size={22} /></div>
+                <div className="rfid-card-copy">
+                  <div>
+                    <strong>{user.displayName}</strong>
+                    <span className={`badge ${user.role === 'admin' || user.isActive ? 'badge-success' : 'badge-warning'}`}>
+                      {user.role === 'admin' ? 'Admin' : user.isActive ? 'Đã cấp quyền' : 'Chờ duyệt'}
+                    </span>
+                  </div>
+                  <small>Telegram ID: {user.telegramId}</small>
+                  <small>Đăng ký {formatTimeAgo(user.addedAt)}</small>
+                </div>
+                {user.role !== 'admin' && (
+                  <div className="row-actions">
+                    <button
+                      className={`mini-btn ${user.isActive ? 'danger' : ''}`}
+                      onClick={() => void handleUserAccess(user)}
+                      disabled={actionLoading}
+                    >
+                      {user.isActive ? 'Thu hồi' : 'Cấp quyền'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       {section === 'rfid' && (
         <section className="settings-detail-panel">
           <div className="setting-row">

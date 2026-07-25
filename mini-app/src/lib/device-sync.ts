@@ -1,12 +1,12 @@
 import 'server-only';
 
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 
 export async function syncDeviceAccessConfig() {
   try {
     const response = await fetch(backendApiUrl('/api/mqtt/sync-access'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: backendApiHeaders({ 'Content-Type': 'application/json' }),
       cache: 'no-store',
     });
 

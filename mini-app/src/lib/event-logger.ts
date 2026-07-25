@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 
 export interface SecurityAlertInput {
   device_id?: string;
@@ -16,7 +16,7 @@ export async function logSecurityAlerts(alerts: SecurityAlertInput[]) {
   for (const alert of alerts) {
     const response = await fetch(backendApiUrl('/api/mqtt/events'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: backendApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         alertType: alert.alert_type,
         message: alert.message,

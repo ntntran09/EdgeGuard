@@ -335,6 +335,56 @@ export const supabaseService = {
     }
   },
 
+  async upsertTelegramBotUser({ deviceId, telegramId, displayName }) {
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const targetDeviceId = deviceId || config.mqtt.deviceId;
+    const normalizedTelegramId = String(telegramId || '').trim();
+    if (!/^-?\d+$/.test(normalizedTelegramId)) {
+      throw new Error('Telegram user ID is invalid.');
+    }
+
+    const normalizedDisplayName = String(displayName || 'Người dùng Telegram').trim().slice(0, 160);
+    const { data: existing, error: lookupError } = await supabase
+      .from('telegram_device_users')
+      .select('id')
+      .eq('device_id', targetDeviceId)
+      .eq('telegram_id', normalizedTelegramId)
+      .maybeSingle();
+    if (lookupError) throw new Error(`Cannot look up Telegram user: ${lookupError.message}`);
+
+    const query = existing
+      ? supabase
+          .from('telegram_device_users')
+          .update({ display_name: normalizedDisplayName })
+          .eq('id', existing.id)
+      : supabase
+          .from('telegram_device_users')
+          .insert({
+            device_id: targetDeviceId,
+            telegram_id: normalizedTelegramId,
+            display_name: normalizedDisplayName,
+            role: 'user',
+            is_active: false,
+          });
+    const { data, error } = await query.select().single();
+    if (error) throw new Error(`Cannot save Telegram user: ${error.message}`);
+    return data;
+  },
+
+  async isTelegramUserActive({ deviceId, telegramId }) {
+    if (!supabase) return false;
+    const { data, error } = await supabase
+      .from('telegram_device_users')
+      .select('id')
+      .eq('device_id', deviceId || config.mqtt.deviceId)
+      .eq('telegram_id', String(telegramId || '').trim())
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error) throw new Error(`Cannot verify Telegram user: ${error.message}`);
+    return Boolean(data);
+  },
+
   async getDeviceSettings(deviceId) {
     if (!supabase) return null;
 

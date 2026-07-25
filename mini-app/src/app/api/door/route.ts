@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 import { logSecurityAlerts } from '@/lib/event-logger';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
@@ -39,7 +39,7 @@ async function getAutoLockConfig() {
 async function publishCommand(command: string, payload: Record<string, unknown>) {
   const res = await fetch(backendApiUrl('/api/mqtt/command'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: backendApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ command, payload }),
   });
 

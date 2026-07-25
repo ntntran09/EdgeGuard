@@ -49,6 +49,14 @@ export const config = {
     enabled: process.env.TELEGRAM_ENABLED === 'true',
     botToken: process.env.TELEGRAM_BOT_TOKEN,
     chatId: process.env.TELEGRAM_CHAT_ID,
+    adminIds: process.env.ADMIN_TELEGRAM_IDS,
+    authRequired: booleanFromEnv(
+      'TELEGRAM_AUTH_REQUIRED',
+      process.env.NODE_ENV === 'production'
+    ),
+    botUpdatesEnabled: booleanFromEnv('TELEGRAM_BOT_UPDATES_ENABLED', false),
+    pollingTimeoutSeconds: numberFromEnv('TELEGRAM_POLLING_TIMEOUT_SECONDS', 25),
+    pollingConflictBackoffSeconds: numberFromEnv('TELEGRAM_POLLING_CONFLICT_BACKOFF_SECONDS', 60),
   },
   access: {
     allowAllRfid: booleanFromEnv('RFID_ALLOW_ALL', false),
