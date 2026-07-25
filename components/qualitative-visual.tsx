@@ -77,10 +77,7 @@ function BoxLayer({
         );
         if (kind === "prediction") {
           const centroid = getBoxCentroid(box)!;
-          const hasBox = hasDrawableCoordinates(box);
           const radius = Math.max(3, Math.min(8, Math.min(canvasWidth, canvasHeight) * 0.014));
-          const edgeX = hasBox ? box.x! : centroid.x;
-          const edgeY = hasBox ? box.y! : centroid.y;
           const label = `${box.label}${box.score === undefined ? "" : ` (${box.score.toFixed(2)})`}`;
           const labelWidth = Math.max(
             fontSize * 6,
@@ -88,24 +85,11 @@ function BoxLayer({
           );
           const captionX = Math.max(
             0,
-            Math.min(canvasWidth - labelWidth, edgeX),
+            Math.min(canvasWidth - labelWidth, centroid.x + radius * 1.5),
           );
-          const captionY = Math.max(0, edgeY - labelHeight);
+          const captionY = Math.max(0, Math.min(canvasHeight - labelHeight, centroid.y - labelHeight / 2));
           return (
             <g key={`${box.caption}-${centroid.x}-${centroid.y}-${index}`}>
-              {hasBox && (
-                <rect
-                  x={box.x}
-                  y={box.y}
-                  width={box.width}
-                  height={box.height}
-                  fill={box.fill}
-                  stroke={box.color}
-                  strokeWidth="2"
-                  strokeDasharray={box.dashed ? "7 5" : undefined}
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
               <circle
                 cx={centroid.x}
                 cy={centroid.y}
