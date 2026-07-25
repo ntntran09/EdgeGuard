@@ -167,6 +167,7 @@ export async function GET(
         lookupId: debugLookupId,
         hasMetadataSource: Boolean(debugSourceUrl),
         sourceHost,
+        details: safe.details,
       },
       { status: safe.status },
     );

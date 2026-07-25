@@ -11,6 +11,7 @@ export class EdgeImpulseError extends Error {
     message: string,
     public readonly code: string,
     public readonly status = 500,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "EdgeImpulseError";
@@ -240,6 +241,13 @@ async function fetchImageUrl(
   return contentType ? { bytes, contentType } : null;
 }
 
+function bytePreview(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes.slice(0, 48));
+  const hex = [...view].map((value) => value.toString(16).padStart(2, "0")).join(" ");
+  const text = new TextDecoder().decode(view).replace(/[^\x20-\x7e]/g, ".");
+  return `${hex}${text.trim() ? ` | ${text}` : ""}`;
+}
+
 export async function getSampleImage(
   credentials: EdgeImpulseCredentials,
   sampleId: string,
@@ -266,6 +274,7 @@ export async function getSampleImage(
     ...(!afterInputBlock ? [`${plainProcessedImageUrl.pathname}${plainProcessedImageUrl.search}`] : []),
     `${rawUrl.pathname}${rawUrl.search}`,
   ];
+  const attempts: Array<Record<string, unknown>> = [];
   const path = paths[0];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -280,10 +289,20 @@ export async function getSampleImage(
       signal: controller.signal,
       cache: "no-store",
     });
-    if (!response.ok) throw friendlyImageError(response.status);
+    if (!response.ok) {
+      attempts.push({ source: "raw-data", path, status: response.status });
+      throw friendlyImageError(response.status);
+    }
     const bytes = await response.arrayBuffer();
     const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
     if (!contentType) {
+      attempts.push({
+        source: "raw-data",
+        path,
+        status: response.status,
+        contentType: response.headers.get("content-type") ?? "",
+        preview: bytePreview(bytes),
+      });
       throw new EdgeImpulseError(
         "Edge Impulse không trả về định dạng ảnh hợp lệ.",
         "INVALID_IMAGE_CONTENT_TYPE",
@@ -308,10 +327,20 @@ export async function getSampleImage(
             signal: controller.signal,
             cache: "no-store",
           });
-          if (!response.ok) continue;
+          if (!response.ok) {
+            attempts.push({ source: "raw-data", path: fallbackPath, status: response.status });
+            continue;
+          }
           const bytes = await response.arrayBuffer();
           const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
           if (contentType) return { bytes, contentType };
+          attempts.push({
+            source: "raw-data",
+            path: fallbackPath,
+            status: response.status,
+            contentType: response.headers.get("content-type") ?? "",
+            preview: bytePreview(bytes),
+          });
         } catch {
           // Try the next image source before surfacing the original error.
         }
@@ -329,7 +358,11 @@ export async function getSampleImage(
       durationMs: Date.now() - started,
       errorCode: safeError.code,
     });
-    throw safeError;
+    throw new EdgeImpulseError(safeError.message, safeError.code, safeError.status, {
+      sampleId,
+      sourceCandidates,
+      attempts,
+    });
   } finally {
     clearTimeout(timer);
   }
