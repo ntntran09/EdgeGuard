@@ -1,4 +1,11 @@
 import { Router } from 'express';
+import { createTelegramService } from '../services/telegram.js';
+
+const telegramService = createTelegramService({
+  enabled: true,
+  botToken: process.env.TELEGRAM_BOT_TOKEN,
+  chatId: process.env.TELEGRAM_CHAT_ID,
+});
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -152,12 +159,16 @@ export function createMqttRouter(mqttService) {
         return;
       }
 
-      await mqttService.publishJson(topic, message, { retain: Boolean(retain) });
-      response.json({ ok: true, topic });
-    } catch (error) {
-      next(error);
-    }
-  });
+    await mqttService.publishJson(topic, message, { retain: Boolean(retain) });
+
+    const teleText = `*MQTT Published*\n• *Topic:* \`${topic}\`\n• *Content:* \`\`\`json\n${JSON.stringify(message, null, 2)}\n\`\`\``;
+    telegramService.sendMessage(teleText).catch(err => console.error('[MQTT Route] Telegram error:', err));
+
+    response.json({ ok: true, topic });
+  } catch (error) {
+    next(error);
+  }
+});
 
   return router;
 }

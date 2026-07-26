@@ -12,6 +12,7 @@ import { createMqttService } from './backend/services/mqtt-service.js';
 import { createTelegramAuthMiddleware } from './backend/middleware/telegram-auth.js';
 import { createTelegramBotUpdateService } from './backend/services/telegram-bot-update-service.js';
 import { supabaseService } from './backend/services/supabase-service.js';
+import { createTelegramService } from './backend/services/telegram.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
