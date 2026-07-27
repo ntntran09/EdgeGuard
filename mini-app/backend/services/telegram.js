@@ -49,15 +49,23 @@ export function createTelegramService(options) {
         if (caption) formData.append('caption', caption);
 
         if (typeof imagePath === 'string') {
-          if (!fs.existsSync(imagePath)) {
-            console.error(`[Telegram] File image not found: ${imagePath}`);
-            return { success: false, error: 'File not found' };
+          if (imagePath.startsWith('data:image/')) {
+            const base64Data = imagePath.replace(/^data:image\/\w+;base64,/, '');
+            const buffer = Buffer.from(base64Data, 'base64');
+            const file = new File([buffer], 'alert.jpg', { type: 'image/jpeg' });
+            formData.append('photo', file);
+          } 
+          else if (fs.existsSync(imagePath)) {
+            const fileBuffer = fs.readFileSync(imagePath);
+            const file = new File([fileBuffer], 'alert.jpg', { type: 'image/jpeg' });
+            formData.append('photo', file);
+          } else {
+            return this.sendMessage(caption);
           }
-          const fileBuffer = fs.readFileSync(imagePath);
-          const file = new File([fileBuffer], 'image.jpg', { type: 'image/jpeg' });
-          formData.append('photo', file);
+        } else if (imagePath) {
+          formData.append('photo', imagePath, 'alert.jpg');
         } else {
-          formData.append('photo', imagePath, 'image.jpg');
+          return this.sendMessage(caption);
         }
 
         const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;

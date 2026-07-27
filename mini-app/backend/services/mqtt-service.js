@@ -8,6 +8,9 @@ import {
 import { supabaseService } from './supabase-service.js';
 import { rekognitionService } from './rekognition-service.js';
 
+import { createEmailService } from './email.js';
+import { createTelegramService } from './telegram.js';
+
 let lastAiLogTime = 0;
 let lastAiLogEventKey = null;
 const AI_LOG_COOLDOWN_MS = 8000;
@@ -244,6 +247,8 @@ export function createMqttService() {
     summary: {},
     latestImage: null,
   };
+  const telegramService = createTelegramService(config.telegram);
+  const emailService = createEmailService(config.email);
 
   let client = null;
   let deviceAccessConfig = buildDeviceAccessPayload();
@@ -656,11 +661,35 @@ export function createMqttService() {
 
   async function insertAlertWithEventImage(alert, eventImage) {
     const capturedImage = eventImage ?? await captureEventImage();
-    return supabaseService.insertAlert({
+    const imagePath = capturedImage.imagePath || alert.thumbnailUrl;
+    const alertResult = await supabaseService.insertAlert({
       ...alert,
-      thumbnailUrl: capturedImage.imagePath || alert.thumbnailUrl,
+      thumbnailUrl: imagePath,
       metadata: metadataWithEventImage(alert.metadata, capturedImage),
     });
+
+    const alertSeverity = alert.severity || 'info';
+    if (alertSeverity === 'danger' || alertSeverity === 'warning') {
+      const messageText = `*[CẢNH BÁO EDGEGUARD]*\n` +
+                          `• *Mức độ:* ${alertSeverity.toUpperCase()}\n` +
+                          `• *Loại:* ${alert.alertType}\n` +
+                          `• *Nội dung:* ${alert.message}\n` +
+                          `• *Thời gian:* ${new Date().toLocaleString('vi-VN')}`;
+
+      telegramService.sendImage(imagePath, messageText).catch((err) => {
+        console.error('[MQTT] Telegram notify failed:', err);
+      });
+
+      emailService.sendImage(
+        imagePath, 
+        messageText, 
+        `[EdgeGuard Alert] ${alert.message}`
+      ).catch((err) => {
+        console.error('[MQTT] Email notify failed:', err);
+      });
+    }
+
+    return alertResult;
   }
 
   async function recordVisionAlert(parsed) {
