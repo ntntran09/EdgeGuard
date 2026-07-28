@@ -8,8 +8,49 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 const RAW_DATA_CATEGORIES = ["all", "testing", "validation", "training", "post-processing"] as const;
+const IMAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+const IMAGE_CACHE_MAX_ITEMS = 120;
 
 type UnknownRecord = Record<string, unknown>;
+type CachedImage = { bytes: ArrayBuffer; contentType: string; expiresAt: number };
+
+const imageCache = new Map<string, CachedImage>();
+
+function cacheKey(sessionId: string, sampleId: string, filename: string, afterInputBlock: boolean) {
+  return [sessionId, sampleId, filename, afterInputBlock ? "after-input" : "raw"].join("|");
+}
+
+function cachedImage(key: string): CachedImage | undefined {
+  const image = imageCache.get(key);
+  if (!image) return undefined;
+  if (image.expiresAt <= Date.now()) {
+    imageCache.delete(key);
+    return undefined;
+  }
+  return image;
+}
+
+function rememberImage(key: string, image: { bytes: ArrayBuffer; contentType: string }) {
+  if (imageCache.size >= IMAGE_CACHE_MAX_ITEMS) {
+    const oldestKey = imageCache.keys().next().value;
+    if (oldestKey) imageCache.delete(oldestKey);
+  }
+  imageCache.set(key, {
+    bytes: image.bytes,
+    contentType: image.contentType,
+    expiresAt: Date.now() + IMAGE_CACHE_TTL_MS,
+  });
+}
+
+function imageResponse(image: { bytes: ArrayBuffer; contentType: string }) {
+  return new NextResponse(image.bytes, {
+    headers: {
+      "Content-Type": image.contentType,
+      "Cache-Control": "private, max-age=300",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
 
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,7 +160,7 @@ export async function GET(
   try {
     const sessionId = request.cookies.get(EDGE_IMPULSE_SESSION_COOKIE)?.value;
     const session = getEdgeImpulseSession(sessionId);
-    if (!session) {
+    if (!sessionId || !session) {
       return NextResponse.json(
         { error: "Phiên Edge Impulse đã hết hạn. Hãy cấu hình lại project.", code: "NO_SESSION" },
         { status: 401 },
@@ -130,22 +171,21 @@ export async function GET(
     const afterInputBlock = request.nextUrl.searchParams.get("afterInputBlock") === "true";
     const filename = request.nextUrl.searchParams.get("filename") ?? "";
     debugFilename = filename;
+    const key = cacheKey(sessionId, sampleId, filename, afterInputBlock);
+    const cached = cachedImage(key);
+    if (cached) return imageResponse(cached);
     debugSearchTerms = filename ? filenameVariants(filename) : [];
-    const lookup = filename ? await findDataAcquisitionImage(session, filename) : null;
+    const directSourceUrl = getEdgeImpulseImageSource(sessionId, sampleId);
+    const lookup = directSourceUrl || !filename ? null : await findDataAcquisitionImage(session, filename);
     debugLookupId = lookup?.id;
     debugSearchTerms = lookup?.terms ?? debugSearchTerms;
     const imageSampleId = lookup?.id ?? sampleId;
-    const sourceUrl = getEdgeImpulseImageSource(sessionId, sampleId) ?? getEdgeImpulseImageSource(sessionId, imageSampleId) ?? lookup?.url;
+    const sourceUrl = directSourceUrl ?? getEdgeImpulseImageSource(sessionId, imageSampleId) ?? lookup?.url;
     debugSourceUrl = sourceUrl;
     debugSampleId = imageSampleId;
     const image = await getSampleImage(session, imageSampleId, afterInputBlock, sourceUrl ? [sourceUrl] : []);
-    return new NextResponse(image.bytes, {
-      headers: {
-        "Content-Type": image.contentType,
-        "Cache-Control": "private, max-age=300",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+    rememberImage(key, image);
+    return imageResponse(image);
   } catch (error) {
     const safe =
       error instanceof EdgeImpulseError

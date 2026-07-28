@@ -25,7 +25,11 @@ export function ThresholdControls({
   const [message, setMessage] = useState("");
   const update = (value: number) => {
     onChange(clampThreshold(value));
-    setMessage("Việc giảm threshold không thể khôi phục những prediction không có trong dữ liệu Model Testing mà Edge Impulse trả về.");
+    setMessage("Web đã cập nhật metric theo threshold mới, dựa trên các prediction và confidence score đã tải từ Model Testing.");
+  };
+  const reset = () => {
+    onChange(DEFAULT_CONFIDENCE_THRESHOLD);
+    setMessage("Đã đưa Confidence Threshold về mặc định 0.50.");
   };
   const optimize = () => {
     const best = optimizeGlobalThreshold(samples);
@@ -42,7 +46,7 @@ export function ThresholdControls({
         </div>
         <div className="flex flex-wrap gap-2">
           <button className="btn btn-dark" onClick={optimize}><Sparkles className="size-4" /> Tối ưu</button>
-          <button className="btn btn-soft" onClick={() => update(DEFAULT_CONFIDENCE_THRESHOLD)}><RotateCcw className="size-4" /> 0.50</button>
+          <button className="btn btn-soft" onClick={reset}><RotateCcw className="size-4" /> 0.50</button>
         </div>
       </div>
 

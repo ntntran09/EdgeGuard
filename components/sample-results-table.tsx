@@ -3,10 +3,16 @@
 import type { NormalizedSample } from "@/lib/edge-impulse/types";
 import type { SamplePresenceResult } from "@/lib/metrics/presence";
 import { ChevronLeft, ChevronRight, ExternalLink, ImageIcon, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SampleDetailDialog } from "./sample-detail-dialog";
 
 const display = (labels: string[]) => (labels.length ? labels.join(", ") : "—");
+
+function preloadImage(url?: string) {
+  if (!url || typeof window === "undefined") return;
+  const image = new window.Image();
+  image.src = url;
+}
 
 function SampleThumbnail({ sample }: { sample?: NormalizedSample }) {
   const [failed, setFailed] = useState(false);
@@ -63,6 +69,17 @@ export function SampleResultsTable({
   const selected = selectedId ? results.find((result) => result.sampleId === selectedId) : undefined;
   const sample = selected ? sampleById.get(selected.sampleId) : undefined;
   const selectedIndex = selected ? filtered.findIndex((result) => result.sampleId === selected.sampleId) : -1;
+  useEffect(() => {
+    if (selectedIndex < 0) return;
+    const nearby = [
+      filtered[selectedIndex],
+      filtered[selectedIndex - 2],
+      filtered[selectedIndex - 1],
+      filtered[selectedIndex + 1],
+      filtered[selectedIndex + 2],
+    ];
+    nearby.forEach((item) => preloadImage(item ? sampleById.get(item.sampleId)?.thumbnailUrl : undefined));
+  }, [filtered, sampleById, selectedIndex]);
   const selectRelative = (offset: number) => {
     const next = filtered[selectedIndex + offset];
     if (next) setSelectedId(next.sampleId);
@@ -74,7 +91,7 @@ export function SampleResultsTable({
         <h2 className="section-title">Kết quả theo từng ảnh</h2>
         <p className="muted mt-1 text-sm">Thumbnail được proxy trực tiếp từ Edge Impulse. Prediction gốc không bị chỉnh sửa trước khi hiển thị raw object.</p>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="relative"><Search className="absolute left-3 top-3 size-4 text-slate-400" /><input className="field pl-9" placeholder="Tìm filename" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} /></label>
+          <label className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input className="field !pl-10" placeholder="Tìm filename" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} /></label>
           <select className="field" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
             <option value="all">Tất cả kết quả</option><option value="pass">Chỉ PASS</option><option value="fail">Chỉ FAIL</option><option value="fp">Có False Positive</option><option value="fn">Có False Negative</option><option value="skipped">Skipped unsupported label</option>
           </select>
@@ -93,7 +110,13 @@ export function SampleResultsTable({
             {rows.map((result) => {
               const rowSample = sampleById.get(result.sampleId);
               return (
-                <tr key={result.sampleId} className="cursor-pointer" onClick={() => setSelectedId(result.sampleId)}>
+                <tr
+                  key={result.sampleId}
+                  className="cursor-pointer"
+                  onClick={() => setSelectedId(result.sampleId)}
+                  onMouseEnter={() => preloadImage(rowSample?.thumbnailUrl)}
+                  onFocus={() => preloadImage(rowSample?.thumbnailUrl)}
+                >
                   <td><SampleThumbnail sample={rowSample} /></td>
                   <td className="max-w-52 truncate font-bold">{result.filename}</td>
                   <td>{display(result.groundTruthLabels)}</td>

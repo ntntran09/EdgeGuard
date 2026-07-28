@@ -319,6 +319,8 @@ function VisualFrame({
                 alt={`${title}: ${sample.filename}`}
                 className="block h-auto w-full select-none"
                 draggable={false}
+                loading="eager"
+                decoding="async"
                 onLoad={(event) =>
                   setNaturalSize({
                     width: event.currentTarget.naturalWidth,
