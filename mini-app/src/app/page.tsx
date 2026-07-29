@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [cameraFrameSequence, setCameraFrameSequence] = useState(1);
+  const [failedCameraStreamUrl, setFailedCameraStreamUrl] = useState<string | null>(null);
   const [cameraFrameState, setCameraFrameState] = useState<'connecting' | 'online' | 'offline'>('connecting');
   const cameraFrameTimerRef = useRef<number | null>(null);
   const activeStatus = useMemo<SystemStatus>(() => status || ({
@@ -65,10 +66,15 @@ export default function DashboardPage() {
   const recentEvents = events;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
   const isSafe = activeStatus.mqttConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
+  const cameraStreamProxyUrl = activeStatus.cameraEndpoints?.streamProxyUrl;
   const cameraFrameProxyUrl = activeStatus.cameraEndpoints?.frameProxyUrl;
-  const cameraSource = cameraFrameProxyUrl
-    ? `${cameraFrameProxyUrl}?frame=${cameraFrameSequence}`
-    : activeStatus.latestImageUrl;
+  const useCameraStream = Boolean(cameraStreamProxyUrl)
+    && cameraStreamProxyUrl !== failedCameraStreamUrl;
+  const cameraSource = useCameraStream
+    ? cameraStreamProxyUrl
+    : cameraFrameProxyUrl
+      ? `${cameraFrameProxyUrl}?frame=${cameraFrameSequence}`
+      : activeStatus.latestImageUrl;
   const cameraPublishingEnabled = activeStatus.cameraImagePublishingEnabled !== false;
   const aiDetections = (activeStatus.aiDetections || [])
     .filter((detection) => detection.confidence > AI_MIN_CONFIDENCE);
@@ -83,31 +89,41 @@ export default function DashboardPage() {
     setToast({ msg, kind });
   }, []);
 
-  const loadDashboard = useCallback(async () => {
+  const loadEvents = useCallback(async () => {
     try {
-      const [eventsRes, statusRes] = await Promise.all([
-        api.getEvents(),
-        api.getStatus(),
-      ]);
+      const eventsRes = await api.getEvents();
       setEvents(eventsRes.events || []);
-      setStatus(statusRes);
     } catch (error) {
-      console.error('Failed to load dashboard', error);
+      console.error('Failed to load events', error);
       setEvents([]);
+    }
+  }, []);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      setStatus(await api.getStatus());
+    } catch (error) {
+      console.error('Failed to load status', error);
       setStatus(null);
     }
   }, []);
+
+  const loadDashboard = useCallback(async () => {
+    await Promise.all([loadEvents(), loadStatus()]);
+  }, [loadEvents, loadStatus]);
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
       void loadDashboard();
     }, 0);
-    const interval = window.setInterval(loadDashboard, 5000);
+    const eventsInterval = window.setInterval(loadEvents, 5000);
+    const statusInterval = window.setInterval(loadStatus, 1500);
     return () => {
       window.clearTimeout(timerId);
-      window.clearInterval(interval);
+      window.clearInterval(eventsInterval);
+      window.clearInterval(statusInterval);
     };
-  }, [loadDashboard]);
+  }, [loadDashboard, loadEvents, loadStatus]);
 
   useEffect(() => () => {
     if (cameraFrameTimerRef.current !== null) window.clearTimeout(cameraFrameTimerRef.current);
@@ -122,16 +138,21 @@ export default function DashboardPage() {
   }, []);
 
   const handleCameraFrameLoad = useCallback(() => {
-    if (!cameraFrameProxyUrl) return;
     setCameraFrameState('online');
+    if (useCameraStream || !cameraFrameProxyUrl) return;
     scheduleNextCameraFrame(500);
-  }, [cameraFrameProxyUrl, scheduleNextCameraFrame]);
+  }, [cameraFrameProxyUrl, scheduleNextCameraFrame, useCameraStream]);
 
   const handleCameraFrameError = useCallback(() => {
+    if (useCameraStream && cameraStreamProxyUrl && cameraFrameProxyUrl) {
+      setFailedCameraStreamUrl(cameraStreamProxyUrl);
+      setCameraFrameState('connecting');
+      return;
+    }
     if (!cameraFrameProxyUrl) return;
     setCameraFrameState('offline');
     scheduleNextCameraFrame(1500);
-  }, [cameraFrameProxyUrl, scheduleNextCameraFrame]);
+  }, [cameraFrameProxyUrl, cameraStreamProxyUrl, scheduleNextCameraFrame, useCameraStream]);
 
   useEffect(() => {
     if (!toast) return;

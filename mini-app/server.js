@@ -6,6 +6,7 @@ import next from 'next';
 // Adjust imports for the moved backend files
 import { config } from './backend/config.js';
 import { createCameraRouter } from './backend/routes/camera.js';
+import { createFomoRouter } from './backend/routes/fomo.js';
 import { createImagesRouter } from './backend/routes/images.js';
 import { createMqttRouter } from './backend/routes/mqtt.js';
 import { createMqttService } from './backend/services/mqtt-service.js';
@@ -37,12 +38,15 @@ nextApp.prepare().then(() => {
     response.json({
       ok: true,
       service: 'edgeguard-unified',
+      fomo: mqttService.getFomoHttpStatus(),
       mqtt: mqttService.getStatus(),
     });
   });
 
   // Mount existing API routes
   app.use('/api/camera', createCameraRouter(mqttService));
+  app.use('/api/fomo', jsonParser, createFomoRouter(mqttService));
+  app.use('/fomo', jsonParser, createFomoRouter(mqttService));
   app.use('/api/mqtt', jsonParser, createMqttRouter(mqttService));
   app.use('/api/images', jsonParser, createImagesRouter());
 
@@ -51,8 +55,9 @@ nextApp.prepare().then(() => {
     handle(req, res);
   });
 
-  const server = app.listen(port, () => {
-    console.log(`[Unified] Server listening on http://${hostname}:${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`[Unified] Server listening on all interfaces at port ${port}`);
+    console.log(`[FOMO HTTP] Device endpoint: ${config.backend.fomoInferenceUrl}`);
   });
 
   function shutdown() {

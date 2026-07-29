@@ -4,6 +4,7 @@ import morgan from 'morgan';
 
 import { config } from './config.js';
 import { createCameraRouter } from './routes/camera.js';
+import { createFomoRouter } from './routes/fomo.js';
 import { createImagesRouter } from './routes/images.js';
 import { createMqttRouter } from './routes/mqtt.js';
 import { createMqttService } from './services/mqtt-service.js';
@@ -26,12 +27,15 @@ app.get('/health', (_request, response) => {
   response.json({
     ok: true,
     service: 'edgeguard-api',
+    fomo: mqttService.getFomoHttpStatus(),
     mqtt: mqttService.getStatus(),
   });
 });
 
 app.use('/api/mqtt', createMqttRouter(mqttService));
 app.use('/api/camera', createCameraRouter(mqttService));
+app.use('/api/fomo', createFomoRouter(mqttService));
+app.use('/fomo', createFomoRouter(mqttService));
 app.use('/api/images', createImagesRouter());
 
 app.use((error, _request, response, _next) => {
@@ -42,8 +46,9 @@ app.use((error, _request, response, _next) => {
   });
 });
 
-const server = app.listen(config.port, () => {
-  console.log(`[API] EdgeGuard server listening on http://localhost:${config.port}`);
+const server = app.listen(config.port, '0.0.0.0', () => {
+  console.log(`[API] EdgeGuard server listening on all interfaces at port ${config.port}`);
+  console.log(`[FOMO HTTP] Device endpoint: ${config.backend.fomoInferenceUrl}`);
 });
 
 function shutdown() {

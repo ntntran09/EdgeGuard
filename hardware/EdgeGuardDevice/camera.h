@@ -17,7 +17,9 @@ uint8_t cameraCaptureFailures = 0;
 portMUX_TYPE cameraFailureMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t cameraMutex = nullptr;
 SemaphoreHandle_t cameraEventFrameMutex = nullptr;
-httpd_handle_t cameraHttpServer = nullptr;
+httpd_handle_t cameraControlHttpServer = nullptr;
+httpd_handle_t cameraStreamHttpServer = nullptr;
+volatile bool cameraHttpServersStopping = false;
 String cameraBaseUrl;
 String cameraCaptureUrl;
 String cameraEventFrameUrl;
@@ -116,57 +118,6 @@ bool camera_cacheEventFrame(
     "[Camera Event] Cached exact frame for event %lu (%u bytes)\n",
     static_cast<unsigned long>(eventId),
     static_cast<unsigned int>(length)
-  );
-  return true;
-}
-
-bool camera_publishEventFrame(uint32_t eventId) {
-  if (!mqttClient.connected() || eventId == 0 || !cameraEventFrameMutex) return false;
-  if (xSemaphoreTake(cameraEventFrameMutex, pdMS_TO_TICKS(CAMERA_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-    Serial.printf("[Camera Event] MQTT frame busy for event %lu\n", static_cast<unsigned long>(eventId));
-    return false;
-  }
-
-  if (!cameraEventFrameBuffer
-      || cameraEventFrameLength == 0
-      || cameraEventFrameLength > CAMERA_MAX_MQTT_FRAME_BYTES
-      || cameraEventFrameId != eventId) {
-    xSemaphoreGive(cameraEventFrameMutex);
-    Serial.printf(
-      "[Camera Event] MQTT frame unavailable for event %lu\n",
-      static_cast<unsigned long>(eventId)
-    );
-    return false;
-  }
-
-  String topic = mqtt_topic("/image/event/") + String(eventId);
-  bool ok = mqttClient.beginPublish(topic.c_str(), cameraEventFrameLength, false);
-  size_t written = 0;
-  while (ok && written < cameraEventFrameLength) {
-    size_t chunkSize = min(CAMERA_MQTT_CHUNK_BYTES, cameraEventFrameLength - written);
-    size_t chunkWritten = mqttClient.write(cameraEventFrameBuffer + written, chunkSize);
-    ok = chunkWritten == chunkSize;
-    written += chunkWritten;
-    delay(0);
-  }
-  if (ok) ok = mqttClient.endPublish() == 1;
-  xSemaphoreGive(cameraEventFrameMutex);
-
-  if (!ok) {
-    cameraPublishFailures++;
-    // A partial streaming PUBLISH leaves the MQTT socket out of sync.
-    mqttClient.disconnect();
-    Serial.printf(
-      "[Camera Event] MQTT publish failed for event %lu\n",
-      static_cast<unsigned long>(eventId)
-    );
-    return false;
-  }
-
-  Serial.printf(
-    "[Camera Event] Published event %lu through MQTT (%u bytes)\n",
-    static_cast<unsigned long>(eventId),
-    static_cast<unsigned int>(written)
   );
   return true;
 }
@@ -288,7 +239,10 @@ esp_err_t camera_streamHandler(httpd_req_t *request) {
   esp_err_t result = ESP_OK;
   char partHeader[96];
 
-  while (result == ESP_OK && WiFi.status() == WL_CONNECTED && deviceCameraPublishEnabled) {
+  while (result == ESP_OK
+      && WiFi.status() == WL_CONNECTED
+      && deviceCameraPublishEnabled
+      && !cameraHttpServersStopping) {
     if (!cameraReady || !camera_take()) {
       delay(10);
       continue;
@@ -333,69 +287,102 @@ void camera_refreshUrls() {
   if (ip == cameraPublishedIp && cameraBaseUrl.length() > 0) return;
 
   cameraPublishedIp = ip;
-  cameraBaseUrl = "http://" + ip + ":" + String(CAMERA_HTTP_PORT);
+  cameraBaseUrl = "http://" + ip + ":" + String(CAMERA_CONTROL_HTTP_PORT);
   cameraCaptureUrl = cameraBaseUrl + "/capture";
   cameraEventFrameUrl = cameraBaseUrl + "/event-frame";
-  cameraStreamUrl = cameraBaseUrl + "/stream";
+  cameraStreamUrl = "http://" + ip + ":" + String(CAMERA_STREAM_HTTP_PORT) + "/stream";
   cameraHealthUrl = cameraBaseUrl + "/health";
   cameraEndpointsPublished = false;
   lastCameraEndpointAttempt = 0;
 }
 
 void camera_startHttpServer() {
-  if (cameraHttpServer || !cameraReady || WiFi.status() != WL_CONNECTED) return;
+  if (!cameraReady || WiFi.status() != WL_CONNECTED) return;
+  cameraHttpServersStopping = false;
 
-  httpd_config_t serverConfig = HTTPD_DEFAULT_CONFIG();
-  serverConfig.core_id = EDGEGUARD_CONTROL_CORE;
-  serverConfig.server_port = CAMERA_HTTP_PORT;
-  serverConfig.max_open_sockets = 4;
-  serverConfig.lru_purge_enable = true;
-  if (httpd_start(&cameraHttpServer, &serverConfig) != ESP_OK) {
-    cameraHttpServer = nullptr;
-    Serial.println("[Camera HTTP] Could not start server");
-    return;
+  if (!cameraControlHttpServer) {
+    httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
+    controlConfig.core_id = EDGEGUARD_CONTROL_CORE;
+    controlConfig.server_port = CAMERA_CONTROL_HTTP_PORT;
+    controlConfig.ctrl_port = 32768;
+    controlConfig.max_open_sockets = 4;
+    controlConfig.lru_purge_enable = true;
+    if (httpd_start(&cameraControlHttpServer, &controlConfig) != ESP_OK) {
+      cameraControlHttpServer = nullptr;
+      Serial.println("[Camera HTTP] Could not start control server");
+      return;
+    }
+
+    httpd_uri_t healthUri = {};
+    healthUri.uri = "/health";
+    healthUri.method = HTTP_GET;
+    healthUri.handler = camera_healthHandler;
+    httpd_register_uri_handler(cameraControlHttpServer, &healthUri);
+
+    httpd_uri_t captureUri = {};
+    captureUri.uri = "/capture";
+    captureUri.method = HTTP_GET;
+    captureUri.handler = camera_captureHandler;
+    httpd_register_uri_handler(cameraControlHttpServer, &captureUri);
+
+    httpd_uri_t eventFrameUri = {};
+    eventFrameUri.uri = "/event-frame";
+    eventFrameUri.method = HTTP_GET;
+    eventFrameUri.handler = camera_eventFrameHandler;
+    httpd_register_uri_handler(cameraControlHttpServer, &eventFrameUri);
+
+    Serial.printf(
+      "[Camera HTTP] Control server on port %u: %s\n",
+      CAMERA_CONTROL_HTTP_PORT,
+      cameraEventFrameUrl.c_str()
+    );
   }
 
-  httpd_uri_t indexUri = {};
-  indexUri.uri = "/";
-  indexUri.method = HTTP_GET;
-  indexUri.handler = camera_indexHandler;
-  httpd_register_uri_handler(cameraHttpServer, &indexUri);
+  if (!cameraStreamHttpServer) {
+    httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
+    streamConfig.core_id = EDGEGUARD_CONTROL_CORE;
+    streamConfig.server_port = CAMERA_STREAM_HTTP_PORT;
+    streamConfig.ctrl_port = 32769;
+    streamConfig.max_open_sockets = 2;
+    streamConfig.lru_purge_enable = true;
+    if (httpd_start(&cameraStreamHttpServer, &streamConfig) != ESP_OK) {
+      cameraStreamHttpServer = nullptr;
+      Serial.println("[Camera HTTP] Could not start stream server");
+      return;
+    }
 
-  httpd_uri_t healthUri = {};
-  healthUri.uri = "/health";
-  healthUri.method = HTTP_GET;
-  healthUri.handler = camera_healthHandler;
-  httpd_register_uri_handler(cameraHttpServer, &healthUri);
+    httpd_uri_t indexUri = {};
+    indexUri.uri = "/";
+    indexUri.method = HTTP_GET;
+    indexUri.handler = camera_indexHandler;
+    httpd_register_uri_handler(cameraStreamHttpServer, &indexUri);
 
-  httpd_uri_t captureUri = {};
-  captureUri.uri = "/capture";
-  captureUri.method = HTTP_GET;
-  captureUri.handler = camera_captureHandler;
-  httpd_register_uri_handler(cameraHttpServer, &captureUri);
+    httpd_uri_t streamUri = {};
+    streamUri.uri = "/stream";
+    streamUri.method = HTTP_GET;
+    streamUri.handler = camera_streamHandler;
+    httpd_register_uri_handler(cameraStreamHttpServer, &streamUri);
 
-  httpd_uri_t eventFrameUri = {};
-  eventFrameUri.uri = "/event-frame";
-  eventFrameUri.method = HTTP_GET;
-  eventFrameUri.handler = camera_eventFrameHandler;
-  httpd_register_uri_handler(cameraHttpServer, &eventFrameUri);
-
-  httpd_uri_t streamUri = {};
-  streamUri.uri = "/stream";
-  streamUri.method = HTTP_GET;
-  streamUri.handler = camera_streamHandler;
-  httpd_register_uri_handler(cameraHttpServer, &streamUri);
-
-  camera_refreshUrls();
-  Serial.printf("[Camera HTTP] Core %d, capture: %s\n", EDGEGUARD_CONTROL_CORE, cameraCaptureUrl.c_str());
-  Serial.printf("[Camera HTTP] Core %d, stream: %s\n", EDGEGUARD_CONTROL_CORE, cameraStreamUrl.c_str());
+    Serial.printf(
+      "[Camera HTTP] Stream server on port %u: %s\n",
+      CAMERA_STREAM_HTTP_PORT,
+      cameraStreamUrl.c_str()
+    );
+  }
 }
 
 void camera_stopHttpServer() {
-  if (!cameraHttpServer) return;
-  httpd_stop(cameraHttpServer);
-  cameraHttpServer = nullptr;
-  Serial.println("[Camera HTTP] Server stopped");
+  cameraHttpServersStopping = true;
+  if (cameraControlHttpServer) {
+    httpd_stop(cameraControlHttpServer);
+    cameraControlHttpServer = nullptr;
+  }
+  if (cameraStreamHttpServer) {
+    httpd_stop(cameraStreamHttpServer);
+    cameraStreamHttpServer = nullptr;
+  }
+  cameraHttpServersStopping = false;
+  Serial.println("[Camera HTTP] Servers stopped");
 }
 
 bool camera_publishEndpoints() {
@@ -404,13 +391,14 @@ bool camera_publishEndpoints() {
   JsonDocument doc;
   doc["device_id"] = MQTT_DEVICE_ID;
   doc["ip"] = cameraPublishedIp;
-  doc["port"] = CAMERA_HTTP_PORT;
+  doc["port"] = CAMERA_CONTROL_HTTP_PORT;
+  doc["stream_port"] = CAMERA_STREAM_HTTP_PORT;
   doc["base_url"] = cameraBaseUrl;
   doc["capture_url"] = cameraCaptureUrl;
   doc["event_frame_url"] = cameraEventFrameUrl;
   doc["stream_url"] = cameraStreamUrl;
   doc["health_url"] = cameraHealthUrl;
-  doc["live_mode"] = "jpeg-polling";
+  doc["live_mode"] = "mjpeg";
   doc["uptime_ms"] = millis();
   bool published = mqtt_publishJson("/telemetry/endpoints", doc, true);
   if (published) {

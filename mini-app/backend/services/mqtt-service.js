@@ -1,6 +1,6 @@
 import mqtt from 'mqtt';
 
-import { config, mqttUrl } from '../config.js';
+import { backendConfigForAddress, config, mqttUrl } from '../config.js';
 import {
   createTransientImageBuffer,
   createTransientImageFromJson,
@@ -21,7 +21,6 @@ const TELEMETRY_KEYS = {
   endpoints: '/telemetry/endpoints',
   nfc: '/telemetry/nfc',
   visionAlert: '/telemetry/vision-alert',
-  modelInference: '/model/inference',
 };
 const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
@@ -38,7 +37,11 @@ function clampNumber(value, minimum, maximum, fallback) {
   return Math.min(maximum, Math.max(minimum, number));
 }
 
-export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
+export function buildDeviceAccessPayload(
+  settings = {},
+  rfidAllowlist = [],
+  backend = config.backend
+) {
   const fallbackAutoLockMs = clampNumber(
     config.access.unlockMs,
     MIN_AUTO_LOCK_MS,
@@ -61,6 +64,9 @@ export function buildDeviceAccessPayload(settings = {}, rfidAllowlist = []) {
     auto_lock_ms: autoLockMs,
     camera_publish_enabled: settings.camera_image_publish_enabled !== false,
     ai_detection_enabled: settings.ai_detection_enabled === true,
+    camera_blocked_alert_enabled: settings.camera_blocked_alert_enabled !== false,
+    backend_url: backend.publicUrl,
+    fomo_inference_url: backend.fomoInferenceUrl,
     lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
     unlock_angle: clampNumber(config.access.unlockAngle, 0, 180, 90),
     rfid_allowlist: [...new Set(rfidAllowlist.map(normalizeTagId).filter(Boolean))]
@@ -167,6 +173,15 @@ function summarizeTelemetry(summary, key, parsed) {
     if (typeof parsed.ai_detection_enabled === 'boolean') {
       summary.aiDetectionEnabled = parsed.ai_detection_enabled;
     }
+    if (typeof parsed.camera_blocked_alert_enabled === 'boolean') {
+      summary.cameraBlockedAlertEnabled = parsed.camera_blocked_alert_enabled;
+    }
+    if (typeof parsed.camera_blocked === 'boolean') {
+      summary.cameraBlocked = parsed.camera_blocked;
+    }
+    summary.fomoHttpLastStatus = Number(parsed.fomo_http_last_status) || 0;
+    summary.fomoHttpLastSuccessMs = Number(parsed.fomo_http_last_success_ms) || 0;
+    summary.fomoHttpFailures = Number(parsed.fomo_http_failures) || 0;
     if (typeof parsed.door_state_reason === 'string') {
       summary.doorStateReason = parsed.door_state_reason;
     }
@@ -251,6 +266,13 @@ export function createMqttService() {
   const eventFrames = new Map();
   const frameSubscribers = new Set();
 
+  function currentBackendConfig() {
+    return backendConfigForAddress(
+      client?.stream?.localAddress,
+      snapshot.summary.cameraEndpoints?.ip
+    );
+  }
+
   function publish(topic, payload, options = {}) {
     if (!client || !client.connected) {
       throw new Error('MQTT client is not connected.');
@@ -287,13 +309,32 @@ export function createMqttService() {
       config.mqtt.deviceId,
       MAX_OFFLINE_RFID_CARDS
     );
+    const backend = currentBackendConfig();
     if (!storedConfig) {
-      return { synced: false, reason: 'database_unavailable' };
+      const networkConfig = {
+        backend_url: backend.publicUrl,
+        fomo_inference_url: backend.fomoInferenceUrl,
+      };
+      await publish(topics.config, JSON.stringify({
+        ...networkConfig,
+        requested_at: new Date().toISOString(),
+        source: 'network_config_sync',
+      }), { qos: 1, retain: true });
+      console.warn(
+        `[MQTT] Device settings unavailable; synced network config only: FOMO HTTP ${networkConfig.fomo_inference_url}`
+      );
+      return {
+        synced: true,
+        settingsSynced: false,
+        reason: 'database_unavailable',
+        config: networkConfig,
+      };
     }
 
     deviceAccessConfig = buildDeviceAccessPayload(
       storedConfig.settings,
-      storedConfig.rfidAllowlist
+      storedConfig.rfidAllowlist,
+      backend
     );
     await publish(topics.config, JSON.stringify({
       ...deviceAccessConfig,
@@ -305,7 +346,9 @@ export function createMqttService() {
       `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
       + `after ${deviceAccessConfig.auto_lock_ms} ms, camera live view `
       + `${deviceAccessConfig.camera_publish_enabled ? 'on' : 'off'}, AI detection `
-      + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, `
+      + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, camera-block alert `
+      + `${deviceAccessConfig.camera_blocked_alert_enabled ? 'on' : 'off'}, `
+      + `FOMO HTTP ${deviceAccessConfig.fomo_inference_url}, `
       + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
     );
     return { synced: true, config: deviceAccessConfig };
@@ -379,24 +422,22 @@ export function createMqttService() {
       ? cameraEventFrameEndpoint(snapshot.summary, eventId)
       : cameraCaptureEndpoint(snapshot.summary);
     const fallbackImage = snapshot.latestImage?.base64;
-    const mqttEventFrame = exactFrame ? eventFrames.get(eventId) : null;
-    const mqttEventReceivedAt = mqttEventFrame ? Date.parse(mqttEventFrame.receivedAt) : NaN;
-    const mqttEventImage = mqttEventFrame
-      && Number.isFinite(mqttEventReceivedAt)
-      && Date.now() - mqttEventReceivedAt <= EVENT_FRAME_MAX_AGE_MS
-      ? {
-          imagePath: mqttEventFrame.base64,
-          source: 'mqtt_exact_event_frame',
-          capturedAt: mqttEventFrame.capturedAt || mqttEventFrame.receivedAt,
-          eventId,
-        }
-      : null;
-
-    // Never associate an AI event with a newer fallback frame. If the device
-    // cannot return the frame tagged with this event_id over HTTP, use only
-    // the same event_id received through MQTT.
+    const cachedMqttEventImage = () => {
+      const mqttEventFrame = exactFrame ? eventFrames.get(eventId) : null;
+      const receivedAt = mqttEventFrame ? Date.parse(mqttEventFrame.receivedAt) : NaN;
+      return mqttEventFrame
+        && Number.isFinite(receivedAt)
+        && Date.now() - receivedAt <= EVENT_FRAME_MAX_AGE_MS
+        ? {
+            imagePath: mqttEventFrame.base64,
+            source: 'mqtt_exact_event_frame',
+            capturedAt: mqttEventFrame.capturedAt || mqttEventFrame.receivedAt,
+            eventId,
+          }
+        : null;
+    };
     if (exactFrame && !captureUrl) {
-      return mqttEventImage
+      return cachedMqttEventImage()
         ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
     }
 
@@ -456,7 +497,7 @@ export function createMqttService() {
         snapshot.summary.updatedAt = frame.receivedAt;
       }
       console.log(
-        `[MQTT] Captured ${frame.bytes}-byte ${exactFrame ? `exact frame for event ${eventId}` : 'camera frame'}`
+        `[Camera HTTP] Captured ${frame.bytes}-byte ${exactFrame ? `exact frame for event ${eventId}` : 'camera frame'}`
       );
 
       return {
@@ -469,10 +510,11 @@ export function createMqttService() {
         } : {}),
       };
     } catch (error) {
-      console.error('[MQTT] Could not capture a camera frame for AI event:', error);
+      console.error('[Camera HTTP] Could not capture a camera frame for AI event:', error);
       if (exactFrame) {
-        return mqttEventImage
-          ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
+        const cachedAfterHttpFailure = cachedMqttEventImage();
+        if (cachedAfterHttpFailure) return cachedAfterHttpFailure;
+        return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
       }
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
@@ -785,21 +827,10 @@ export function createMqttService() {
         recordVisionAlert(parsed).catch((error) => {
           console.error('[MQTT] Failed to record vision alert', error);
         });
-      } else if (key === 'modelInference' && parsed && typeof parsed === 'object') {
-        const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
-        const detections = Array.isArray(parsed.detections)
-          ? parsed.detections.filter((detection) => (
-              detection
-              && typeof detection === 'object'
-              && Number(detection.confidence) > AI_MIN_CONFIDENCE
-            ))
-          : [];
-
-        if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
-          recordAiInference(parsed, detections).catch((error) => {
-            console.error('[MQTT] Failed to record AI inference', error);
-          });
-        }
+      } else if (key === 'endpoints') {
+        syncAccessConfig().catch((error) => {
+          console.error('[MQTT] Failed to sync FOMO HTTP URL after endpoint discovery', error);
+        });
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
           insertAlertWithEventImage({
@@ -837,6 +868,52 @@ export function createMqttService() {
         });
       }
     }
+  }
+
+  function receiveFomoInference(parsed) {
+    const receivedAt = new Date().toISOString();
+    const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
+    const detections = Array.isArray(parsed.detections)
+      ? parsed.detections.filter((detection) => (
+          detection
+          && typeof detection === 'object'
+          && Number(detection.confidence) > AI_MIN_CONFIDENCE
+        ))
+      : [];
+
+    snapshot.connection.lastMessageAt = receivedAt;
+    snapshot.topics.modelInference = {
+      topic: '/api/fomo/inference',
+      raw: JSON.stringify(parsed),
+      parsed,
+      receivedAt,
+      transport: 'http',
+    };
+    snapshot.summary.updatedAt = receivedAt;
+    summarizeTelemetry(snapshot.summary, 'modelInference', parsed);
+
+    if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
+      recordAiInference(parsed, detections).catch((error) => {
+        console.error('[FOMO HTTP] Failed to record AI inference', error);
+      });
+    }
+  }
+
+  function getFomoHttpStatus() {
+    const backend = currentBackendConfig();
+    const inference = snapshot.topics.modelInference;
+    return {
+      inferenceUrl: backend.fomoInferenceUrl,
+      expectedDeviceId: config.mqtt.deviceId,
+      lastInferenceAt: inference?.receivedAt ?? null,
+      lastEventId: Number(inference?.parsed?.event_id) || null,
+      lastDetectionCount: Array.isArray(inference?.parsed?.detections)
+        ? inference.parsed.detections.length
+        : 0,
+      deviceLastHttpStatus: snapshot.summary.fomoHttpLastStatus ?? null,
+      deviceLastHttpSuccessMs: snapshot.summary.fomoHttpLastSuccessMs ?? null,
+      deviceHttpFailures: snapshot.summary.fomoHttpFailures ?? 0,
+    };
   }
 
   function start() {
@@ -946,6 +1023,8 @@ export function createMqttService() {
       if (latestFrame && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS) subscriber(latestFrame);
       return () => frameSubscribers.delete(subscriber);
     },
+    receiveFomoInference,
+    getFomoHttpStatus,
     publishJson(topic, message, options = {}) {
       return publish(topic, JSON.stringify(message), options);
     },
@@ -959,8 +1038,11 @@ export function createMqttService() {
       return publishDeviceCommand(safeCommand, payload);
     },
     publishConfig(payload) {
+      const backend = currentBackendConfig();
       return publish(topics.config, JSON.stringify({
         ...payload,
+        backend_url: backend.publicUrl,
+        fomo_inference_url: backend.fomoInferenceUrl,
         requested_at: new Date().toISOString(),
         source: 'api',
       }), { retain: true });

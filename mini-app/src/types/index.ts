@@ -175,6 +175,8 @@ export interface SystemStatus {
   aiDetections?: AiDetection[];
   aiDetectionsAt?: string;
   aiDetectionEnabled?: boolean;
+  cameraBlocked?: boolean;
+  cameraBlockedAlertEnabled?: boolean;
   aiModelReady?: boolean;
   telegramEnabled?: boolean;
   telegramConfigured?: boolean;
