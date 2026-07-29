@@ -46,13 +46,48 @@ function privateIpv4Rank(address) {
   return 4;
 }
 
-function detectLanIpv4() {
-  const addresses = Object.values(os.networkInterfaces())
-    .flat()
+function ipv4Number(address) {
+  const normalized = normalizeIpv4Address(address);
+  if (!normalized) return null;
+  return normalized.split('.').reduce(
+    (number, octet) => ((number << 8) | Number(octet)) >>> 0,
+    0
+  );
+}
+
+function isSameSubnet(address, peerAddress, netmask) {
+  const addressNumber = ipv4Number(address);
+  const peerNumber = ipv4Number(peerAddress);
+  const maskNumber = ipv4Number(netmask);
+  return addressNumber !== null
+    && peerNumber !== null
+    && maskNumber !== null
+    && (addressNumber & maskNumber) === (peerNumber & maskNumber);
+}
+
+function detectLanIpv4(preferredAddress, peerAddress) {
+  const preferred = normalizeIpv4Address(preferredAddress);
+  const peer = normalizeIpv4Address(peerAddress);
+  const addresses = Object.entries(os.networkInterfaces())
+    .flatMap(([name, items]) => (items || []).map((item) => ({ ...item, name })))
     .filter((item) => item && !item.internal && item.family === 'IPv4')
-    .map((item) => item.address)
-    .sort((left, right) => privateIpv4Rank(left) - privateIpv4Rank(right));
-  return addresses[0] || '127.0.0.1';
+    .sort((left, right) => {
+      const leftSameSubnet = peer && isSameSubnet(left.address, peer, left.netmask) ? 0 : 1;
+      const rightSameSubnet = peer && isSameSubnet(right.address, peer, right.netmask) ? 0 : 1;
+      if (leftSameSubnet !== rightSameSubnet) return leftSameSubnet - rightSameSubnet;
+
+      const leftPreferred = preferred === left.address ? 0 : 1;
+      const rightPreferred = preferred === right.address ? 0 : 1;
+      if (leftPreferred !== rightPreferred) return leftPreferred - rightPreferred;
+
+      const virtualPattern = /warp|vpn|radmin|vethernet|virtual|tunnel|loopback/i;
+      const leftVirtual = virtualPattern.test(left.name) ? 1 : 0;
+      const rightVirtual = virtualPattern.test(right.name) ? 1 : 0;
+      if (leftVirtual !== rightVirtual) return leftVirtual - rightVirtual;
+
+      return privateIpv4Rank(left.address) - privateIpv4Rank(right.address);
+    });
+  return addresses[0]?.address || '127.0.0.1';
 }
 
 function appendUrlPath(baseUrl, pathname) {
@@ -78,9 +113,9 @@ const configuredBackendUrl = normalizeHttpBaseUrl(
     || process.env.BACKEND_PUBLIC_URL
 );
 
-export function backendConfigForAddress(address) {
+export function backendConfigForAddress(address, peerAddress) {
   const publicUrl = configuredBackendUrl
-    || `http://${normalizeIpv4Address(address) || detectLanIpv4()}:${serverPort}`;
+    || `http://${detectLanIpv4(address, peerAddress)}:${serverPort}`;
   return {
     publicUrl,
     fomoInferenceUrl: appendUrlPath(publicUrl, '/api/fomo/inference'),

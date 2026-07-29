@@ -57,20 +57,56 @@ void mqtt_serviceWifi() {
 bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
   if (!mqttClient.connected()) return false;
 
-  // FOMO summaries include up to three compact bounding boxes.
-  char payload[768];
-  size_t size = serializeJson(doc, payload, sizeof(payload));
-  if (size == 0 || size >= sizeof(payload)) {
-    Serial.println("[MQTT] JSON payload is too large");
+  String topic = mqtt_topic(suffix);
+  size_t measuredSize = measureJson(doc);
+  if (measuredSize == 0 || measuredSize >= MQTT_JSON_PAYLOAD_BYTES) {
+    Serial.printf(
+      "[MQTT] JSON payload is too large: %u bytes for %s (limit %u)\n",
+      static_cast<unsigned int>(measuredSize),
+      topic.c_str(),
+      static_cast<unsigned int>(MQTT_JSON_PAYLOAD_BYTES - 1)
+    );
     return false;
   }
 
-  return mqttClient.publish(
-    mqtt_topic(suffix).c_str(),
+  const size_t estimatedPacketBytes = 5 + 2 + topic.length() + measuredSize;
+  if (estimatedPacketBytes > MQTT_PACKET_BUFFER_BYTES) {
+    Serial.printf(
+      "[MQTT] Packet is too large: about %u bytes for %s (buffer %u)\n",
+      static_cast<unsigned int>(estimatedPacketBytes),
+      topic.c_str(),
+      static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
+    );
+    return false;
+  }
+
+  char payload[MQTT_JSON_PAYLOAD_BYTES];
+  size_t size = serializeJson(doc, payload, sizeof(payload));
+  if (size == 0 || size >= sizeof(payload)) {
+    Serial.printf(
+      "[MQTT] JSON serialization failed for %s: %u bytes\n",
+      topic.c_str(),
+      static_cast<unsigned int>(size)
+    );
+    return false;
+  }
+
+  bool published = mqttClient.publish(
+    topic.c_str(),
     reinterpret_cast<const uint8_t *>(payload),
     size,
     retain
   );
+  if (!published) {
+    Serial.printf(
+      "[MQTT] Publish failed for %s: topic=%u bytes, payload=%u bytes, state=%d\n",
+      topic.c_str(),
+      static_cast<unsigned int>(topic.length()),
+      static_cast<unsigned int>(size),
+      mqttClient.state()
+    );
+  }
+  return published;
 }
 
 void mqtt_publishStatus(const char *status, bool retain = true) {
@@ -127,7 +163,17 @@ void mqtt_setup() {
   mqttClient.setCallback(mqtt_callback);
   mqttClient.setKeepAlive(90);
   mqttClient.setSocketTimeout(5);
-  mqttClient.setBufferSize(1024);
+  if (!mqttClient.setBufferSize(MQTT_PACKET_BUFFER_BYTES)) {
+    Serial.printf(
+      "[MQTT] Could not allocate %u-byte packet buffer\n",
+      static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
+    );
+  } else {
+    Serial.printf(
+      "[MQTT] Packet buffer set to %u bytes\n",
+      static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
+    );
+  }
   mqtt_startWifi();
 }
 

@@ -50,16 +50,22 @@ void sensors_loop() {
   doc["camera_publish_enabled"] = deviceCameraPublishEnabled;
   doc["camera_transport"] = "http";
   doc["ai_detection_enabled"] = deviceAiDetectionEnabled;
+  doc["camera_blocked_alert_enabled"] = deviceCameraBlockedAlertEnabled;
+  doc["camera_blocked"] = static_cast<bool>(fomoCameraBlocked);
   doc["fomo_ready"] = static_cast<bool>(fomoReady);
   doc["fomo_inference_count"] = static_cast<uint32_t>(fomoInferenceCount);
   doc["fomo_inference_failures"] = static_cast<uint32_t>(fomoInferenceFailures);
   doc["fomo_last_inference_ms"] = static_cast<unsigned long>(lastFomoInferenceMs);
+  doc["fomo_http_last_status"] = static_cast<int>(lastFomoHttpStatus);
+  doc["fomo_http_last_success_ms"] = static_cast<unsigned long>(lastFomoHttpSuccessAt);
+  doc["fomo_http_failures"] = static_cast<uint32_t>(fomoHttpFailures);
   doc["fomo_last_detection_count"] = static_cast<uint16_t>(lastFomoDetectionCount);
   doc["fomo_people_count"] = static_cast<uint16_t>(lastFomoPeopleCount);
   doc["fomo_bag_count"] = static_cast<uint16_t>(lastFomoBagCount);
   doc["fomo_package_count"] = static_cast<uint16_t>(lastFomoPackageCount);
   doc["control_core"] = EDGEGUARD_CONTROL_CORE;
   doc["fomo_core"] = EDGEGUARD_FOMO_CORE;
+  doc["fomo_http_core"] = EDGEGUARD_CONTROL_CORE;
   doc["door_open"] = doorOpenState;
   doc["door_state_reason"] = doorStateReason;
   doc["auto_lock_enabled"] = deviceAutoLockEnabled;
@@ -70,9 +76,8 @@ void sensors_loop() {
     doc["last_nfc_seen_ms"] = lastNfcSeenAt;
   }
 
-  if (mqtt_publishJson("/telemetry/system", doc)) {
-    lastSystemPublish = now;
-  }
+  mqtt_publishJson("/telemetry/system", doc);
+  lastSystemPublish = now;
 }
 
 #endif

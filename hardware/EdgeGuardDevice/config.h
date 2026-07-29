@@ -8,6 +8,11 @@ const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_DEVICE_ID = "device_001";
 const char *MQTT_TOPIC_BASE = "/EdgeGuard/device_001";
+// PubSubClient stores the MQTT header, topic and payload in one packet buffer.
+// System telemetry and retained camera endpoint announcements are larger than
+// compact FOMO alerts, so keep this global buffer sized for all firmware MQTT.
+const uint16_t MQTT_PACKET_BUFFER_BYTES = 2048;
+const size_t MQTT_JSON_PAYLOAD_BYTES = 1536;
 const char *DEFAULT_FOMO_HTTP_RESULT_URL = "http://172.20.10.3:3000/api/fomo/inference";
 const unsigned long FOMO_HTTP_RETRY_MS = 2000;
 const uint16_t FOMO_HTTP_CONNECT_TIMEOUT_MS = 2000;
@@ -45,11 +50,12 @@ const uint8_t BUZZER_LEDC_CHANNEL = 2; // LEDC timer 1
 
 const unsigned long CAMERA_INIT_RETRY_MS = 10000;
 const uint8_t CAMERA_CAPTURE_FAILURES_BEFORE_RESTART = 5;
-const uint16_t CAMERA_HTTP_PORT = 81;
+// Keep the public MJPEG URL on port 81. Control/image endpoints use a separate
+// server so a long-lived stream cannot block /event-frame or /health.
+const uint16_t CAMERA_STREAM_HTTP_PORT = 81;
+const uint16_t CAMERA_CONTROL_HTTP_PORT = 82;
 const unsigned long CAMERA_MUTEX_TIMEOUT_MS = 2500;
 const unsigned long CAMERA_ENDPOINT_RETRY_MS = 5000;
-const size_t CAMERA_MQTT_CHUNK_BYTES = 1024;
-const size_t CAMERA_MAX_MQTT_FRAME_BYTES = 60000;
 const unsigned long FOMO_INIT_RETRY_MS = 10000;
 // Lightweight frame analysis gates the expensive FOMO classifier. A sampled
 // pixel counts as changed when its grayscale value moves by this amount.
@@ -68,8 +74,14 @@ const uint8_t CAMERA_BLOCKED_CONFIRM_SAMPLES = 3;
 const uint8_t CAMERA_BLOCKED_DARK_LUMA = 18;
 const uint8_t CAMERA_BLOCKED_BRIGHT_LUMA = 245;
 const float CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT = 90.0f;
-const float CAMERA_BLOCKED_MAX_STDDEV = 8.0f;
-const float CAMERA_BLOCKED_MAX_EDGE_PERCENT = 2.0f;
+const float CAMERA_BLOCKED_MAX_STDDEV = 12.0f;
+const float CAMERA_BLOCKED_MAX_EDGE_PERCENT = 5.0f;
+// A hand or opaque object is often brightened by the OV2640 auto-exposure, so
+// it is neither fully black nor textureless. Detect that large scene collapse
+// against the last clear reference as a second occlusion signal.
+const float CAMERA_BLOCKED_COLLAPSE_CHANGE_PERCENT = 70.0f;
+const float CAMERA_BLOCKED_COLLAPSE_MAX_STDDEV = 18.0f;
+const float CAMERA_BLOCKED_COLLAPSE_MAX_EDGE_PERCENT = 8.0f;
 // Keep latency-sensitive device/network work on Core 0 and reserve Core 1 for
 // the synchronous Edge Impulse classifier. The Arduino loop task starts on
 // Core 1 for this board, then deletes itself after the control task is ready.
@@ -77,8 +89,10 @@ const BaseType_t EDGEGUARD_CONTROL_CORE = 0;
 const BaseType_t EDGEGUARD_FOMO_CORE = 1;
 const uint32_t EDGEGUARD_CONTROL_TASK_STACK_BYTES = 8192;
 const uint32_t EDGEGUARD_FOMO_TASK_STACK_BYTES = 8192;
+const uint32_t EDGEGUARD_FOMO_HTTP_TASK_STACK_BYTES = 6144;
 const UBaseType_t EDGEGUARD_CONTROL_TASK_PRIORITY = 2;
 const UBaseType_t EDGEGUARD_FOMO_TASK_PRIORITY = 1;
+const UBaseType_t EDGEGUARD_FOMO_HTTP_TASK_PRIORITY = 1;
 const unsigned long EDGEGUARD_CONTROL_TASK_DELAY_MS = 1;
 // Only treat predictions strictly above 70% as detections.
 const float FOMO_MIN_CONFIDENCE = 0.70f;

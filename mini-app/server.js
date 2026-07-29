@@ -38,6 +38,7 @@ nextApp.prepare().then(() => {
     response.json({
       ok: true,
       service: 'edgeguard-unified',
+      fomo: mqttService.getFomoHttpStatus(),
       mqtt: mqttService.getStatus(),
     });
   });
@@ -54,8 +55,9 @@ nextApp.prepare().then(() => {
     handle(req, res);
   });
 
-  const server = app.listen(port, () => {
-    console.log(`[Unified] Server listening on http://${hostname}:${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`[Unified] Server listening on all interfaces at port ${port}`);
+    console.log(`[FOMO HTTP] Device endpoint: ${config.backend.fomoInferenceUrl}`);
   });
 
   function shutdown() {

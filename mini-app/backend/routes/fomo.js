@@ -9,6 +9,11 @@ function isPlainObject(value) {
 export function createFomoRouter(mqttService) {
   const router = Router();
 
+  router.get('/status', (_request, response) => {
+    response.set('Cache-Control', 'no-store');
+    response.json(mqttService.getFomoHttpStatus());
+  });
+
   function receiveInference(request, response) {
     const deviceId = request.get('X-EdgeGuard-Device-Id');
     if (deviceId !== config.mqtt.deviceId) {

@@ -64,6 +64,7 @@ export function buildDeviceAccessPayload(
     auto_lock_ms: autoLockMs,
     camera_publish_enabled: settings.camera_image_publish_enabled !== false,
     ai_detection_enabled: settings.ai_detection_enabled === true,
+    camera_blocked_alert_enabled: settings.camera_blocked_alert_enabled !== false,
     backend_url: backend.publicUrl,
     fomo_inference_url: backend.fomoInferenceUrl,
     lock_angle: clampNumber(config.access.lockAngle, 0, 180, 0),
@@ -172,6 +173,15 @@ function summarizeTelemetry(summary, key, parsed) {
     if (typeof parsed.ai_detection_enabled === 'boolean') {
       summary.aiDetectionEnabled = parsed.ai_detection_enabled;
     }
+    if (typeof parsed.camera_blocked_alert_enabled === 'boolean') {
+      summary.cameraBlockedAlertEnabled = parsed.camera_blocked_alert_enabled;
+    }
+    if (typeof parsed.camera_blocked === 'boolean') {
+      summary.cameraBlocked = parsed.camera_blocked;
+    }
+    summary.fomoHttpLastStatus = Number(parsed.fomo_http_last_status) || 0;
+    summary.fomoHttpLastSuccessMs = Number(parsed.fomo_http_last_success_ms) || 0;
+    summary.fomoHttpFailures = Number(parsed.fomo_http_failures) || 0;
     if (typeof parsed.door_state_reason === 'string') {
       summary.doorStateReason = parsed.door_state_reason;
     }
@@ -257,7 +267,10 @@ export function createMqttService() {
   const frameSubscribers = new Set();
 
   function currentBackendConfig() {
-    return backendConfigForAddress(client?.stream?.localAddress);
+    return backendConfigForAddress(
+      client?.stream?.localAddress,
+      snapshot.summary.cameraEndpoints?.ip
+    );
   }
 
   function publish(topic, payload, options = {}) {
@@ -333,7 +346,8 @@ export function createMqttService() {
       `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
       + `after ${deviceAccessConfig.auto_lock_ms} ms, camera live view `
       + `${deviceAccessConfig.camera_publish_enabled ? 'on' : 'off'}, AI detection `
-      + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, `
+      + `${deviceAccessConfig.ai_detection_enabled ? 'on' : 'off'}, camera-block alert `
+      + `${deviceAccessConfig.camera_blocked_alert_enabled ? 'on' : 'off'}, `
       + `FOMO HTTP ${deviceAccessConfig.fomo_inference_url}, `
       + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
     );
@@ -422,19 +436,9 @@ export function createMqttService() {
           }
         : null;
     };
-    const mqttEventImage = cachedMqttEventImage();
-
-    if (mqttEventImage) return mqttEventImage;
-
     if (exactFrame && !captureUrl) {
-      const fallbackCapture = await captureEventImage();
-      return {
-        ...fallbackCapture,
-        source: fallbackCapture.imagePath
-          ? `fallback_${fallbackCapture.source}`
-          : 'exact_event_frame_unavailable',
-        eventId,
-      };
+      return cachedMqttEventImage()
+        ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
     }
 
     // Nếu đã có frame MQTT mới (< 5s), dùng luôn, không cần fetch ESP32
@@ -493,7 +497,7 @@ export function createMqttService() {
         snapshot.summary.updatedAt = frame.receivedAt;
       }
       console.log(
-        `[MQTT] Captured ${frame.bytes}-byte ${exactFrame ? `exact frame for event ${eventId}` : 'camera frame'}`
+        `[Camera HTTP] Captured ${frame.bytes}-byte ${exactFrame ? `exact frame for event ${eventId}` : 'camera frame'}`
       );
 
       return {
@@ -506,18 +510,11 @@ export function createMqttService() {
         } : {}),
       };
     } catch (error) {
-      console.error('[MQTT] Could not capture a camera frame for AI event:', error);
+      console.error('[Camera HTTP] Could not capture a camera frame for AI event:', error);
       if (exactFrame) {
         const cachedAfterHttpFailure = cachedMqttEventImage();
         if (cachedAfterHttpFailure) return cachedAfterHttpFailure;
-        const fallbackCapture = await captureEventImage();
-        return {
-          ...fallbackCapture,
-          source: fallbackCapture.imagePath
-            ? `fallback_${fallbackCapture.source}`
-            : 'exact_event_frame_unavailable',
-          eventId,
-        };
+        return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
       }
       return fallbackImage
         ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
@@ -830,6 +827,10 @@ export function createMqttService() {
         recordVisionAlert(parsed).catch((error) => {
           console.error('[MQTT] Failed to record vision alert', error);
         });
+      } else if (key === 'endpoints') {
+        syncAccessConfig().catch((error) => {
+          console.error('[MQTT] Failed to sync FOMO HTTP URL after endpoint discovery', error);
+        });
       } else if (key === 'security' && parsed && typeof parsed === 'object') {
         if (parsed.motion) {
           insertAlertWithEventImage({
@@ -896,6 +897,23 @@ export function createMqttService() {
         console.error('[FOMO HTTP] Failed to record AI inference', error);
       });
     }
+  }
+
+  function getFomoHttpStatus() {
+    const backend = currentBackendConfig();
+    const inference = snapshot.topics.modelInference;
+    return {
+      inferenceUrl: backend.fomoInferenceUrl,
+      expectedDeviceId: config.mqtt.deviceId,
+      lastInferenceAt: inference?.receivedAt ?? null,
+      lastEventId: Number(inference?.parsed?.event_id) || null,
+      lastDetectionCount: Array.isArray(inference?.parsed?.detections)
+        ? inference.parsed.detections.length
+        : 0,
+      deviceLastHttpStatus: snapshot.summary.fomoHttpLastStatus ?? null,
+      deviceLastHttpSuccessMs: snapshot.summary.fomoHttpLastSuccessMs ?? null,
+      deviceHttpFailures: snapshot.summary.fomoHttpFailures ?? 0,
+    };
   }
 
   function start() {
@@ -1006,6 +1024,7 @@ export function createMqttService() {
       return () => frameSubscribers.delete(subscriber);
     },
     receiveFomoInference,
+    getFomoHttpStatus,
     publishJson(topic, message, options = {}) {
       return publish(topic, JSON.stringify(message), options);
     },

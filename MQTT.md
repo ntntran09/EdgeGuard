@@ -114,11 +114,12 @@ Dynamic camera endpoint discovery:
 ```json
 {
   "device_id": "device_001",
-  "base_url": "http://192.168.1.50:81",
-  "capture_url": "http://192.168.1.50:81/capture",
+  "base_url": "http://192.168.1.50:82",
+  "capture_url": "http://192.168.1.50:82/capture",
+  "event_frame_url": "http://192.168.1.50:82/event-frame",
   "stream_url": "http://192.168.1.50:81/stream",
-  "health_url": "http://192.168.1.50:81/health",
-  "live_mode": "jpeg-polling"
+  "health_url": "http://192.168.1.50:82/health",
+  "live_mode": "mjpeg"
 }
 ```
 
@@ -149,6 +150,10 @@ backend returns the AWS Rekognition result to the device on:
 The device ignores a result whose `event_id` is no longer current. Stable
 stranger/object alerts and camera-occlusion alerts are published on
 `{base}/telemetry/vision-alert`.
+
+`camera_blocked_alert_enabled` is synchronized in the retained device config
+independently from `ai_detection_enabled`. Camera-tamper analysis continues when
+FOMO AI is disabled; the setting controls publication of the confirmed alert.
 
 The endpoint announcement includes `event_frame_url`. For every model inference
 or vision alert, the backend requests `GET /event-frame?event_id=<id>` and accepts
@@ -210,6 +215,7 @@ Configuration messages are retained so devices can receive the latest config aft
 - `POST /api/mqtt/config`: publish retained device configuration.
 - `POST /api/mqtt/send`: publish a custom MQTT message for development.
 - `POST /api/fomo/inference`: accept FOMO inference JSON from the ESP32 over HTTP.
+- `GET /api/fomo/status`: show the current inference URL and latest received FOMO event.
 - `GET /api/images`: list locally saved images.
 - `GET /api/images/:filename`: download a saved image.
 - `POST /api/images`: save a JSON base64 image through HTTP for testing.

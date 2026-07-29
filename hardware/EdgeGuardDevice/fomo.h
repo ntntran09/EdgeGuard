@@ -15,7 +15,8 @@
 #include <string.h>
 
 extern volatile bool deviceAiDetectionEnabled;
-extern String deviceFomoHttpResultUrl;
+extern volatile bool deviceCameraBlockedAlertEnabled;
+extern String device_getFomoHttpResultUrl();
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #error "This Edge Impulse export conflicts with TensorFlow Lite Micro in ESP32 Arduino core 3.x; use core 2.0.17"
@@ -39,7 +40,12 @@ const size_t FOMO_FRAME_SAMPLE_COUNT =
 // Three bounding boxes plus the pipeline metadata fit comfortably in one
 // small HTTP request while avoiding MQTT packet-size constraints.
 const size_t FOMO_HTTP_PAYLOAD_BYTES = 896;
-const size_t FOMO_ALERT_PAYLOAD_BYTES = 512;
+// MQTT carries only a compact event notification. Images, bounding boxes and
+// detailed frame metrics continue to use the HTTP pipeline.
+const size_t FOMO_ALERT_PAYLOAD_BYTES = 192;
+// Minimum delay between two FOMO inferences. Camera-block detection is still
+// evaluated on every analyzed frame during this cooldown.
+const unsigned long FOMO_INFERENCE_COOLDOWN_MS = 1500UL;
 
 struct FomoHttpMessage {
   uint32_t eventId;
@@ -62,6 +68,7 @@ struct FomoRecognitionMessage {
 
 struct FomoFrameAnalysis {
   float changePercent;
+  float tamperChangePercent;
   float meanBrightness;
   float stdDevContrast;
   float darkPixelPercent;
@@ -94,6 +101,7 @@ size_t fomoCapturedJpegCapacity = 0;
 size_t fomoCapturedJpegLength = 0;
 unsigned long fomoCapturedFrameAt = 0;
 uint8_t fomoReferenceSamples[FOMO_FRAME_SAMPLE_COUNT] = {};
+uint8_t fomoTamperReferenceSamples[FOMO_FRAME_SAMPLE_COUNT] = {};
 uint8_t fomoCurrentSamples[FOMO_FRAME_SAMPLE_COUNT] = {};
 volatile bool fomoReady = false;
 unsigned long lastFomoInitAttempt = 0;
@@ -111,13 +119,18 @@ volatile FomoVisionState fomoVisionState = FOMO_VISION_WARMUP;
 QueueHandle_t fomoHttpQueue = nullptr;
 QueueHandle_t fomoAlertQueue = nullptr;
 QueueHandle_t fomoRecognitionQueue = nullptr;
-QueueHandle_t fomoEventFrameQueue = nullptr;
 TaskHandle_t fomoTaskHandle = nullptr;
+TaskHandle_t fomoHttpTaskHandle = nullptr;
 unsigned long lastFomoHttpAttempt = 0;
+volatile unsigned long lastFomoHttpSuccessAt = 0;
+volatile int lastFomoHttpStatus = 0;
+volatile uint32_t fomoHttpFailures = 0;
 bool fomoReferenceValid = false;
+bool fomoTamperReferenceValid = false;
 bool fomoAiWasEnabled = false;
 bool fomoVisionAlertSent = false;
-bool fomoCameraBlocked = false;
+volatile bool fomoCameraBlocked = false;
+bool fomoBlockedAlertSent = false;
 uint8_t fomoWarmupFrames = 0;
 uint8_t fomoBlockedSamples = 0;
 uint32_t fomoVisionEventId = 0;
@@ -127,6 +140,7 @@ float fomoTrackedConfidence = 0.0f;
 bool fomoTrackedFrameCached = false;
 
 void fomo_task(void *parameter);
+void fomo_httpTask(void *parameter);
 bool fomo_postHttpResult(const FomoHttpMessage &message);
 
 void fomo_noteFailure() {
@@ -192,11 +206,13 @@ bool fomo_allocateBuffer() {
 void fomo_setup() {
   fomo_allocateBuffer();
 
+  // mqtt_setup() owns PubSubClient's global packet buffer. FOMO only queues
+  // compact alerts and must not shrink the buffer required by system telemetry.
+
   fomoHttpQueue = xQueueCreate(1, sizeof(FomoHttpMessage));
   fomoAlertQueue = xQueueCreate(4, sizeof(FomoAlertMessage));
   fomoRecognitionQueue = xQueueCreate(4, sizeof(FomoRecognitionMessage));
-  fomoEventFrameQueue = xQueueCreate(1, sizeof(uint32_t));
-  if (!fomoHttpQueue || !fomoAlertQueue || !fomoRecognitionQueue || !fomoEventFrameQueue) {
+  if (!fomoHttpQueue || !fomoAlertQueue || !fomoRecognitionQueue) {
     fomoReady = false;
     Serial.println("[FOMO] Could not create vision queues; inference task disabled");
     return;
@@ -219,6 +235,22 @@ void fomo_setup() {
   }
 
   Serial.printf("[FOMO] Vision task pinned to Core %d\n", EDGEGUARD_FOMO_CORE);
+
+  BaseType_t httpCreated = xTaskCreatePinnedToCore(
+    fomo_httpTask,
+    "edgeguard-fomo-http",
+    EDGEGUARD_FOMO_HTTP_TASK_STACK_BYTES,
+    nullptr,
+    EDGEGUARD_FOMO_HTTP_TASK_PRIORITY,
+    &fomoHttpTaskHandle,
+    EDGEGUARD_CONTROL_CORE
+  );
+  if (httpCreated != pdPASS) {
+    fomoHttpTaskHandle = nullptr;
+    Serial.println("[FOMO HTTP] Could not create delivery task; inference delivery disabled");
+  } else {
+    Serial.printf("[FOMO HTTP] Delivery task pinned to Core %d\n", EDGEGUARD_CONTROL_CORE);
+  }
 }
 
 static int fomo_getSignalData(size_t offset, size_t length, float *outPtr) {
@@ -329,6 +361,7 @@ FomoFrameAnalysis fomo_analyzeFrame(uint16_t frameWidth, uint16_t frameHeight) {
   size_t darkPixels = 0;
   size_t brightPixels = 0;
   size_t changedPixels = 0;
+  size_t tamperChangedPixels = 0;
   size_t edgePixels = 0;
   size_t edgeComparisons = 0;
 
@@ -361,6 +394,11 @@ FomoFrameAnalysis fomo_analyzeFrame(uint16_t frameWidth, uint16_t frameHeight) {
             >= CAMERA_PIXEL_CHANGE_THRESHOLD) {
         changedPixels++;
       }
+      if (fomoTamperReferenceValid
+          && abs(static_cast<int>(brightness) - static_cast<int>(fomoTamperReferenceSamples[sampleIndex]))
+            >= CAMERA_PIXEL_CHANGE_THRESHOLD) {
+        tamperChangedPixels++;
+      }
 
       bool isEdge = false;
       if (column > 0) {
@@ -389,6 +427,9 @@ FomoFrameAnalysis fomo_analyzeFrame(uint16_t frameWidth, uint16_t frameHeight) {
   analysis.changePercent = fomoReferenceValid
     ? changedPixels * 100.0f / sampleCount
     : 0.0f;
+  analysis.tamperChangePercent = fomoTamperReferenceValid
+    ? tamperChangedPixels * 100.0f / sampleCount
+    : 0.0f;
   analysis.edgePercent = edgeComparisons > 0
     ? edgePixels * 100.0f / static_cast<float>(FOMO_FRAME_SAMPLE_COUNT)
     : 0.0f;
@@ -401,12 +442,21 @@ void fomo_useCurrentFrameAsReference() {
   fomoReferenceValid = true;
 }
 
+void fomo_useCurrentFrameAsTamperReference() {
+  memcpy(fomoTamperReferenceSamples, fomoCurrentSamples, sizeof(fomoTamperReferenceSamples));
+  fomoTamperReferenceValid = true;
+}
+
 bool fomo_isBlockedCandidate(const FomoFrameAnalysis &analysis) {
   bool extremeExposure = analysis.darkPixelPercent >= CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT
     || analysis.brightPixelPercent >= CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT;
   bool noVisualDetail = analysis.stdDevContrast <= CAMERA_BLOCKED_MAX_STDDEV
     && analysis.edgePercent <= CAMERA_BLOCKED_MAX_EDGE_PERCENT;
-  return extremeExposure || noVisualDetail;
+  bool sceneCollapsed = fomoTamperReferenceValid
+    && analysis.tamperChangePercent >= CAMERA_BLOCKED_COLLAPSE_CHANGE_PERCENT
+    && analysis.stdDevContrast <= CAMERA_BLOCKED_COLLAPSE_MAX_STDDEV
+    && analysis.edgePercent <= CAMERA_BLOCKED_COLLAPSE_MAX_EDGE_PERCENT;
+  return extremeExposure || noVisualDetail || sceneCollapsed;
 }
 
 bool fomo_queueVisionAlert(
@@ -420,29 +470,36 @@ bool fomo_queueVisionAlert(
 ) {
   if (!fomoAlertQueue) return false;
 
+  // Detailed detection data is already delivered through HTTP. Keep MQTT as a
+  // lightweight event signal so it stays well below PubSubClient packet limits.
+  (void)changePercent;
+  (void)stableMs;
+  (void)analysis;
+
   JsonDocument doc;
   doc["label"] = alertType;
   doc["alert_type"] = alertType;
   doc["object_type"] = objectType;
   doc["event_id"] = eventId;
-  doc["frame_change_percent"] = changePercent;
-  doc["stable_ms"] = stableMs;
-  doc["confidence"] = strcmp(alertType, "camera_blocked") == 0 ? 0.0f : fomoTrackedConfidence;
-  doc["vision_state"] = fomo_visionStateName(fomoVisionState);
-  doc["uptime_ms"] = millis();
+  doc["confidence"] = strcmp(alertType, "camera_blocked") == 0
+    ? 0.0f
+    : fomoTrackedConfidence;
   doc["event_frame_cached"] = eventFrameCached;
-  if (analysis) {
-    doc["mean_brightness"] = analysis->meanBrightness;
-    doc["contrast_stddev"] = analysis->stdDevContrast;
-    doc["dark_pixel_percent"] = analysis->darkPixelPercent;
-    doc["bright_pixel_percent"] = analysis->brightPixelPercent;
-    doc["edge_percent"] = analysis->edgePercent;
-  }
 
   FomoAlertMessage message = {};
+  const size_t requiredBytes = measureJson(doc) + 1;  // Include null terminator.
+  if (requiredBytes > sizeof(message.payload)) {
+    Serial.printf(
+      "[Vision] Compact alert needs %u bytes, buffer has %u bytes\n",
+      static_cast<unsigned int>(requiredBytes),
+      static_cast<unsigned int>(sizeof(message.payload))
+    );
+    return false;
+  }
+
   message.length = serializeJson(doc, message.payload, sizeof(message.payload));
-  if (message.length == 0 || message.length >= sizeof(message.payload)) {
-    Serial.println("[Vision] Alert JSON is too large");
+  if (message.length == 0 || message.length + 1 != requiredBytes) {
+    Serial.println("[Vision] Compact alert serialization failed or was truncated");
     return false;
   }
 
@@ -450,10 +507,13 @@ bool fomo_queueVisionAlert(
     Serial.println("[Vision] Alert queue is full");
     return false;
   }
-  if (eventFrameCached && fomoEventFrameQueue) {
-    xQueueOverwrite(fomoEventFrameQueue, &eventId);
-  }
-  Serial.printf("[Vision] Queued %s alert for event %lu\n", alertType, static_cast<unsigned long>(eventId));
+
+  Serial.printf(
+    "[Vision] Queued compact %s alert for event %lu (%u bytes)\n",
+    alertType,
+    static_cast<unsigned long>(eventId),
+    static_cast<unsigned int>(message.length)
+  );
   return true;
 }
 
@@ -469,46 +529,60 @@ void fomo_resetVisionPipeline(bool resetBlockedState = true) {
   fomoTrackedObjectType[sizeof(fomoTrackedObjectType) - 1] = '\0';
   if (resetBlockedState) {
     fomoCameraBlocked = false;
+    fomoBlockedAlertSent = false;
     fomoBlockedSamples = 0;
+    fomoTamperReferenceValid = false;
   }
 }
 
 bool fomo_processBlockedState(const FomoFrameAnalysis &analysis) {
+  // This gate always runs before warmup, movement thresholds and FOMO cooldown.
+  // A possible blocked frame suppresses FOMO immediately, even while waiting
+  // for enough consecutive samples to confirm and publish the alert.
   if (fomo_isBlockedCandidate(analysis)) {
     if (fomoBlockedSamples < UINT8_MAX) fomoBlockedSamples++;
+
     if (fomoBlockedSamples >= CAMERA_BLOCKED_CONFIRM_SAMPLES) {
       if (!fomoCameraBlocked) {
         fomoCameraBlocked = true;
+        Serial.printf(
+          "[Vision] Camera blocked: mean %.1f, contrast %.1f, dark %.1f%%, bright %.1f%%, collapse %.1f%%\n",
+          analysis.meanBrightness,
+          analysis.stdDevContrast,
+          analysis.darkPixelPercent,
+          analysis.brightPixelPercent,
+          analysis.tamperChangePercent
+        );
+      }
+
+      if (deviceCameraBlockedAlertEnabled && !fomoBlockedAlertSent) {
         uint32_t blockedEventId = ++fomoVisionEventId;
         bool eventFrameCached = fomo_cacheCurrentFrame(blockedEventId);
-        fomo_queueVisionAlert(
+        fomoBlockedAlertSent = fomo_queueVisionAlert(
           "camera_blocked",
           "camera",
           blockedEventId,
-          analysis.changePercent,
+          analysis.tamperChangePercent,
           0,
           eventFrameCached,
           &analysis
         );
-        Serial.printf(
-          "[Vision] Camera blocked: mean %.1f, contrast %.1f, dark %.1f%%, bright %.1f%%\n",
-          analysis.meanBrightness,
-          analysis.stdDevContrast,
-          analysis.darkPixelPercent,
-          analysis.brightPixelPercent
-        );
       }
-      return true;
     }
-    return false;
+
+    // Camera-block detection has absolute priority. Never invoke FOMO for a
+    // frame that currently looks covered, overexposed or visually empty.
+    return true;
   }
 
   fomoBlockedSamples = 0;
   if (fomoCameraBlocked) {
     Serial.println("[Vision] Camera view recovered; rebuilding baseline");
     fomoCameraBlocked = false;
+    fomoBlockedAlertSent = false;
     fomo_resetVisionPipeline(false);
   }
+  fomo_useCurrentFrameAsTamperReference();
   return false;
 }
 
@@ -589,18 +663,25 @@ void fomo_publishResult(
   FomoHttpMessage message = {};
   message.eventId = eventId;
   message.eventFrameCached = eventFrameCached;
+  const size_t requiredBytes = measureJson(doc) + 1;  // Include null terminator.
+  if (requiredBytes > sizeof(message.payload)) {
+    Serial.printf(
+      "[FOMO] Result JSON needs %u bytes, buffer has %u bytes\n",
+      static_cast<unsigned int>(requiredBytes),
+      static_cast<unsigned int>(sizeof(message.payload))
+    );
+    return;
+  }
+
   message.length = serializeJson(doc, message.payload, sizeof(message.payload));
-  if (message.length == 0 || message.length >= sizeof(message.payload)) {
-    Serial.println("[FOMO] Result JSON is too large");
+  if (message.length == 0 || message.length + 1 != requiredBytes) {
+    Serial.println("[FOMO] Result JSON serialization failed or was truncated");
     return;
   }
 
   // Only the newest inference is relevant. A backend response carries event_id,
   // so a face result for an older frame cannot mutate the current state.
   xQueueOverwrite(fomoHttpQueue, &message);
-  if (eventFrameCached && fomoEventFrameQueue) {
-    xQueueOverwrite(fomoEventFrameQueue, &eventId);
-  }
 }
 
 FomoInferenceSummary fomo_runInference(
@@ -807,8 +888,6 @@ void fomo_processFrame(
   uint16_t frameHeight,
   const FomoFrameAnalysis &analysis
 ) {
-  if (fomo_processBlockedState(analysis)) return;
-
   if (!fomoReferenceValid || fomoVisionState == FOMO_VISION_WARMUP) {
     fomo_useCurrentFrameAsReference();
     if (fomoWarmupFrames < CAMERA_BASELINE_WARMUP_FRAMES) fomoWarmupFrames++;
@@ -819,34 +898,32 @@ void fomo_processFrame(
     return;
   }
 
+  // Priority 2: enforce exactly 1.5 seconds between FOMO calls. Do not replace
+  // the reference frame here: after cooldown, changePercent is still measured
+  // against the frame associated with the previous inference.
   if (lastFomoInferenceAt != 0
-      && now - lastFomoInferenceAt < FOMO_CHANGE_CHECK_COOLDOWN_MS) {
-    fomo_useCurrentFrameAsReference();
+      && now - lastFomoInferenceAt < FOMO_INFERENCE_COOLDOWN_MS) {
     return;
   }
 
-  float requiredChange = fomoVisionState == FOMO_VISION_MONITORING
+  const float requiredChange = fomoVisionState == FOMO_VISION_MONITORING
     ? CAMERA_FOMO_TRIGGER_CHANGE_PERCENT
     : CAMERA_FOMO_RECHECK_CHANGE_PERCENT;
 
-  bool shouldClassify = fomoVisionState == FOMO_VISION_MONITORING
+  const bool shouldClassify = fomoVisionState == FOMO_VISION_MONITORING
     ? analysis.changePercent > requiredChange
     : analysis.changePercent >= requiredChange;
 
-  // Once an object/stranger timer has started, finish that stability window
-  // before another frame-change (even above the trigger) may run FOMO again.
-  if (!fomoVisionAlertSent && fomoStableSince != 0) {
-    if (now - fomoStableSince >= VISION_STABLE_ALERT_MS) {
-      fomo_maybeAlertForStableDetection(now, analysis);
-    }
-    return;
-  }
-
+  // After the 1.5-second cooldown, rerun FOMO whenever the existing initial or
+  // recheck threshold is reached. This also restarts/updates object stability
+  // tracking instead of blindly waiting through a changed scene.
   if (shouldClassify) {
     fomo_classifyCurrentFrame(now, frameWidth, frameHeight, analysis);
     return;
   }
 
+  // No significant change: let the current stranger/object stability timer
+  // continue and emit its alert when the configured duration is reached.
   fomo_maybeAlertForStableDetection(now, analysis);
 }
 
@@ -857,28 +934,6 @@ void fomo_task(void *parameter) {
   for (;;) {
     unsigned long now = millis();
     fomo_applyRecognitionResults();
-
-    FomoHttpMessage inferenceMessage = {};
-    if (fomoHttpQueue
-        && WiFi.status() == WL_CONNECTED
-        && (lastFomoHttpAttempt == 0 || now - lastFomoHttpAttempt >= FOMO_HTTP_RETRY_MS)
-        && xQueueReceive(fomoHttpQueue, &inferenceMessage, 0) == pdTRUE) {
-      lastFomoHttpAttempt = now;
-      if (!fomo_postHttpResult(inferenceMessage)) {
-        xQueueOverwrite(fomoHttpQueue, &inferenceMessage);
-      }
-    }
-
-    if (!deviceAiDetectionEnabled) {
-      if (fomoAiWasEnabled) {
-        fomo_resetVisionPipeline();
-        fomoAiWasEnabled = false;
-        Serial.println("[Vision] Pipeline reset because AI detection is disabled");
-      }
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
-    fomoAiWasEnabled = true;
 
     if (!fomoReady) {
       if (now - lastFomoInitAttempt >= FOMO_INIT_RETRY_MS) fomo_allocateBuffer();
@@ -896,9 +951,56 @@ void fomo_task(void *parameter) {
     uint16_t frameHeight = 0;
     if (fomo_captureRgbFrame(frameWidth, frameHeight)) {
       FomoFrameAnalysis analysis = fomo_analyzeFrame(frameWidth, frameHeight);
-      fomo_processFrame(now, frameWidth, frameHeight, analysis);
+      // Camera tamper monitoring is independent from the AI switch and HTTP
+      // delivery. It therefore continues while FOMO is disabled or offline.
+      bool blockedCandidate = fomo_processBlockedState(analysis);
+      if (!blockedCandidate && deviceAiDetectionEnabled) {
+        fomoAiWasEnabled = true;
+        fomo_processFrame(now, frameWidth, frameHeight, analysis);
+      } else if (!deviceAiDetectionEnabled && fomoAiWasEnabled) {
+        fomo_resetVisionPipeline(false);
+        fomoAiWasEnabled = false;
+        Serial.println("[Vision] FOMO reset; camera-tamper monitoring remains active");
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+void fomo_httpTask(void *parameter) {
+  (void)parameter;
+  Serial.printf("[FOMO HTTP] Delivery task running on Core %d\n", xPortGetCoreID());
+
+  FomoHttpMessage message = {};
+  bool hasPendingMessage = false;
+  for (;;) {
+    if (!hasPendingMessage) {
+      if (!fomoHttpQueue
+          || xQueueReceive(fomoHttpQueue, &message, pdMS_TO_TICKS(500)) != pdTRUE) {
+        continue;
+      }
+      hasPendingMessage = true;
+    }
+
+    // Prefer the newest inference if one arrived while an older delivery was
+    // waiting or failing. Face responses are already correlated by event_id.
+    FomoHttpMessage newerMessage = {};
+    if (xQueueReceive(fomoHttpQueue, &newerMessage, 0) == pdTRUE) {
+      message = newerMessage;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      vTaskDelay(pdMS_TO_TICKS(FOMO_HTTP_RETRY_MS));
+      continue;
+    }
+
+    lastFomoHttpAttempt = millis();
+    if (fomo_postHttpResult(message)) {
+      hasPendingMessage = false;
+      continue;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(FOMO_HTTP_RETRY_MS));
   }
 }
 
@@ -928,12 +1030,13 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
   request.setConnectTimeout(FOMO_HTTP_CONNECT_TIMEOUT_MS);
   request.setTimeout(FOMO_HTTP_RESPONSE_TIMEOUT_MS);
   request.setReuse(false);
-  if (!deviceFomoHttpResultUrl.length()) {
-    Serial.println("[FOMO HTTP] Missing inference URL; waiting for MQTT config");
+  String fomoHttpResultUrl = device_getFomoHttpResultUrl();
+  if (!fomoHttpResultUrl.length()) {
+    Serial.println("[FOMO HTTP] Missing inference URL");
     return false;
   }
 
-  if (!request.begin(deviceFomoHttpResultUrl)) {
+  if (!request.begin(fomoHttpResultUrl)) {
     Serial.println("[FOMO HTTP] Could not initialize request");
     return false;
   }
@@ -945,8 +1048,10 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
     message.length
   );
   request.end();
+  lastFomoHttpStatus = status;
 
   if (status >= 200 && status < 300) {
+    lastFomoHttpSuccessAt = millis();
     Serial.printf(
       "[FOMO HTTP] Sent event %lu (%u bytes), status %d\n",
       static_cast<unsigned long>(message.eventId),
@@ -956,6 +1061,7 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
     return true;
   }
 
+  fomoHttpFailures++;
   Serial.printf(
     "[FOMO HTTP] Event %lu failed, status %d; retrying\n",
     static_cast<unsigned long>(message.eventId),
@@ -967,28 +1073,48 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
 void fomo_loop() {
   if (!mqttClient.connected()) return;
 
-  uint32_t eventFrameId = 0;
-  if (fomoEventFrameQueue
-      && xQueueReceive(fomoEventFrameQueue, &eventFrameId, 0) == pdTRUE) {
-    if (camera_publishEventFrame(eventFrameId)) {
-      Serial.printf(
-        "[Camera Event] Published exact frame for event %lu over MQTT\n",
-        static_cast<unsigned long>(eventFrameId)
-      );
-    }
+  FomoAlertMessage alertMessage = {};
+  if (!fomoAlertQueue || xQueueReceive(fomoAlertQueue, &alertMessage, 0) != pdTRUE) return;
+
+  String topic = mqtt_topic("/telemetry/vision-alert");
+  const size_t estimatedPacketBytes =
+    5 + 2 + topic.length() + alertMessage.length;  // MQTT header + topic + payload.
+
+  if (estimatedPacketBytes > MQTT_PACKET_BUFFER_BYTES) {
+    Serial.printf(
+      "[Vision] MQTT packet needs about %u bytes; configured buffer is %u bytes\n",
+      static_cast<unsigned int>(estimatedPacketBytes),
+      static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
+    );
+    return;
   }
 
-  FomoAlertMessage alertMessage = {};
-  if (fomoAlertQueue
-      && xQueueReceive(fomoAlertQueue, &alertMessage, 0) == pdTRUE
-      && !mqttClient.publish(
-        mqtt_topic("/telemetry/vision-alert").c_str(),
-        reinterpret_cast<const uint8_t *>(alertMessage.payload),
-        alertMessage.length,
-        false
-      )) {
-    Serial.println("[Vision] MQTT alert publish failed");
+  bool published = mqttClient.publish(
+    topic.c_str(),
+    reinterpret_cast<const uint8_t *>(alertMessage.payload),
+    alertMessage.length,
+    false
+  );
+
+  if (!published) {
+    Serial.printf(
+      "[Vision] MQTT alert publish failed: topic=%u bytes, payload=%u bytes, state=%d\n",
+      static_cast<unsigned int>(topic.length()),
+      static_cast<unsigned int>(alertMessage.length),
+      mqttClient.state()
+    );
+    // Keep the alert for the next loop instead of silently dropping it.
+    if (xQueueSendToFront(fomoAlertQueue, &alertMessage, 0) != pdTRUE) {
+      Serial.println("[Vision] Could not requeue failed MQTT alert");
+    }
+    return;
   }
+
+  Serial.printf(
+    "[Vision] MQTT alert sent: %u-byte payload on %s\n",
+    static_cast<unsigned int>(alertMessage.length),
+    topic.c_str()
+  );
 }
 
 #endif

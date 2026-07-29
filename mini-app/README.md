@@ -19,7 +19,7 @@ manual-uploads/<device-id>/<UTC-date>/<timestamp>-<uuid>.<extension>
 
 ## Dynamic camera endpoints
 
-The main `EdgeGuardDevice` firmware serves `/capture`, `/event-frame`, `/stream`, and `/health` on port 81. Whenever its Wi-Fi address changes, it publishes the complete endpoint set to the retained MQTT topic `{topic-base}/telemetry/endpoints`. The backend consumes that announcement and proxies JPEG frames through `/api/camera/frame`, so `CAMERA_STREAM_URL` and `CAMERA_CAPTURE_URL` are not required in `.env`.
+The main `EdgeGuardDevice` firmware serves MJPEG `/stream` on port 81 and `/capture`, `/event-frame`, and `/health` on port 82. Whenever its Wi-Fi address changes, it publishes the complete endpoint set to the retained MQTT topic `{topic-base}/telemetry/endpoints`. The backend consumes that announcement and proxies the stream through `/api/camera/stream`, so camera URLs are not required in `.env`.
 
 AI events use HTTP end to end for device-to-backend delivery. Firmware caches the original JPEG used for FOMO and posts the inference JSON to `/api/fomo/inference`. The backend then requests `/event-frame?event_id=<id>` from the device and verifies `X-EdgeGuard-Event-Id`. The raw detection is inserted before recognition begins. If the exact frame is unavailable, the event is stored without an image; a newer live frame is never substituted.
 

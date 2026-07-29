@@ -21,11 +21,11 @@
 17. Uses separate LEDC timers for the servo, buzzer, and camera so RFID/alarm tones cannot stop the servo PWM signal.
 18. Persists independent `camera_publish_enabled` and `ai_detection_enabled` switches from the retained MQTT device configuration, allowing the HTTP live view and FOMO inference to be stopped separately without disabling RFID or access control.
 19. Pins FOMO inference to ESP32 Core 1 and runs MQTT, PN532, actuators, camera management, and the HTTP/MJPEG server on Core 0.
-20. Passes FOMO detections through a FreeRTOS queue to an HTTP sender on the vision task, while only the Core 0 control task accesses PubSubClient.
+20. Passes FOMO detections through a FreeRTOS queue to a low-priority HTTP delivery task on Core 0, while only the Core 0 control loop accesses PubSubClient.
 21. Holds a detected person/object against its FOMO frame and does not classify again while its five-second stability timer is still running, regardless of frame-change percentage.
 22. Sends person detections to the backend for AWS Rekognition; `/command/vision-result` carries the familiar/stranger result back with the same `event_id`, so late results for old frames are ignored.
 23. Publishes `stranger_detected` or `object_left` after the five-second stability window; frame changes cannot restart FOMO until that window finishes.
-24. Detects sustained extreme exposure or loss of visual detail and publishes a latched `camera_blocked` alert until the view recovers.
+24. Detects sustained extreme exposure, loss of visual detail, or a large low-detail scene collapse and publishes a latched `camera_blocked` alert until the view recovers. Tamper monitoring remains active when FOMO AI is disabled.
 25. Sends FOMO inference JSON to the Mini App backend over HTTP instead of MQTT; the backend retrieves the matching cached event frame from `/event-frame`.
 
 The supplied NDEF library is bundled because PN532-Arduino declares it as a dependency, but this firmware only reads ISO14443A UID values. It does not parse or write NDEF records.
@@ -79,12 +79,12 @@ The merged binary must be written at address `0x0`. Because it covers the full 4
 2. Wi-Fi and MQTT reconnect in the background rather than blocking setup/loop.
 3. PN532 continuously checks ISO14443A cards and prints UIDs to Serial.
 4. When MQTT is online, the UID is published to `/EdgeGuard/device_001/telemetry/nfc`.
-5. Camera starts an HTTP server on port 81 and publishes `/capture`, `/event-frame`, `/stream`, and `/health` URLs to `/EdgeGuard/device_001/telemetry/endpoints`. Live frames and exact AI-event JPEG retrieval use HTTP.
+5. Camera starts a dedicated MJPEG server on port 81 and a separate control/image server on port 82, then publishes `/capture`, `/event-frame`, `/stream`, and `/health` URLs to `/EdgeGuard/device_001/telemetry/endpoints`. This keeps exact AI-event JPEG retrieval responsive while a live stream is open.
 6. System metrics publish every 10 seconds.
 7. MQTT commands can control buzzer, servo, config and reboot.
-8. The vision task samples a QVGA frame every 400 ms on Core 1. It builds a 20 x 15 grayscale signature and runs FOMO only when the frame crosses the configured 30% initial or 60% recheck threshold. Core 0 continues servicing MQTT, PN532, actuators, and HTTP/MJPEG while classification runs.
+8. The vision task samples a QVGA frame every 400 ms on Core 1. It always evaluates camera tampering, then runs FOMO only when AI is enabled and the frame crosses the configured 30% initial or 60% recheck threshold. Core 0 continues servicing MQTT, PN532, actuators, and HTTP/MJPEG while classification runs.
 
-FOMO and MJPEG still share one physical camera. A mutex serializes frame access; streaming may pause briefly while FOMO obtains and converts its input frame, then resumes while the neural network runs. Before conversion, firmware preserves the source JPEG and caches it under the inference `event_id`. The ESP32 posts detection JSON to the backend over HTTP, then the backend retrieves `/event-frame?event_id=<id>` and verifies the response ID. HTTP delivery runs on the Core 1 vision task so a slow backend does not pause the Core 0 MQTT, PN532, servo, or alarm loops.
+FOMO and MJPEG still share one physical camera. A mutex serializes frame access; streaming may pause briefly while the vision task obtains and converts its input frame, then resumes while the neural network runs. Before conversion, firmware preserves the source JPEG and caches it under the inference `event_id`. The vision task queues detection JSON for a low-priority HTTP task on Core 0, then the backend retrieves `/event-frame?event_id=<id>` and verifies the response ID. A slow backend no longer pauses camera-tamper analysis, while the higher-priority Core 0 control loop continues servicing MQTT, PN532, servo, and alarm deadlines.
 
 FOMO uses the model's original labels in `model_label` and each bounding box: `human`, `backpack`, and `package`. Only predictions strictly above 70% confidence are accepted. Each HTTP detection includes its bounding box, centroid, `event_id`, and triggering frame-change percentage. The payload also supplies the friendlier `object_type` aliases `person`, `bag`, and `package`; the top-level `label` is `person_detected` or `object_detected` for Mini App event compatibility. If one frame contains both a person and objects, the published event and overlay contain only the person boxes and continue through face recognition. Frames with no detections become the new baseline but are not posted.
 
@@ -94,7 +94,7 @@ Manual Mini App door commands move only the servo and do not sound the buzzer. R
 
 After the firmware and Mini App backend are online together once, the backend publishes a retained access configuration. The ESP32 stores the auto-lock settings, servo angles, and active RFID/NFC allowlist in NVS. Later Wi-Fi outages do not erase those values. Add, enable, disable, or remove cards through the Mini App while online so the stored offline allowlist stays current.
 
-The same retained configuration includes `camera_publish_enabled` and `ai_detection_enabled`. Both switches are persisted in NVS. `camera_publish_enabled` now controls access to the HTTP live camera while the camera remains available to FOMO when AI is enabled. Disabling AI stops FOMO inference and new AI logs while the live camera can continue independently.
+The same retained configuration includes `camera_publish_enabled`, `ai_detection_enabled`, and `camera_blocked_alert_enabled`. All switches are persisted in NVS. `camera_publish_enabled` controls access to the HTTP live camera. Disabling AI stops FOMO inference and new model logs, but lightweight camera-tamper monitoring continues; `camera_blocked_alert_enabled` controls whether a confirmed blocked state is published.
 
 At boot, Serial prints `[Device] Loaded RFID cache (...)`. Before testing without Wi-Fi, verify that this line contains the expected UID and is not `empty`. When a cached card is accepted, Serial prints `[PN532] Cached RFID access granted` followed by `[Servo] Unlocked ...`.
 

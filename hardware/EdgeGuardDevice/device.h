@@ -10,10 +10,12 @@ extern void fomo_handleRecognitionResult(JsonDocument &doc);
 bool deviceAutoLockEnabled = true;
 volatile bool deviceCameraPublishEnabled = true;
 volatile bool deviceAiDetectionEnabled = true;
+volatile bool deviceCameraBlockedAlertEnabled = true;
 unsigned long deviceAutoLockMs = DEFAULT_AUTO_LOCK_MS;
 int deviceLockAngle = SERVO_LOCK_ANGLE;
 int deviceUnlockAngle = SERVO_UNLOCK_ANGLE;
 String deviceFomoHttpResultUrl = DEFAULT_FOMO_HTTP_RESULT_URL;
+SemaphoreHandle_t deviceFomoHttpUrlMutex = nullptr;
 String deviceRfidAllowlist[MAX_OFFLINE_RFID_CARDS];
 size_t deviceRfidAllowlistCount = 0;
 String deviceRfidAllowlistCsv;
@@ -107,12 +109,35 @@ bool device_isHttpUrl(const String &value) {
     && (value.startsWith("http://") || value.startsWith("https://"));
 }
 
+String device_getFomoHttpResultUrl() {
+  if (!deviceFomoHttpUrlMutex
+      || xSemaphoreTake(deviceFomoHttpUrlMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    return String();
+  }
+  String value = deviceFomoHttpResultUrl;
+  xSemaphoreGive(deviceFomoHttpUrlMutex);
+  return value;
+}
+
+bool device_setFomoHttpResultUrl(const String &value) {
+  if (!deviceFomoHttpUrlMutex
+      || xSemaphoreTake(deviceFomoHttpUrlMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    return false;
+  }
+  bool changed = value != deviceFomoHttpResultUrl;
+  deviceFomoHttpResultUrl = value;
+  xSemaphoreGive(deviceFomoHttpUrlMutex);
+  return changed;
+}
+
 void device_setup() {
+  if (!deviceFomoHttpUrlMutex) deviceFomoHttpUrlMutex = xSemaphoreCreateMutex();
   Preferences preferences;
   if (preferences.begin("edgeguard", true)) {
     deviceAutoLockEnabled = preferences.getBool("autolock", true);
     deviceCameraPublishEnabled = preferences.getBool("campub", true);
     deviceAiDetectionEnabled = preferences.getBool("aienabled", true);
+    deviceCameraBlockedAlertEnabled = preferences.getBool("camblock", true);
     deviceAutoLockMs = preferences.getULong("lockms", DEFAULT_AUTO_LOCK_MS);
     deviceLockAngle = preferences.getInt("lockang", SERVO_LOCK_ANGLE);
     deviceUnlockAngle = preferences.getInt("unlockang", SERVO_UNLOCK_ANGLE);
@@ -126,13 +151,16 @@ void device_setup() {
 
   actuators_lockDoor(deviceLockAngle, "startup");
   Serial.printf(
-    "[Device] Loaded config: auto-lock %s after %lu ms, camera live view %s, AI detection %s, %u offline RFID card(s)\n",
+    "[Device] Loaded config: auto-lock %s after %lu ms, camera live view %s, AI detection %s, camera-block alert %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
     deviceCameraPublishEnabled ? "on" : "off",
     deviceAiDetectionEnabled ? "on" : "off",
+    deviceCameraBlockedAlertEnabled ? "on" : "off",
     static_cast<unsigned int>(deviceRfidAllowlistCount)
   );
+  String fomoHttpUrl = device_getFomoHttpResultUrl();
+  Serial.printf("[Device] FOMO HTTP endpoint: %s\n", fomoHttpUrl.c_str());
   device_printRfidAllowlist("Loaded");
 }
 
@@ -156,6 +184,7 @@ void device_applyConfig(JsonDocument &doc) {
   bool persistAutoLock = false;
   bool persistCameraPublish = false;
   bool persistAiDetection = false;
+  bool persistCameraBlockedAlert = false;
   bool persistAutoLockMs = false;
   bool persistLockAngle = false;
   bool persistUnlockAngle = false;
@@ -179,6 +208,12 @@ void device_applyConfig(JsonDocument &doc) {
     bool next = source["ai_detection_enabled"].as<bool>();
     persistAiDetection = next != deviceAiDetectionEnabled;
     deviceAiDetectionEnabled = next;
+  }
+
+  if (source["camera_blocked_alert_enabled"].is<bool>()) {
+    bool next = source["camera_blocked_alert_enabled"].as<bool>();
+    persistCameraBlockedAlert = next != deviceCameraBlockedAlertEnabled;
+    deviceCameraBlockedAlertEnabled = next;
   }
 
   if (!source["auto_lock_ms"].isNull()) {
@@ -213,8 +248,7 @@ void device_applyConfig(JsonDocument &doc) {
     String normalizedUrl = String(nextFomoUrl);
     normalizedUrl.trim();
     if (device_isHttpUrl(normalizedUrl)) {
-      persistFomoHttpUrl = normalizedUrl != deviceFomoHttpResultUrl;
-      deviceFomoHttpResultUrl = normalizedUrl;
+      persistFomoHttpUrl = device_setFomoHttpResultUrl(normalizedUrl);
     } else {
       Serial.println("[Device] Ignored invalid FOMO HTTP URL from config");
     }
@@ -226,16 +260,20 @@ void device_applyConfig(JsonDocument &doc) {
     if (persistRfidAllowlist) device_loadRfidCsv(next);
   }
 
-  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistFomoHttpUrl || persistRfidAllowlist) {
+  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistCameraBlockedAlert || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistFomoHttpUrl || persistRfidAllowlist) {
     Preferences preferences;
     if (preferences.begin("edgeguard", false)) {
       if (persistAutoLock) preferences.putBool("autolock", deviceAutoLockEnabled);
       if (persistCameraPublish) preferences.putBool("campub", deviceCameraPublishEnabled);
       if (persistAiDetection) preferences.putBool("aienabled", deviceAiDetectionEnabled);
+      if (persistCameraBlockedAlert) preferences.putBool("camblock", deviceCameraBlockedAlertEnabled);
       if (persistAutoLockMs) preferences.putULong("lockms", deviceAutoLockMs);
       if (persistLockAngle) preferences.putInt("lockang", deviceLockAngle);
       if (persistUnlockAngle) preferences.putInt("unlockang", deviceUnlockAngle);
-      if (persistFomoHttpUrl) preferences.putString("fomourl", deviceFomoHttpResultUrl);
+      if (persistFomoHttpUrl) {
+        String fomoHttpUrl = device_getFomoHttpResultUrl();
+        preferences.putString("fomourl", fomoHttpUrl);
+      }
       if (persistRfidAllowlist) {
         preferences.putString("rfiduids", deviceRfidAllowlistCsv);
         String storedRfidCsv = preferences.getString("rfiduids", "");
@@ -255,14 +293,16 @@ void device_applyConfig(JsonDocument &doc) {
   }
 
   Serial.printf(
-    "[Device] Config updated: auto-lock %s after %lu ms, camera live view %s, AI detection %s, %u offline RFID card(s)\n",
+    "[Device] Config updated: auto-lock %s after %lu ms, camera live view %s, AI detection %s, camera-block alert %s, %u offline RFID card(s)\n",
     deviceAutoLockEnabled ? "on" : "off",
     deviceAutoLockMs,
     deviceCameraPublishEnabled ? "on" : "off",
     deviceAiDetectionEnabled ? "on" : "off",
+    deviceCameraBlockedAlertEnabled ? "on" : "off",
     static_cast<unsigned int>(deviceRfidAllowlistCount)
   );
-  Serial.printf("[Device] FOMO HTTP URL: %s\n", deviceFomoHttpResultUrl.c_str());
+  String fomoHttpUrl = device_getFomoHttpResultUrl();
+  Serial.printf("[Device] FOMO HTTP URL: %s\n", fomoHttpUrl.c_str());
   device_printRfidAllowlist("Current");
 }
 
