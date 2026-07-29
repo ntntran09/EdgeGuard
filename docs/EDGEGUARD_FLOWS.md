@@ -3,7 +3,7 @@
 Tài liệu này mô tả trạng thái **thực tế theo code hiện tại** của ba thành phần:
 
 - `hardware/EdgeGuardDevice`: firmware ESP32 chính.
-- `mini-app/backend`: Express backend, MQTT client, camera proxy và xử lý AI/RFID.
+- `mini-app/backend`: Express backend, HTTP-first device transport, MQTT bootstrap/fallback, camera proxy và xử lý AI/RFID.
 - `mini-app/src`: Telegram Mini App và Next.js API.
 
 Ngoài luồng chính, tài liệu cũng ghi riêng `hardware/CameraCapture` và AI worker MQTT cũ để tránh nhầm chung với kiến trúc đang chạy.
@@ -25,10 +25,10 @@ flowchart LR
     APP -->|HTTPS /api/*| NEXT[Next.js API]
     NEXT -->|HTTP| BE[Express backend]
 
-    BE <-->|MQTT telemetry + command| MQ[MQTT broker]
-    DEV[ESP32 EdgeGuardDevice] <-->|MQTT| MQ
-    DEV -->|HTTP POST FOMO inference| BE
-    BE -->|HTTP GET capture / event-frame / stream| DEV
+    BE <-->|MQTT bootstrap + fallback| MQ[MQTT broker]
+    DEV[ESP32 EdgeGuardDevice] <-->|MQTT LWT/endpoints/bootstrap/fallback| MQ
+    DEV -->|HTTP POST telemetry/RFID/FOMO/vision| BE
+    BE -->|HTTP POST command/config + GET camera| DEV
 
     NEXT <-->|settings, users, cards, event views| SB[(Supabase DB)]
     BE <-->|events, AI logs, RFID validation| SB
@@ -46,18 +46,19 @@ flowchart LR
 
 | Chiều | Transport | Dữ liệu |
 |---|---|---|
-| Device -> Server | MQTT | status, telemetry, RFID, camera endpoint, vision alert |
-| Device -> Server | HTTP | FOMO inference JSON |
-| Server -> Device | MQTT | config, servo, alarm, buzzer, reboot, vision result |
+| Device -> Server | HTTP | telemetry system/security/nfc, RFID scan, FOMO inference, vision alert |
+| Device -> Server | MQTT | retained status/LWT, retained camera endpoint discovery, telemetry/FOMO/vision fallback, ảnh legacy |
+| Server -> Device | HTTP POST | config, servo, alarm, buzzer, reboot, vision result |
+| Server -> Device | MQTT | retained bootstrap backend/FOMO URL, command/config fallback |
 | Server -> Device | HTTP GET | live stream, capture hiện tại, exact event frame |
 
 ## 2. Danh sách use case
 
 | ID | Use case | Actor chính | Trạng thái |
 |---|---|---|---|
-| UC-01 | Khởi động, kết nối Wi-Fi/MQTT, reconnect | Device, backend | Đang dùng |
-| UC-02 | Discovery camera và đồng bộ config retained | Device, backend, Supabase | Đang dùng; có `[NEW]` |
-| UC-03 | Telemetry, status và tạo event cảm biến | Device, backend | Đang dùng |
+| UC-01 | Khởi động, Wi-Fi/MQTT bootstrap và HTTP transport | Device, backend | Đang dùng; có `[NEW]` |
+| UC-02 | Discovery camera và đồng bộ config HTTP-first | Device, backend, Supabase | Đang dùng; có `[NEW]` |
+| UC-03 | Telemetry HTTP-first, status và tạo event cảm biến | Device, backend | Đang dùng; có `[NEW]` |
 | UC-04 | Xem camera live và fallback frame | User, app, backend, device | Đang dùng; có `[NEW]` |
 | UC-05 | Mở/khóa cửa từ xa và auto-lock | User, app, device | Đang dùng |
 | UC-06 | Bật/tắt alarm, buzzer, reboot, command dev | User/dev, backend, device | Đang dùng |
@@ -113,11 +114,15 @@ sequenceDiagram
     M-->>B: telemetry/endpoints
     B->>DB: Đọc settings + RFID allowlist
     alt Đọc DB thành công
-        B->>M: PUB retained command/config đầy đủ
+        B->>D: POST :82/api/config config đầy đủ
+        B->>M: PUB retained command/config chỉ gồm backend_url + fomo_inference_url
     else DB không sẵn sàng
         B->>M: PUB retained command/config chỉ gồm backend URL
     end
-    M-->>D: command/config
+    alt HTTP config thất bại
+        B->>M: PUB retained command/config đầy đủ làm fallback
+        M-->>D: command/config
+    end
     D->>D: Validate, apply và persist NVS
 
     alt Device rời mạng bất thường
@@ -134,8 +139,9 @@ Branch chi tiết:
 |---|---|
 | Camera init lỗi | Firmware retry theo `CAMERA_INIT_RETRY_MS` |
 | Camera capture lỗi liên tiếp | Deinit, khởi động lại camera |
-| MQTT JSON/packet quá lớn | Không publish, ghi log lỗi |
-| Config có URL FOMO không hợp lệ | Device bỏ qua URL đó |
+| HTTP telemetry lỗi | Firmware thử MQTT fallback nếu broker còn kết nối |
+| MQTT JSON/packet quá lớn | Không publish fallback, ghi log lỗi |
+| Config có `backend_url`/URL FOMO không hợp lệ | Device bỏ qua URL đó |
 | Mở NVS thất bại | Config vẫn áp dụng trong RAM, không persist được |
 | Mất Wi-Fi | Camera server dừng; endpoint sẽ publish lại sau reconnect |
 
@@ -157,12 +163,16 @@ flowchart TD
     J --> K{Đọc settings + allowlist được?}
     K -- Yes --> L[Build config đầy đủ]
     K -- No --> M[Chỉ build backend_url + fomo_inference_url]
-    L --> N[PUB retained command/config QoS 1]
-    M --> N
-    N --> O[Device apply config]
-    O --> P{Giá trị thay đổi?}
-    P -- Yes --> Q[Persist NVS]
-    P -- No --> R[Không ghi lại NVS]
+    L --> N[POST :82/api/config]
+    M --> N2[PUB retained command/config bootstrap URL]
+    N --> O{HTTP config OK?}
+    O -- Yes --> P[Device apply config]
+    O -- No --> Q[PUB retained command/config đầy đủ fallback]
+    Q --> P
+    N2 --> P
+    P --> R{Giá trị thay đổi?}
+    R -- Yes --> S[Persist NVS]
+    R -- No --> T[Không ghi lại NVS]
 ```
 
 Config đầy đủ hiện đồng bộ xuống device:
@@ -173,38 +183,51 @@ Config đầy đủ hiện đồng bộ xuống device:
 | `camera_publish_enabled` | Cho phép camera HTTP live |
 | `ai_detection_enabled` | Bật/tắt FOMO inference |
 | `camera_blocked_alert_enabled` | Bật/tắt publish alert camera bị che |
+| `object_left_alert_enabled`, `stranger_alert_enabled` | Gate alert object-left/stranger tại firmware |
+| `vision_stable_alert_ms` | Thời gian scene ổn định trước khi phát object/stranger alert |
 | `backend_url`, `fomo_inference_url` | Địa chỉ HTTP device gửi inference |
 | `lock_angle`, `unlock_angle` | Góc servo |
 | `rfid_allowlist` | Cache tối đa 32 thẻ để mở offline |
 
-`[NEW]` Port camera được tách: control ở `82`, MJPEG stream ở `81`. Mỗi khi backend nhận endpoint mới, backend đồng bộ lại FOMO URL để chọn IP LAN phù hợp subnet của device.
+`[NEW]` Port camera được tách: control ở `82`, MJPEG stream ở `81`. Mỗi khi backend nhận endpoint mới, backend đồng bộ lại `backend_url`/FOMO URL theo subnet của device. Retained MQTT config trong trạng thái bình thường chỉ giữ phần bootstrap network URL; full operational config chỉ retained khi HTTP delivery thất bại.
 
 ## 5. UC-03 - Telemetry và event cảm biến
 
 ```mermaid
 flowchart TD
-    A[Device publish MQTT] --> B{Topic}
-    B -->|status| C[Cập nhật online/offline]
-    B -->|telemetry/system| D[Camera, PN532, heap, RSSI, FOMO HTTP, door]
-    B -->|telemetry/environment| D2[Cập nhật temperature và humidity]
-    B -->|telemetry/power| D3[Lưu raw snapshot]
-    B -->|telemetry/endpoints| E[Cập nhật URL camera + sync config]
-    B -->|telemetry/security| F[Cập nhật motion/door/distance]
-    B -->|telemetry/nfc| G[Chạy UC-07 RFID]
-    B -->|telemetry/vision-alert| H[Chạy UC-10 vision alert]
-    B -->|image / image/json| I[Cache live frame legacy]
-    B -->|image/event/id| J[Cache exact frame legacy]
+    A[Device tạo payload telemetry] --> B{HTTP backend_url khả dụng?}
+    B -- Yes --> C[POST /api/device/telemetry channel + payload]
+    C --> D{2xx?}
+    D -- No --> E[Thử MQTT fallback]
+    B -- No --> E
+    E --> F{MQTT connected?}
+    F -- Yes --> G[PUB telemetry topic tương ứng]
+    F -- No --> H[Bỏ/lùi theo logic từng queue]
+    D -- Yes --> I[Backend receiveTelemetry transport=http]
+    G --> J[Backend receiveTelemetry transport=mqtt]
+    I --> K{Channel/Topic}
+    J --> K
+    K -->|status qua MQTT| L[Cập nhật online/offline]
+    K -->|system| M[Camera, PN532, heap, RSSI, FOMO/telemetry HTTP metrics, door]
+    K -->|environment| M2[Cập nhật temperature và humidity]
+    K -->|power| M3[Lưu raw snapshot]
+    K -->|endpoints qua MQTT retained| N[Cập nhật URL camera + sync config]
+    K -->|security| O[Cập nhật motion/door/distance]
+    K -->|nfc| P[Chạy UC-07 RFID]
+    K -->|visionAlert| Q[Chạy UC-10 vision alert]
+    K -->|image / image/json| R[Cache live frame legacy]
+    K -->|image/event/id| S[Cache exact frame legacy]
 
-    F --> K{motion=true?}
-    K -- Yes --> L[Capture frame nếu có + insert motion alert]
-    K -- No --> M{door_open=true?}
-    L --> M
-    M -- Yes --> N[Capture frame nếu có + insert door_open alert]
-    M -- No --> O[Chỉ cập nhật snapshot]
-    N --> O
+    O --> T{motion=true?}
+    T -- Yes --> U[Capture frame nếu có + insert motion alert]
+    T -- No --> V{door_open=true?}
+    U --> V
+    V -- Yes --> W[Capture frame nếu có + insert door_open alert]
+    V -- No --> X[Chỉ cập nhật snapshot]
+    W --> X
 ```
 
-Backend expose snapshot qua `GET /api/mqtt/status`; Next.js `GET /api/status` ghép snapshot này với `device_settings` để trả về dashboard.
+Backend expose snapshot qua `GET /api/device/status`; endpoint cũ `GET /api/mqtt/status` vẫn trả cùng snapshot cho tương thích. Next.js `GET /api/status` gọi `/api/device/status` và ghép snapshot này với `device_settings` để trả về dashboard.
 
 `[GAP]` Backend có subscribe `telemetry/environment` và `telemetry/power`, nhưng firmware `EdgeGuardDevice` hiện không publish hai topic này. `power` cũng chưa có logic summarize riêng ngoài raw topic snapshot.
 
@@ -221,7 +244,7 @@ sequenceDiagram
 
     U->>A: Mở dashboard
     A->>N: GET /api/status
-    N->>B: GET /api/mqtt/status
+    N->>B: GET /api/device/status
     B-->>N: Camera endpoints đã discovery
     N-->>A: streamProxyUrl + frameProxyUrl
 
@@ -268,9 +291,12 @@ sequenceDiagram
         alt DB lỗi/không cấu hình
             N->>N: Dùng mặc định 10 giây
         end
-        N->>B: POST /api/mqtt/command servo unlock
-        B->>M: PUB command/servo QoS 1
-        M-->>D: command/servo
+        N->>B: POST /api/device/command servo unlock
+        B->>D: POST :82/api/command servo unlock
+        alt HTTP command lỗi
+            B->>M: PUB command/servo QoS 1 fallback
+            M-->>D: command/servo
+        end
         D->>D: Mở servo
         alt auto_lock_ms > 0
             D->>D: Hẹn giờ khóa lại
@@ -280,27 +306,38 @@ sequenceDiagram
         end
     else action=lock
         N->>B: POST command servo lock
-        B->>M: PUB command/servo
-        M-->>D: Khóa ngay
+        B->>D: POST :82/api/command servo lock
+        D->>D: Khóa ngay
+        alt HTTP command lỗi
+            B->>M: PUB command/servo fallback
+            M-->>D: Khóa ngay
+        end
     end
 
-    D->>M: PUB telemetry/security door state
+    D->>B: POST /api/device/telemetry security door state
+    alt HTTP telemetry lỗi
+        D->>M: PUB telemetry/security fallback
+    end
     N->>DB: Log door_unlocked hoặc door_locked nếu DB sẵn sàng
 
-    alt Backend/MQTT không sẵn sàng
+    alt Backend không gọi được HTTP device và MQTT fallback cũng lỗi
         N-->>U: 502 Cannot connect to device
     else Thành công
         N-->>U: ok + doorOpen + autoLockMs
     end
 ```
 
-Lưu ý: API trả thành công khi MQTT broker đã nhận publish; hiện không có command ACK riêng từ device. Telemetry door state là xác nhận gián tiếp.
+Lưu ý: API trả `transport=http` khi device HTTP nhận lệnh, hoặc `transport=mqtt` khi dùng fallback. Telemetry door state vẫn là xác nhận gián tiếp sau lệnh.
 
 ## 8. UC-06 - Alarm, buzzer, reboot và command
 
 ```mermaid
 flowchart TD
-    A[Mini App / Dev client] --> B{Command}
+    A[Mini App / Dev client] --> Z[POST /api/device/command hoặc /api/mqtt/command]
+    Z --> Y{Device HTTP :82/api/command OK?}
+    Y -- Yes --> B{Command}
+    Y -- No --> X[PUB command topic MQTT fallback]
+    X --> B
     B -->|alarm active=true| C[Device bật âm khẩn cấp đổi tần]
     B -->|alarm active=false| D[Device tắt alarm]
     B -->|buzzer| E{Alarm đang active?}
@@ -312,7 +349,7 @@ flowchart TD
     B -->|JSON lỗi| K[Device log và bỏ qua]
 ```
 
-Alarm từ Mini App được log vào Supabase nếu DB sẵn sàng. Endpoint dev `POST /api/mqtt/command` chấp nhận tên command theo `[a-z0-9_-]+`; `POST /api/mqtt/send` có thể publish topic tùy ý.
+Alarm từ Mini App gọi `POST /api/device/command` và được log vào Supabase nếu DB sẵn sàng. Endpoint dev `POST /api/mqtt/command` vẫn còn cho tương thích nhưng cũng đi qua HTTP-first helper; `POST /api/mqtt/send` mới publish topic tùy ý trực tiếp.
 
 ## 9. UC-07 - Quét RFID online và offline
 
@@ -325,7 +362,7 @@ flowchart TD
     D --> E{Auto-lock bật?}
     E -- Yes --> F[Hẹn khóa lại]
     E -- No --> G[Không hẹn khóa]
-    F --> H{Wi-Fi + MQTT connected?}
+    F --> H{HTTP backend hoặc MQTT fallback khả dụng?}
     G --> H
 
     C -- No --> H
@@ -333,12 +370,15 @@ flowchart TD
     I -- Yes --> J[Hoàn tất offline, server không có event]
     I -- No --> K[Từ chối offline, server không có event]
 
-    H -- Yes --> L[PUB telemetry/nfc với local_access_granted]
-    L --> M[Backend validate UID trong Supabase]
+    H -- Yes --> L[POST /api/device/telemetry nfc với local_access_granted]
+    L --> L2{HTTP accepted?}
+    L2 -- No --> L3[PUB telemetry/nfc MQTT fallback]
+    L2 -- Yes --> M[Backend validate UID trong Supabase]
+    L3 --> M
     M --> N{Thẻ active và hợp lệ?}
     N -- Yes --> O{Device đã mở local?}
     O -- Yes --> P[Không gửi servo lần hai]
-    O -- No --> Q[PUB command/servo unlock]
+    O -- No --> Q[POST :82/api/command servo unlock; MQTT fallback nếu lỗi]
     P --> R[Log rfid_scan + access_granted]
     Q --> R
 
@@ -347,7 +387,7 @@ flowchart TD
     S -- No --> U[Log rfid_scan + rfid_invalid]
 ```
 
-Nếu `RFID_ALLOW_ALL=true`, backend coi mọi thẻ là hợp lệ trong chế độ test. Firmware vẫn chỉ mở local khi UID nằm trong allowlist; nếu chưa có, backend sẽ gửi servo command sau khi nhận scan.
+Nếu `RFID_ALLOW_ALL=true`, backend coi mọi thẻ là hợp lệ trong chế độ test. Firmware vẫn chỉ mở local khi UID nằm trong allowlist; nếu chưa có, backend sẽ gửi servo command HTTP-first sau khi nhận scan.
 
 ## 10. UC-08 - Quản lý và duyệt thẻ RFID
 
@@ -369,16 +409,22 @@ flowchart TD
     H -->|Bật/tắt thẻ| N[Update DB + sync allowlist]
     H -->|Xóa thẻ| O[Delete DB + log + sync allowlist]
 
-    I --> P[POST backend /api/mqtt/sync-access]
+    I --> P[POST backend /api/device/sync-access]
     L --> P
     N --> P
     O --> P
-    P --> Q{MQTT connected?}
-    Q -- Yes --> R[PUB retained command/config]
-    Q -- No --> S[DB đã lưu; device nhận ở lần reconnect sau]
+    P --> Q{Device HTTP endpoint đã discovery?}
+    Q -- Yes --> R[POST :82/api/config full config + allowlist]
+    Q -- No --> S[PUB retained command/config fallback nếu MQTT connected]
+    R --> T{HTTP OK?}
+    T -- Yes --> U[Device apply + persist allowlist]
+    T -- No --> S
+    S --> V{MQTT connected?}
+    V -- Yes --> W[Device nhận command/config qua MQTT]
+    V -- No --> X[DB đã lưu; lần endpoint/MQTT sau sẽ sync lại]
 ```
 
-Mỗi lần sync, allowlist được deduplicate, normalize và cắt tối đa 32 UID trước khi gửi xuống device.
+Mỗi lần sync, allowlist được deduplicate, normalize và cắt tối đa 32 UID trước khi gửi xuống device. Nếu HTTP sync thành công, backend vẫn refresh retained MQTT bootstrap URL; full config chỉ retained khi cần fallback.
 
 ## 11. UC-09 - FOMO, exact event frame và Rekognition
 
@@ -404,9 +450,13 @@ sequenceDiagram
         D->>D: Không queue HTTP result
     else Có detection
         D->>D: Queue inference JSON
-        loop Cho đến khi POST thành công
+        loop Cho đến khi HTTP hoặc fallback giao được
             alt Wi-Fi mất hoặc HTTP lỗi
-                D->>D: Chờ retry; nếu có event mới thì thay event cũ
+                D->>M: PUB telemetry/inference MQTT fallback nếu broker connected
+                M-->>B: telemetry/inference fallback
+                alt MQTT cũng lỗi
+                    D->>D: Chờ retry; nếu có event mới thì thay event cũ
+                end
             else Gửi được
                 D->>B: POST /api/fomo/inference + device id
                 B-->>D: 202 Accepted
@@ -437,8 +487,11 @@ sequenceDiagram
         B->>AWS: Detect/search faces, threshold 75
         AWS-->>B: Matched/unmatched faces
         B->>DB: Lookup face id -> display name
-        B->>M: PUB command/vision-result kèm event_id
-        M-->>D: Recognition result
+        B->>D: POST :82/api/command vision-result kèm event_id
+        alt HTTP command lỗi
+            B->>M: PUB command/vision-result fallback
+            M-->>D: Recognition result
+        end
         alt Tất cả người đều quen
             B->>DB: Insert face_recognized info event
             D->>D: Track known person, không stranger alert
@@ -446,12 +499,15 @@ sequenceDiagram
             D->>D: Bắt đầu stranger stability timer
         end
     else Person nhưng thiếu ảnh hoặc Rekognition lỗi
-        B->>M: vision-result verified=false + reason
+        B->>D: POST :82/api/command vision-result verified=false + reason
+        alt HTTP command lỗi
+            B->>M: PUB command/vision-result fallback
+        end
         D->>D: Giữ trạng thái waiting cho đến lần reclassify sau
     end
 ```
 
-`[NEW]` HTTP delivery chạy task riêng, retry khi offline/lỗi và ưu tiên inference mới nhất. Backend tuyệt đối không dùng live frame mới thay cho exact event frame sai/mất `event_id`.
+`[NEW]` HTTP delivery chạy task riêng, retry khi offline/lỗi và ưu tiên inference mới nhất. Nếu HTTP inference lỗi nhưng MQTT còn kết nối, firmware publish fallback vào `{base}/telemetry/inference`. Backend tuyệt đối không dùng live frame mới thay cho exact event frame sai/mất `event_id`.
 
 ## 12. UC-10 - Các branch vision alert
 
@@ -472,7 +528,7 @@ flowchart TD
     J -- No --> L{AI enabled + scene change đủ threshold?}
     K --> L
 
-    L -- No --> M{Đang track stranger/object và đủ 5 giây?}
+    L -- No --> M{Đang track stranger/object và đủ vision_stable_alert_ms?}
     L -- Yes --> N[Run FOMO + cập nhật state]
     N --> O{Loại detection}
     O -->|Person| P[Chờ UC-09 Rekognition]
@@ -481,18 +537,21 @@ flowchart TD
 
     M -- No --> S[Tiếp tục monitor]
     M -- Yes --> T{State}
-    T -->|Stranger| U[Queue stranger_detected]
-    T -->|Object| V[Queue object_left]
+    T -->|Stranger + setting enabled| U[Queue stranger_detected]
+    T -->|Object + setting enabled| V[Queue object_left]
 
-    H --> W[PUB telemetry/vision-alert]
+    H --> W[POST /api/device/telemetry visionAlert]
     U --> W
     V --> W
-    W --> X{MQTT publish thành công?}
-    X -- No --> Y[Requeue alert ở đầu hàng đợi]
+    W --> X{HTTP accepted?}
+    X -- No --> Y[PUB telemetry/vision-alert MQTT fallback nếu broker connected]
+    Y --> Y2{MQTT accepted?}
+    Y2 -- No --> Y3[Requeue alert ở đầu hàng đợi]
+    Y2 -- Yes --> Z
     X -- Yes --> Z[Backend fetch exact frame + insert security event]
 ```
 
-Camera-block có độ ưu tiên cao hơn FOMO và vẫn được phân tích khi AI bị tắt. Một blocked episode chỉ publish một alert; khi camera hồi phục thì reset baseline và cho phép alert mới ở episode sau.
+Camera-block có độ ưu tiên cao hơn FOMO và vẫn được phân tích khi AI bị tắt. Một blocked episode chỉ gửi một alert; khi camera hồi phục thì reset baseline và cho phép alert mới ở episode sau. Object-left/stranger alert dùng thời gian ổn định từ `object_left_max_seconds` sau khi backend sync thành `vision_stable_alert_ms`.
 
 ## 13. UC-11 - Quản lý khuôn mặt quen
 
@@ -530,11 +589,11 @@ Nhánh xóa là best-effort với AWS/Storage: DB vẫn có thể soft-delete th
 ```mermaid
 flowchart TD
     A[User mở dashboard] --> B[GET /api/status]
-    B --> C{Backend MQTT status OK?}
+    B --> C{Backend device status OK?}
     C -- No --> D[502 Backend unavailable]
     C -- Yes --> E{Supabase settings OK?}
     E -- No --> F[400 settings error]
-    E -- Yes --> G[Merge MQTT snapshot + settings + integration flags]
+    E -- Yes --> G[Merge device snapshot + settings + integration flags]
     G --> H[Dashboard hiện door, motion, camera, AI, auto-lock]
 
     I[User mở logs] --> J[GET /api/events?filter]
@@ -550,7 +609,7 @@ flowchart TD
     R --> S[Upsert viewed_at theo device + telegram user + event]
 ```
 
-AI overlay trên dashboard chỉ hiện inference mới trong 6 giây; live MQTT frame chỉ được coi là mới trong 5 giây.
+AI overlay trên dashboard chỉ hiện inference mới trong 6 giây. Live frame chính đi qua HTTP camera proxy; MQTT frame cache legacy chỉ được coi là mới trong 5 giây.
 
 ## 15. UC-13 - Phân quyền và Telegram user
 
@@ -625,10 +684,10 @@ flowchart LR
     D[Device telemetry/#] --> M[MQTT broker]
     M --> W[Python AI worker]
     W -->|model/inference| M
-    M -.->|Backend không subscribe topic này| X[Không được xử lý]
+    M -.->|Backend chỉ subscribe telemetry/inference| X[Không được xử lý]
 ```
 
-Worker `ai-models/src/edgeguard_models/mqtt_inference.py` vẫn publish `{base}/model/inference`, nhưng `mini-app/backend/services/mqtt-service.js` không đưa topic này vào subscriptions. FOMO HTTP là AI path đang hoạt động.
+Worker `ai-models/src/edgeguard_models/mqtt_inference.py` vẫn publish `{base}/model/inference`, nhưng `mini-app/backend/services/mqtt-service.js` chỉ xử lý `{base}/telemetry/inference` làm fallback cho FOMO firmware. FOMO HTTP là AI path đang hoạt động.
 
 ### 17.3 Settings chưa được enforce end-to-end `[GAP]`
 
@@ -639,8 +698,8 @@ Worker `ai-models/src/edgeguard_models/mqtt_inference.py` vẫn publish `{base}/
 | AI detection | Có | Có, device |
 | Camera blocked alert | Có | Có, device |
 | RFID configuration/master mode | Có | Có, backend card flow |
-| Object-left enabled/max seconds | Có | Chưa; firmware đang dùng timer cố định 5 giây |
-| Stranger alert enabled | Có | Chưa; backend/device chưa gate alert theo setting |
+| Object-left enabled/max seconds | Có | Có, device qua `object_left_alert_enabled` + `vision_stable_alert_ms` |
+| Stranger alert enabled | Có | Có, device qua `stranger_alert_enabled` |
 | Telegram alert enabled | Có | Chưa; Telegram service chưa được gọi trong event flow |
 
 Telegram service hiện tại chỉ là placeholder tạo link giả lập và không được khởi tạo/gọi bởi event pipeline.
@@ -651,10 +710,15 @@ Telegram service hiện tại chỉ là placeholder tạo link giả lập và k
 flowchart TD
     A[Operator / dev client] --> B{Endpoint}
     B -->|GET /health| C[Express + MQTT + FOMO health]
+    B -->|GET /api/device/status| C2[HTTP/MQTT device snapshot]
+    B -->|POST /api/device/telemetry| C3[Nhận telemetry HTTP từ device]
+    B -->|POST /api/device/command| C4[Gửi command HTTP-first, MQTT fallback]
+    B -->|POST /api/device/config| C5[Gửi config HTTP-first, MQTT fallback]
+    B -->|POST /api/device/sync-access| C6[Sync settings/RFID allowlist HTTP-first]
     B -->|GET /api/camera/status| D[Camera endpoint discovery status]
     B -->|GET /api/fomo/status| E[FOMO URL + last event + HTTP failures]
     B -->|POST /api/mqtt/config| F{Body là object?}
-    F -- Yes --> G[PUB retained command/config]
+    F -- Yes --> G[Compatibility: publishConfig HTTP-first]
     F -- No --> H[422]
     B -->|POST /api/mqtt/send| I{Topic hợp lệ?}
     I -- Yes --> J[PUB custom MQTT payload]
@@ -667,7 +731,7 @@ flowchart TD
     M -- No --> O[500 qua global error handler]
     B -->|GET /api/images/*| P[Đọc danh sách/file local legacy]
 
-    G --> Q{MQTT connected?}
+    G --> Q{HTTP device OK hoặc MQTT connected?}
     J --> Q
     Q -- No --> R[Global 500: MQTT client is not connected]
     Q -- Yes --> S[200 OK]
@@ -680,19 +744,20 @@ flowchart TD
 | Topic | Chiều | Retain | Xử lý |
 |---|---|---|---|
 | `{base}/status` | Device -> Server | Có | `online`; LWT `offline` |
-| `{base}/telemetry/system` | Device -> Server | Không | Health và FOMO HTTP metrics |
+| `{base}/telemetry/system` | Device -> Server | Không | MQTT fallback cho health và FOMO/telemetry HTTP metrics |
 | `{base}/telemetry/environment` | Producer -> Server | Không | Temperature/humidity; main firmware chưa publish |
 | `{base}/telemetry/power` | Producer -> Server | Không | Raw snapshot; main firmware chưa publish |
-| `{base}/telemetry/security` | Device -> Server | Không | Door/motion + tạo event |
-| `{base}/telemetry/nfc` | Device -> Server | Không | RFID validation |
+| `{base}/telemetry/security` | Device -> Server | Không | MQTT fallback cho door/motion + tạo event |
+| `{base}/telemetry/nfc` | Device -> Server | Không | MQTT fallback cho RFID validation |
 | `{base}/telemetry/endpoints` | Device -> Server | Có | Camera discovery + config resync |
-| `{base}/telemetry/vision-alert` | Device -> Server | Không | Stranger/object/camera-blocked |
-| `{base}/command/config` | Server -> Device | Có | Config + allowlist + backend URL |
-| `{base}/command/servo` | Server -> Device | Không | Lock/unlock |
-| `{base}/command/alarm` | Server -> Device | Không | Urgent buzzer |
-| `{base}/command/buzzer` | Server -> Device | Không | Tone có thời hạn |
-| `{base}/command/vision-result` | Server -> Device | Không | Recognition result theo event id |
-| `{base}/command/reboot` | Server -> Device | Không | Restart device |
+| `{base}/telemetry/vision-alert` | Device -> Server | Không | MQTT fallback cho stranger/object/camera-blocked |
+| `{base}/telemetry/inference` | Device -> Server | Không | MQTT fallback cho FOMO inference HTTP |
+| `{base}/command/config` | Server -> Device | Có | Retained bootstrap URL; full config fallback khi HTTP lỗi |
+| `{base}/command/servo` | Server -> Device | Không | MQTT fallback cho lock/unlock |
+| `{base}/command/alarm` | Server -> Device | Không | MQTT fallback cho urgent buzzer |
+| `{base}/command/buzzer` | Server -> Device | Không | MQTT fallback cho tone có thời hạn |
+| `{base}/command/vision-result` | Server -> Device | Không | MQTT fallback cho recognition result theo event id |
+| `{base}/command/reboot` | Server -> Device | Không | MQTT fallback cho restart device |
 | `{base}/image*` | Device -> Server | Không | Ảnh legacy |
 
 ## 20. HTTP contract chính
@@ -701,12 +766,19 @@ flowchart TD
 |---|---|---|
 | `POST /api/fomo/inference` | Device -> Express | Gửi FOMO inference |
 | `GET /api/fomo/status` | Operator -> Express | Chẩn đoán FOMO HTTP `[NEW]` |
+| `GET /api/device/status` | Next.js/operator -> Express | Snapshot device HTTP/MQTT |
+| `POST /api/device/telemetry` | Device -> Express | Nhận telemetry HTTP-first |
+| `POST /api/device/command` | Next.js/dev -> Express | Gửi command HTTP-first, MQTT fallback |
+| `POST /api/device/config` | Next.js/dev -> Express | Gửi config HTTP-first, MQTT fallback |
+| `POST /api/device/sync-access` | Next.js -> Express | Sync settings/RFID allowlist HTTP-first |
+| `POST :82/api/command` | Express -> Device | Nhận command trực tiếp trên ESP32 |
+| `POST :82/api/config` | Express -> Device | Nhận config trực tiếp trên ESP32 |
 | `GET :82/event-frame?event_id=` | Express -> Device | Lấy exact frame |
 | `GET :82/capture` | Express -> Device | Lấy live JPEG |
 | `GET :81/stream` | Express -> Device | Lấy MJPEG |
-| `POST /api/mqtt/command` | Next.js/dev -> Express | Gửi command MQTT |
-| `POST /api/mqtt/sync-access` | Next.js -> Express | Đồng bộ retained config |
-| `GET /api/mqtt/status` | Next.js -> Express | Snapshot hệ thống |
+| `POST /api/mqtt/command` | Next.js/dev -> Express | Compatibility command; vẫn HTTP-first rồi MQTT fallback |
+| `POST /api/mqtt/sync-access` | Next.js/dev -> Express | Compatibility sync; vẫn HTTP-first rồi MQTT fallback |
+| `GET /api/mqtt/status` | Next.js/dev -> Express | Compatibility snapshot hệ thống |
 | `GET /api/camera/stream` | App -> Express | Proxy MJPEG |
 | `GET /api/camera/frame` | App -> Express | Proxy JPEG fallback |
 | `GET,POST /api/settings` | App -> Next.js | Đọc/lưu settings và trigger config sync |
@@ -724,22 +796,26 @@ flowchart TD
 
 1. `[NEW]` Camera HTTP tách thành control port `82` và MJPEG port `81`.
 2. `[NEW]` Endpoint announcement có `event_frame_url`, `stream_port`, `live_mode=mjpeg`.
-3. `[NEW]` Backend chọn FOMO HTTP URL theo LAN/subnet của device và resync khi nhận endpoint.
-4. `[NEW]` FOMO HTTP delivery có task riêng, retry và thay pending event cũ bằng event mới hơn.
-5. `[NEW]` `GET /api/fomo/status` trả URL, event cuối và thống kê lỗi HTTP từ device.
-6. `[NEW]` Exact event frame không fallback sang live frame mới; sai/mất `X-EdgeGuard-Event-Id` thì event được lưu không ảnh.
-7. `[NEW]` Camera-tamper chạy độc lập với FOMO AI; `camera_blocked_alert_enabled` chỉ gate việc publish alert.
-8. `[NEW]` MQTT vision alert được rút gọn; nếu publish lỗi thì requeue thay vì bỏ mất.
+3. `[NEW]` Device telemetry/RFID/vision alert dùng `POST /api/device/telemetry` trước, MQTT topic tương ứng chỉ là fallback.
+4. `[NEW]` Command/config từ backend sang ESP32 dùng `POST :82/api/command` và `POST :82/api/config` trước, MQTT command/config chỉ là fallback.
+5. `[NEW]` Backend chọn `backend_url`/FOMO HTTP URL theo LAN/subnet của device và resync khi nhận endpoint.
+6. `[NEW]` Retained MQTT config bình thường chỉ giữ bootstrap URL; full operational config retained khi HTTP delivery thất bại.
+7. `[NEW]` FOMO HTTP delivery có task riêng, retry và thay pending event cũ bằng event mới hơn; nếu HTTP lỗi có fallback `{base}/telemetry/inference`.
+8. `[NEW]` `GET /api/fomo/status` trả URL, event cuối và thống kê lỗi HTTP từ device.
+9. `[NEW]` Exact event frame không fallback sang live frame mới; sai/mất `X-EdgeGuard-Event-Id` thì event được lưu không ảnh.
+10. `[NEW]` Camera-tamper chạy độc lập với FOMO AI; `camera_blocked_alert_enabled` chỉ gate việc publish alert.
+11. `[NEW]` Object-left/stranger alert đã được gate bằng setting và dùng `vision_stable_alert_ms` sync từ `object_left_max_seconds`.
+12. `[NEW]` Vision alert payload được rút gọn; nếu HTTP và MQTT đều lỗi thì requeue thay vì bỏ mất.
 
 ## 22. Nguồn code đối chiếu
 
 | Phạm vi | File chính |
 |---|---|
-| Device lifecycle/MQTT/config | `hardware/EdgeGuardDevice/EdgeGuardDevice.ino`, `mqtt.h`, `device.h` |
+| Device lifecycle/MQTT/config | `hardware/EdgeGuardDevice/EdgeGuardDevice.ino`, `mqtt.h`, `http_transport.h`, `device.h` |
 | RFID/door/alarm | `pn532_reader.h`, `actuators.h`, `sensors.h` |
 | Camera/FOMO | `camera.h`, `fomo.h` |
 | Backend orchestration | `mini-app/backend/services/mqtt-service.js` |
-| Backend routes | `mini-app/backend/routes/mqtt.js`, `camera.js`, `fomo.js` |
+| Backend routes | `mini-app/backend/routes/device.js`, `mqtt.js`, `camera.js`, `fomo.js` |
 | Mini App API | `mini-app/src/app/api/*` |
 | DB/Storage | `schema.sql`, `mini-app/backend/services/supabase-service.js` |
 | Standalone camera | `hardware/CameraCapture/README.md`, `CameraCapture.ino` |
