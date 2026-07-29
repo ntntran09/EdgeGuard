@@ -56,6 +56,39 @@ function checkAndTouchEmailNotificationCooldown(deviceId, alertType) {
   return true;
 }
 
+function validDateString(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function imageTimestampFromStoragePath(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+
+  let raw = value;
+  try {
+    raw = decodeURIComponent(value);
+  } catch {}
+
+  const dashed = raw.match(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/);
+  if (dashed) {
+    return validDateString(`${dashed[1]}T${dashed[2]}:${dashed[3]}:${dashed[4]}.${dashed[5]}Z`);
+  }
+
+  const iso = raw.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)/);
+  return iso ? validDateString(iso[1]) : null;
+}
+
+function alertNotificationTimestamp({ alert, alertResult, capturedImage, imagePath }) {
+  return validDateString(capturedImage?.capturedAt)
+    || validDateString(alertResult?.metadata?.event_image_captured_at)
+    || validDateString(alert?.metadata?.event_image_captured_at)
+    || imageTimestampFromStoragePath(alertResult?.thumbnailUrl)
+    || imageTimestampFromStoragePath(imagePath)
+    || validDateString(alertResult?.created_at)
+    || new Date().toISOString();
+}
+
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -430,7 +463,11 @@ export function createMqttService() {
     const frameAge = latestFrame ? Date.now() - new Date(latestFrame.receivedAt).getTime() : Infinity;
     if (!exactFrame && (!captureUrl || frameAge < 5000)) {
       return fallbackImage
-        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        ? {
+            imagePath: fallbackImage,
+            source: 'mqtt_latest_frame',
+            capturedAt: latestFrame?.capturedAt || latestFrame?.receivedAt,
+          }
         : { imagePath: null, source: 'unavailable' };
     }
 
@@ -501,7 +538,11 @@ export function createMqttService() {
           ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
       }
       return fallbackImage
-        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        ? {
+            imagePath: fallbackImage,
+            source: 'mqtt_latest_frame',
+            capturedAt: latestFrame?.capturedAt || latestFrame?.receivedAt,
+          }
         : { imagePath: null, source: 'capture_failed' };
     } finally {
       clearTimeout(timeout);
@@ -716,8 +757,13 @@ export function createMqttService() {
       const alertDisplaySeverity = notificationDisplaySeverityForAlert(alert, severityForAlertType);
       const severityCopy = notificationSeverityCopy(alertDisplaySeverity);
       const telegramImagePath = alertResult?.thumbnailUrl || imagePath;
-      const alertCreatedAt = alertResult?.created_at || new Date().toISOString();
-      const alertDisplayTime = formatTelegramAlertTime(alertCreatedAt);
+      const alertImageTimestamp = alertNotificationTimestamp({
+        alert,
+        alertResult,
+        capturedImage,
+        imagePath: telegramImagePath,
+      });
+      const alertDisplayTime = formatTelegramAlertTime(alertImageTimestamp);
       const messageText = `${severityCopy.icon} *[EDGEGUARD SECURITY]*\n` +
                           `• *Mức độ:* ${escapeTelegramMarkdownText(severityCopy.badge)}\n` +
                           `• *Loại:* ${escapeTelegramMarkdownText(alertCopy.typeLabel)}\n` +
