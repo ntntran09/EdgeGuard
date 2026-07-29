@@ -12,7 +12,9 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   });
 
   if (!res.ok) {
-    throw new Error(`API Error: ${res.status} ${res.statusText}`);
+    const json = await res.json().catch(() => null);
+    const msg = json?.error || json?.message || `Lỗi hệ thống (${res.status})`;
+    throw new Error(msg);
   }
 
   return res.json();
@@ -106,6 +108,11 @@ export const api = {
     fetchApi<{ user: import('@/types').TelegramDeviceUser }>('/api/users', {
       method: 'PATCH',
       body: JSON.stringify({ id, isActive }),
+    }),
+  updateUserEmail: (id: string, email?: string | null, emailAlertEnabled?: boolean, otp?: string) =>
+    fetchApi<{ user: import('@/types').TelegramDeviceUser }>('/api/users', {
+      method: 'PATCH',
+      body: JSON.stringify({ id, email, emailAlertEnabled, otp }),
     }),
   getFaces: () => fetchApi<{ faces: import('@/types').KnownFace[] }>('/api/faces'),
   addFace: (displayName: string, imageBase64?: string) =>

@@ -7,6 +7,7 @@ build-cache/
 hardware/libraries/ESP32-CAM_Detection_FOMO_inferencing/
 .env
 .env.*
+*.env
 !.env.example
 *.log
 *.tmp

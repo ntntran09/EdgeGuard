@@ -97,7 +97,7 @@ export function createMqttRouter(mqttService) {
 
   router.post('/events', async (request, response, next) => {
     try {
-      const { alertType, message, severity, source, metadata, resolved } = request.body;
+      const { alertType, message, thumbnailUrl, severity, source, metadata, resolved } = request.body;
       if (typeof alertType !== 'string' || !alertType.trim() || alertType.length > 80) {
         response.status(422).json({ error: 'alertType must be a non-empty string up to 80 characters.' });
         return;
@@ -114,6 +114,10 @@ export function createMqttRouter(mqttService) {
         response.status(422).json({ error: 'source must be a string up to 80 characters.' });
         return;
       }
+      if (thumbnailUrl !== undefined && (typeof thumbnailUrl !== 'string' || thumbnailUrl.length > 2048)) {
+        response.status(422).json({ error: 'thumbnailUrl must be a string up to 2048 characters.' });
+        return;
+      }
       if (metadata !== undefined && !isPlainObject(metadata)) {
         response.status(422).json({ error: 'metadata must be an object when provided.' });
         return;
@@ -126,6 +130,7 @@ export function createMqttRouter(mqttService) {
       await mqttService.recordEvent({
         alertType: alertType.trim(),
         message: message.trim(),
+        thumbnailUrl,
         severity,
         source,
         metadata,

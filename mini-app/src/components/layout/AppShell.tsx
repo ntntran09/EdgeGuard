@@ -67,16 +67,21 @@ export function AppShell({ children }: AppShellProps) {
       if (!initData) {
         queueMicrotask(() => {
           postTelegramAuthDebug('missing_init_data', tg);
-          setAuthMessage('HÃ£y má»Ÿ dashboard báº±ng nÃºt Mini App trong bot Telegram Ä‘Ã£ cáº¥u hÃ¬nh.');
+          setAuthMessage('Hãy mở dashboard bằng nút Mini App trong bot Telegram đã cấu hình.');
           setAuthState('denied');
         });
       } else {
+        postTelegramAuthDebug('auth_start', tg);
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 8000);
         void fetch('/api/auth/telegram', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
+          signal: controller.signal,
           body: JSON.stringify({ initData }),
         }).then(async (response) => {
+          window.clearTimeout(timeoutId);
           if (!response.ok) {
             const data = await response.json().catch(() => null) as { error?: string } | null;
             const message = data?.error || 'Telegram authentication failed.';
@@ -87,8 +92,11 @@ export function AppShell({ children }: AppShellProps) {
           }
           setAuthState('authenticated');
         }).catch((error: unknown) => {
+          window.clearTimeout(timeoutId);
           postTelegramAuthDebug('auth_request_failed', tg, { error: error instanceof Error ? error.message : 'unknown_error' });
-          setAuthMessage(error instanceof Error ? error.message : 'KhÃ´ng thá»ƒ xÃ¡c thá»±c Telegram.');
+          setAuthMessage(error instanceof Error && error.name === 'AbortError'
+            ? 'Xác thực Telegram quá lâu, hãy đóng Mini App rồi mở lại.'
+            : error instanceof Error ? error.message : 'Không thể xác thực Telegram.');
           setAuthState('denied');
         });
       }
@@ -117,7 +125,7 @@ export function AppShell({ children }: AppShellProps) {
       <div className="app-content">
         <main className="page-container">
           <section className="bento-card" style={{ maxWidth: 480, margin: '15vh auto', textAlign: 'center' }}>
-            <h1 className="text-heading-2">KhÃ´ng cÃ³ quyá»n truy cáº­p</h1>
+            <h1 className="text-heading-2">Không có quyền truy cập</h1>
             <p style={{ color: 'var(--hint)', marginTop: 12 }}>{authMessage}</p>
           </section>
         </main>

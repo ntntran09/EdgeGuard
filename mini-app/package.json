@@ -9,6 +9,10 @@
     "start": "NODE_ENV=production node server.js",
     "lint": "eslint",
     "test:auth": "node --test --experimental-test-isolation=none tests/telegram-auth.test.mjs tests/telegram-bot-update.test.mjs",
+    "test:telegram-notification": "node --test --experimental-test-isolation=none tests/telegram-notification.test.mjs tests/telegram-service.test.mjs",
+    "test:telegram": "node --test --experimental-test-isolation=none tests/telegram-auth.test.mjs tests/telegram-bot-update.test.mjs tests/telegram-notification.test.mjs tests/telegram-service.test.mjs",
+    "test:alert": "node scripts/test-alert-simulation.mjs",
+    "test:cam": "node scripts/test-camera-simulation.mjs",
     "telegram": "npm run build && node scripts/run-telegram-miniapp.mjs --force --skip-build",
     "telegram:quick": "node scripts/run-telegram-miniapp.mjs --force --skip-build"
   },

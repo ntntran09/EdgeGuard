@@ -72,13 +72,11 @@ export async function GET() {
     }
 
     if (settingsResult.error) {
-      return NextResponse.json(
-        { ok: false, error: settingsResult.error.message },
-        { status: 400 }
-      );
+      console.warn('[API /status] Cannot load device settings, using defaults:', settingsResult.error.message);
     }
 
     const data = await res.json() as MqttStatusPayload;
+    const settings = settingsResult.error ? null : settingsResult.data;
     const inference = data.topics?.modelInference;
     const aiDetections = freshAiDetections(inference);
     const cameraEndpoints = data.summary?.cameraEndpoints as MqttCameraEndpoints | undefined;
@@ -98,7 +96,7 @@ export async function GET() {
       cameraPublishFailures: data.summary?.cameraPublishFailures,
       cameraImagePublishingEnabled: typeof data.summary?.cameraImagePublishingEnabled === 'boolean'
         ? data.summary.cameraImagePublishingEnabled
-        : settingsResult.data?.camera_image_publish_enabled ?? true,
+        : settings?.camera_image_publish_enabled ?? true,
       cameraEndpoints: cameraEndpoints ? {
         baseUrl: cameraEndpoints.baseUrl,
         captureUrl: cameraEndpoints.captureUrl,
@@ -113,14 +111,14 @@ export async function GET() {
       } : undefined,
       aiDetectionEnabled: typeof data.summary?.aiDetectionEnabled === 'boolean'
         ? data.summary.aiDetectionEnabled
-        : settingsResult.data?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',
+        : settings?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',
       aiDetections,
       aiDetectionsAt: aiDetections.length ? inference?.receivedAt : undefined,
-      autoLockEnabled: settingsResult.data
-        ? (settingsResult.data.auto_lock_enabled ?? settingsResult.data.auto_lock_seconds !== null)
+      autoLockEnabled: settings
+        ? (settings.auto_lock_enabled ?? settings.auto_lock_seconds !== null)
         : false,
-      autoLockSeconds: settingsResult.data && settingsResult.data.auto_lock_enabled !== false
-        ? settingsResult.data.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS
+      autoLockSeconds: settings && settings.auto_lock_enabled !== false
+        ? settings.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS
         : null,
       ...integrationStatus(),
     });

@@ -303,7 +303,7 @@ export const supabaseService = {
   },
 
   async insertAlert({ deviceId, alertType, message, thumbnailUrl, severity, source, metadata, telegramMsgLink, resolved = false }) {
-    if (!supabase) return;
+    if (!supabase) return null;
     const image = await this.prepareImageReference({
       deviceId,
       imagePath: thumbnailUrl,
@@ -312,27 +312,38 @@ export const supabaseService = {
       folder: 'events',
     });
 
-    const { error } = await supabase.from('alerts').insert([
-      {
-        device_id: deviceId,
-        alert_type: alertType,
-        message,
-        thumbnail_url: image.thumbnailUrl,
-        image_bucket: image.imageMetadata.image_bucket || null,
-        image_path: image.imageMetadata.image_path || null,
-        image_mime_type: image.imageMetadata.image_content_type || null,
-        image_bytes: image.imageMetadata.image_bytes || null,
-        severity: severity || this.severityForAlertType(alertType),
-        source: source || this.sourceForAlertType(alertType),
-        metadata: image.imageMetadata,
-        telegram_msg_link: image.telegramMsgLink,
-        resolved,
-      },
-    ]);
+    const row = {
+      device_id: deviceId,
+      alert_type: alertType,
+      message,
+      thumbnail_url: image.thumbnailUrl,
+      image_bucket: image.imageMetadata.image_bucket || null,
+      image_path: image.imageMetadata.image_path || null,
+      image_mime_type: image.imageMetadata.image_content_type || null,
+      image_bytes: image.imageMetadata.image_bytes || null,
+      severity: severity || this.severityForAlertType(alertType),
+      source: source || this.sourceForAlertType(alertType),
+      metadata: image.imageMetadata,
+      telegram_msg_link: image.telegramMsgLink,
+      resolved,
+    };
+
+    const { data, error } = await supabase.from('alerts').insert([row]).select().single();
 
     if (error) {
       console.error('[Supabase] Error inserting alert:', error);
+      return null;
     }
+
+    return {
+      ...data,
+      thumbnailUrl: data.thumbnail_url,
+      imageBucket: data.image_bucket,
+      imagePath: data.image_path,
+      imageMimeType: data.image_mime_type,
+      imageBytes: data.image_bytes,
+      telegramMsgLink: data.telegram_msg_link,
+    };
   },
 
   async upsertTelegramBotUser({ deviceId, telegramId, displayName }) {
@@ -383,6 +394,52 @@ export const supabaseService = {
       .maybeSingle();
     if (error) throw new Error(`Cannot verify Telegram user: ${error.message}`);
     return Boolean(data);
+  },
+
+  async getActiveTelegramRecipients({ deviceId }) {
+    if (!supabase) return [];
+    const { data, error } = await supabase
+      .from('telegram_device_users')
+      .select('telegram_id, display_name, role')
+      .eq('device_id', deviceId || config.mqtt.deviceId)
+      .eq('is_active', true)
+      .order('added_at', { ascending: true });
+
+    if (error) throw new Error(`Cannot load Telegram recipients: ${error.message}`);
+
+    return (data || [])
+      .map((row) => ({
+        telegramId: String(row.telegram_id || '').trim(),
+        displayName: row.display_name || 'Người dùng Telegram',
+        role: row.role || 'user',
+      }))
+      .filter((row) => /^-?\d+$/.test(row.telegramId));
+  },
+
+  async getActiveDeviceNotificationEmails(deviceId) {
+    const defaultReceiver = process.env.EMAIL_RECEIVER;
+    if (!supabase) return defaultReceiver ? [defaultReceiver] : [];
+
+    const targetDeviceId = deviceId || config.mqtt.deviceId;
+    const { data, error } = await supabase
+      .from('telegram_device_users')
+      .select('email')
+      .eq('device_id', targetDeviceId)
+      .eq('is_active', true)
+      .eq('email_alert_enabled', true)
+      .not('email', 'is', null);
+
+    if (error) {
+      console.error('[Supabase] Error fetching notification emails:', error.message);
+      return defaultReceiver ? [defaultReceiver] : [];
+    }
+
+    const emails = (data || [])
+      .map((row) => String(row.email || '').trim().toLowerCase())
+      .filter(Boolean);
+    const uniqueEmails = Array.from(new Set(emails));
+
+    return uniqueEmails.length ? uniqueEmails : defaultReceiver ? [defaultReceiver] : [];
   },
 
   async getDeviceSettings(deviceId) {

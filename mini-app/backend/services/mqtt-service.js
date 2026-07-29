@@ -10,10 +10,20 @@ import { rekognitionService } from './rekognition-service.js';
 
 import { createEmailService } from './email.js';
 import { createTelegramService } from './telegram.js';
+import {
+  escapeTelegramMarkdownText,
+  notificationCopyForAlert,
+  notificationDisplaySeverityForAlert,
+  notificationSeverityCopy,
+  shouldNotifyTelegramAlert,
+} from './alert-notification-policy.js';
+import { formatTelegramAlertTime } from './telegram-time.js';
 
 let lastAiLogTime = 0;
 let lastAiLogEventKey = null;
 const AI_LOG_COOLDOWN_MS = 8000;
+const emailNotificationCooldowns = new Map();
+const EMAIL_NOTIFICATION_COOLDOWN_MS = 60 * 1000;
 
 const TELEMETRY_KEYS = {
   status: '/status',
@@ -34,6 +44,17 @@ const EVENT_FRAME_MAX_AGE_MS = 60 * 1000;
 const MAX_CACHED_EVENT_FRAMES = 8;
 const AI_MIN_CONFIDENCE = 0.7;
 const EVENT_IMAGE_CAPTURE_TIMEOUT_MS = 6000;
+
+function checkAndTouchEmailNotificationCooldown(deviceId, alertType) {
+  const key = `${deviceId || config.mqtt.deviceId}:${alertType || 'unknown'}`;
+  const lastTime = emailNotificationCooldowns.get(key) || 0;
+  const now = Date.now();
+  if (now - lastTime < EMAIL_NOTIFICATION_COOLDOWN_MS) {
+    return false;
+  }
+  emailNotificationCooldowns.set(key, now);
+  return true;
+}
 
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -659,6 +680,27 @@ export function createMqttService() {
     };
   }
 
+  async function telegramRecipientsForDevice(deviceId) {
+    try {
+      const recipients = await supabaseService.getActiveTelegramRecipients({ deviceId });
+      const chatIds = recipients.map((recipient) => recipient.telegramId);
+      if (chatIds.length) return chatIds;
+    } catch (error) {
+      console.error('[MQTT] Could not load Telegram recipients:', error instanceof Error ? error.message : error);
+    }
+
+    return config.telegram.chatId ? [config.telegram.chatId] : [];
+  }
+
+  async function emailRecipientsForDevice(deviceId) {
+    try {
+      return await supabaseService.getActiveDeviceNotificationEmails(deviceId);
+    } catch (error) {
+      console.error('[MQTT] Could not load Email recipients:', error instanceof Error ? error.message : error);
+      return process.env.EMAIL_RECEIVER ? [process.env.EMAIL_RECEIVER] : [];
+    }
+  }
+
   async function insertAlertWithEventImage(alert, eventImage) {
     const capturedImage = eventImage ?? await captureEventImage();
     const imagePath = capturedImage.imagePath || alert.thumbnailUrl;
@@ -668,25 +710,55 @@ export function createMqttService() {
       metadata: metadataWithEventImage(alert.metadata, capturedImage),
     });
 
-    const alertSeverity = alert.severity || 'info';
-    if (alertSeverity === 'danger' || alertSeverity === 'warning') {
-      const messageText = `*[CẢNH BÁO EDGEGUARD]*\n` +
-                          `• *Mức độ:* ${alertSeverity.toUpperCase()}\n` +
-                          `• *Loại:* ${alert.alertType}\n` +
-                          `• *Nội dung:* ${alert.message}\n` +
-                          `• *Thời gian:* ${new Date().toLocaleString('vi-VN')}`;
+    const severityForAlertType = supabaseService.severityForAlertType.bind(supabaseService);
+    if (shouldNotifyTelegramAlert(alert, severityForAlertType)) {
+      const alertCopy = notificationCopyForAlert(alert);
+      const alertDisplaySeverity = notificationDisplaySeverityForAlert(alert, severityForAlertType);
+      const severityCopy = notificationSeverityCopy(alertDisplaySeverity);
+      const telegramImagePath = alertResult?.thumbnailUrl || imagePath;
+      const alertCreatedAt = alertResult?.created_at || new Date().toISOString();
+      const alertDisplayTime = formatTelegramAlertTime(alertCreatedAt);
+      const messageText = `${severityCopy.icon} *[EDGEGUARD SECURITY]*\n` +
+                          `• *Mức độ:* ${escapeTelegramMarkdownText(severityCopy.badge)}\n` +
+                          `• *Loại:* ${escapeTelegramMarkdownText(alertCopy.typeLabel)}\n` +
+                          `• *Mô tả:* ${escapeTelegramMarkdownText(alertCopy.description)}\n` +
+                          `• *Thời gian:* ${escapeTelegramMarkdownText(alertDisplayTime)}`;
 
-      telegramService.sendImage(imagePath, messageText).catch((err) => {
+      telegramRecipientsForDevice(alert.deviceId).then((chatIds) => (
+        telegramService.sendImageToChats(chatIds, telegramImagePath, messageText)
+      )).catch((err) => {
         console.error('[MQTT] Telegram notify failed:', err);
       });
 
-      emailService.sendImage(
-        imagePath, 
-        messageText, 
-        `[EdgeGuard Alert] ${alert.message}`
-      ).catch((err) => {
-        console.error('[MQTT] Email notify failed:', err);
-      });
+      if (checkAndTouchEmailNotificationCooldown(alert.deviceId, alert.alertType)) {
+        emailRecipientsForDevice(alert.deviceId).then(async (emails) => {
+          const telegramBotLink = await telegramService.getBotLink();
+          const emailSeverityLabel = alertDisplaySeverity === 'danger'
+            ? 'Nguy hiểm'
+            : alertDisplaySeverity === 'warning'
+              ? 'Cảnh báo'
+              : 'Thông báo';
+          return emailService.sendImage(
+            telegramImagePath,
+            messageText,
+            `[EdgeGuard] ${emailSeverityLabel} - ${alertCopy.typeLabel}`,
+            emails,
+            {
+              severity: alertDisplaySeverity,
+              typeLabel: alertCopy.typeLabel,
+              message: alertCopy.description,
+              deviceId: alert.deviceId || config.mqtt.deviceId,
+              time: alertDisplayTime,
+              telegramBotLink,
+            }
+          );
+        }).catch((err) => {
+          console.error('[MQTT] Email notify failed:', err);
+        });
+      } else {
+        console.log(`[Email] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 1m).`);
+      }
+
     }
 
     return alertResult;
@@ -994,11 +1066,12 @@ export function createMqttService() {
         source: 'api',
       }), { retain: true });
     },
-    recordEvent({ alertType, message, severity, source, metadata, resolved = false }) {
+    recordEvent({ alertType, message, thumbnailUrl, severity, source, metadata, resolved = false }) {
       return insertAlertWithEventImage({
         deviceId: config.mqtt.deviceId,
         alertType,
         message,
+        thumbnailUrl,
         severity,
         source,
         metadata,

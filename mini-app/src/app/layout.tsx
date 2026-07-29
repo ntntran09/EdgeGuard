@@ -1,14 +1,7 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
 import Script from 'next/script';
 import './globals.css';
 import { AppShell } from '@/components/layout/AppShell';
-
-const inter = Inter({
-  subsets: ['latin', 'vietnamese'],
-  variable: '--font-inter',
-  display: 'swap',
-});
 
 export const metadata: Metadata = {
   title: 'EdgeGuard - Hệ thống an ninh thông minh',
@@ -37,7 +30,7 @@ export default function RootLayout({
           strategy="beforeInteractive"
         />
       </head>
-      <body suppressHydrationWarning className={`${inter.variable} font-sans antialiased`}>
+      <body suppressHydrationWarning className="font-sans antialiased">
         <AppShell>{children}</AppShell>
       </body>
     </html>
