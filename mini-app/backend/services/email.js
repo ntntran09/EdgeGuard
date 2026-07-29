@@ -117,11 +117,7 @@ export function createEmailService(options = {}) {
           ? `
       <a href="${escapeHtml(imageUrl)}" style="display:block;margin:16px 0 0;text-decoration:none;">
         <img src="${escapeHtml(imageUrl)}" alt="Ảnh cảnh báo" style="display:block;width:100%;max-width:520px;margin:0 auto;border:1px solid #e5e7eb;border-radius:6px;" />
-      </a>
-      <p style="margin:8px 0 0;font-size:13px;line-height:1.45;color:#6b7280;">
-        Nếu ảnh không hiển thị, mở tại đây:
-        <a href="${escapeHtml(imageUrl)}" style="color:#0f766e;text-decoration:underline;">Ảnh cảnh báo</a>
-      </p>`
+      </a>`
           : hasImage
             ? '<img src="cid:captured_image@edgeguard" alt="Ảnh cảnh báo" style="display:block;width:100%;max-width:520px;margin:16px auto 0;border:1px solid #e5e7eb;border-radius:6px;" />'
             : '';
@@ -145,10 +141,6 @@ export function createEmailService(options = {}) {
       ${imageBlock}
       <div style="margin-top:18px;">
         <a href="${escapeHtml(webAppUrl)}" style="display:inline-block;padding:12px 16px;border-radius:6px;background:#111827;color:#ffffff !important;text-decoration:none;font-size:14px;font-weight:700;">Mở EdgeGuard Telegram App</a>
-        <p style="margin:8px 0 0;font-size:13px;line-height:1.45;color:#6b7280;">
-          Nếu nút không bấm được, mở link:
-          <a href="${escapeHtml(webAppUrl)}" style="color:#0f766e;text-decoration:underline;">${escapeHtml(webAppUrl)}</a>
-        </p>
       </div>
     </div>
     <div style="padding:14px 20px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:12px;line-height:1.45;">
