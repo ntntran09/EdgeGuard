@@ -3,7 +3,7 @@
 
 #include "libs.h"
 #include "config.h"
-#include "mqtt.h"
+#include "http_transport.h"
 #include "device.h"
 
 PN532_I2C pn532Interface(Wire);
@@ -100,13 +100,13 @@ void pn532_loop() {
   actuators_playRfidReadTone();
 
   // A cached active card must open immediately on the ESP32. Do not wait for
-  // Wi-Fi/MQTT state detection, which can remain stale during an outage.
+  // HTTP/MQTT connectivity, which can remain stale during an outage.
   bool localAccessGranted = device_unlockForCachedRfid(uidHex);
   if (localAccessGranted) {
     Serial.println("[PN532] Cached RFID access granted");
   }
 
-  if (WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+  if (transport_httpAvailable() || mqttClient.connected()) {
     JsonDocument doc;
     doc["uid"] = uidHex;
     doc["uid_length"] = uidLength;
@@ -114,8 +114,8 @@ void pn532_loop() {
     doc["uptime_ms"] = now;
     doc["local_access_granted"] = localAccessGranted;
     doc["offline_rfid_count"] = deviceRfidAllowlistCount;
-    if (!mqtt_publishJson("/telemetry/nfc", doc)) {
-      Serial.println("[PN532] MQTT publish failed");
+    if (!transport_publishJson("/telemetry/nfc", doc)) {
+      Serial.println("[PN532] HTTP and MQTT delivery both failed");
     }
   } else if (!localAccessGranted) {
     Serial.printf(
@@ -124,7 +124,7 @@ void pn532_loop() {
     );
   }
 
-  if (!localAccessGranted && WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+  if (!localAccessGranted && (transport_httpAvailable() || mqttClient.connected())) {
     Serial.println("[PN532] UID sent to backend for online validation");
   }
 

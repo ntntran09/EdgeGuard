@@ -3,7 +3,7 @@
 
 #include "libs.h"
 #include "config.h"
-#include "mqtt.h"
+#include "http_transport.h"
 #include "camera.h"
 
 #include <ESP32-CAM_Detection_FOMO_inferencing.h>
@@ -16,7 +16,11 @@
 
 extern volatile bool deviceAiDetectionEnabled;
 extern volatile bool deviceCameraBlockedAlertEnabled;
+extern volatile bool deviceObjectLeftAlertEnabled;
+extern volatile bool deviceStrangerAlertEnabled;
+extern unsigned long deviceVisionStableAlertMs;
 extern String device_getFomoHttpResultUrl();
+extern void actuators_setAlarm(bool active);
 
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 #error "This Edge Impulse export conflicts with TensorFlow Lite Micro in ESP32 Arduino core 3.x; use core 2.0.17"
@@ -40,12 +44,12 @@ const size_t FOMO_FRAME_SAMPLE_COUNT =
 // Three bounding boxes plus the pipeline metadata fit comfortably in one
 // small HTTP request while avoiding MQTT packet-size constraints.
 const size_t FOMO_HTTP_PAYLOAD_BYTES = 896;
-// MQTT carries only a compact event notification. Images, bounding boxes and
-// detailed frame metrics continue to use the HTTP pipeline.
-const size_t FOMO_ALERT_PAYLOAD_BYTES = 192;
+// Vision alerts use HTTP first and stay compact enough for the MQTT fallback.
+const size_t FOMO_ALERT_PAYLOAD_BYTES = 256;
 // Minimum delay between two FOMO inferences. Camera-block detection is still
 // evaluated on every analyzed frame during this cooldown.
 const unsigned long FOMO_INFERENCE_COOLDOWN_MS = 1500UL;
+const unsigned long FOMO_ALARM_PRESENCE_CHECK_MS = 3000UL;
 
 struct FomoHttpMessage {
   uint32_t eventId;
@@ -129,6 +133,7 @@ bool fomoReferenceValid = false;
 bool fomoTamperReferenceValid = false;
 bool fomoAiWasEnabled = false;
 bool fomoVisionAlertSent = false;
+volatile bool fomoAutoAlarmActive = false;
 volatile bool fomoCameraBlocked = false;
 bool fomoBlockedAlertSent = false;
 uint8_t fomoWarmupFrames = 0;
@@ -138,10 +143,19 @@ unsigned long fomoStableSince = 0;
 char fomoTrackedObjectType[24] = "object";
 float fomoTrackedConfidence = 0.0f;
 bool fomoTrackedFrameCached = false;
+uint8_t fomoAlarmMissingSamples = 0;
 
 void fomo_task(void *parameter);
 void fomo_httpTask(void *parameter);
 bool fomo_postHttpResult(const FomoHttpMessage &message);
+
+void fomo_clearAutoAlarm(const char *reason) {
+  if (!fomoAutoAlarmActive) return;
+  fomoAutoAlarmActive = false;
+  fomoAlarmMissingSamples = 0;
+  if (!alarmManualOverrideActive) actuators_setAlarm(false);
+  Serial.printf("[Vision] Automatic alarm cleared: %s\n", reason);
+}
 
 void fomo_noteFailure() {
   fomoInferenceFailures++;
@@ -470,10 +484,9 @@ bool fomo_queueVisionAlert(
 ) {
   if (!fomoAlertQueue) return false;
 
-  // Detailed detection data is already delivered through HTTP. Keep MQTT as a
-  // lightweight event signal so it stays well below PubSubClient packet limits.
+  // Detailed detection data is already delivered separately. Keep this event
+  // compact so the exact same payload can use HTTP first and MQTT as fallback.
   (void)changePercent;
-  (void)stableMs;
   (void)analysis;
 
   JsonDocument doc;
@@ -485,6 +498,10 @@ bool fomo_queueVisionAlert(
     ? 0.0f
     : fomoTrackedConfidence;
   doc["event_frame_cached"] = eventFrameCached;
+  doc["stable_ms"] = stableMs;
+  doc["alarm_active"] = strcmp(alertType, "stranger_detected") == 0
+    || strcmp(alertType, "object_left") == 0;
+  doc["alarm_source"] = alarmManualOverrideActive && alarmActive ? "manual" : "vision";
 
   FomoAlertMessage message = {};
   const size_t requiredBytes = measureJson(doc) + 1;  // Include null terminator.
@@ -518,6 +535,7 @@ bool fomo_queueVisionAlert(
 }
 
 void fomo_resetVisionPipeline(bool resetBlockedState = true) {
+  fomo_clearAutoAlarm("vision pipeline reset");
   fomoVisionState = FOMO_VISION_WARMUP;
   fomoReferenceValid = false;
   fomoWarmupFrames = 0;
@@ -525,6 +543,7 @@ void fomo_resetVisionPipeline(bool resetBlockedState = true) {
   fomoVisionAlertSent = false;
   fomoTrackedConfidence = 0.0f;
   fomoTrackedFrameCached = false;
+  fomoAlarmMissingSamples = 0;
   strncpy(fomoTrackedObjectType, "object", sizeof(fomoTrackedObjectType));
   fomoTrackedObjectType[sizeof(fomoTrackedObjectType) - 1] = '\0';
   if (resetBlockedState) {
@@ -652,7 +671,7 @@ void fomo_publishResult(
   doc["event_id"] = eventId;
   doc["frame_change_percent"] = triggerChangePercent;
   doc["recheck_change_percent"] = CAMERA_FOMO_RECHECK_CHANGE_PERCENT;
-  doc["stable_alert_ms"] = VISION_STABLE_ALERT_MS;
+  doc["stable_alert_ms"] = deviceVisionStableAlertMs;
   doc["input_width"] = EI_CLASSIFIER_INPUT_WIDTH;
   doc["input_height"] = EI_CLASSIFIER_INPUT_HEIGHT;
   doc["inference_ms"] = static_cast<unsigned long>(lastFomoInferenceMs);
@@ -690,7 +709,8 @@ FomoInferenceSummary fomo_runInference(
   uint16_t frameHeight,
   uint32_t eventId,
   float triggerChangePercent,
-  bool eventFrameCached
+  bool eventFrameCached,
+  bool publishResult = true
 ) {
   FomoInferenceSummary summary = {};
   if (!fomo_resizeForInference(frameWidth, frameHeight)) return summary;
@@ -770,8 +790,51 @@ FomoInferenceSummary fomo_runInference(
   lastFomoPeopleCount = summary.peopleCount;
   lastFomoBagCount = summary.bagCount;
   lastFomoPackageCount = summary.packageCount;
-  fomo_publishResult(result, summary, eventId, triggerChangePercent, eventFrameCached);
+  if (publishResult) {
+    fomo_publishResult(result, summary, eventId, triggerChangePercent, eventFrameCached);
+  }
   return summary;
+}
+
+void fomo_verifyActiveAlarmPresence(
+  unsigned long now,
+  uint16_t frameWidth,
+  uint16_t frameHeight,
+  const FomoFrameAnalysis &analysis
+) {
+  FomoVisionState trackedState = fomoVisionState;
+  FomoInferenceSummary summary = fomo_runInference(
+    now,
+    frameWidth,
+    frameHeight,
+    fomoVisionEventId,
+    analysis.changePercent,
+    false,
+    false
+  );
+  if (!summary.completed) return;
+
+  fomo_useCurrentFrameAsReference();
+  bool stillPresent = trackedState == FOMO_VISION_TRACKING_STRANGER
+    ? summary.peopleCount > 0
+    : summary.detectionCount > summary.peopleCount;
+  if (stillPresent) {
+    fomoAlarmMissingSamples = 0;
+    return;
+  }
+
+  if (fomoAlarmMissingSamples < UINT8_MAX) fomoAlarmMissingSamples++;
+  Serial.printf(
+    "[Vision] Alarm presence check missing target (%u/2)\n",
+    fomoAlarmMissingSamples
+  );
+  if (fomoAlarmMissingSamples < 2) return;
+
+  fomo_clearAutoAlarm("tracked person or object is no longer detected");
+  fomoVisionState = FOMO_VISION_MONITORING;
+  fomoStableSince = 0;
+  fomoVisionAlertSent = false;
+  fomoTrackedFrameCached = false;
 }
 
 void fomo_classifyCurrentFrame(
@@ -820,12 +883,13 @@ void fomo_classifyCurrentFrame(
     Serial.printf(
       "[Vision] Tracking %s; alert after %lu ms without %.0f%% change\n",
       fomoTrackedObjectType,
-      VISION_STABLE_ALERT_MS,
+      deviceVisionStableAlertMs,
       CAMERA_FOMO_RECHECK_CHANGE_PERCENT
     );
     return;
   }
 
+  fomo_clearAutoAlarm("person or object left the scene");
   fomoVisionState = FOMO_VISION_MONITORING;
 }
 
@@ -845,6 +909,7 @@ void fomo_applyRecognitionResults() {
     }
 
     if (message.known && message.strangerCount == 0) {
+      fomo_clearAutoAlarm("familiar person recognized");
       fomoVisionState = FOMO_VISION_TRACKING_KNOWN_PERSON;
       fomoStableSince = 0;
       Serial.printf("[Vision] Event %lu is a familiar person\n", static_cast<unsigned long>(message.eventId));
@@ -855,7 +920,7 @@ void fomo_applyRecognitionResults() {
         "[Vision] Event %lu has %u stranger(s); starting %lu ms timer\n",
         static_cast<unsigned long>(message.eventId),
         message.strangerCount,
-        VISION_STABLE_ALERT_MS
+        deviceVisionStableAlertMs
       );
     }
   }
@@ -863,7 +928,7 @@ void fomo_applyRecognitionResults() {
 
 void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysis &analysis) {
   if (fomoVisionAlertSent || fomoStableSince == 0
-      || now - fomoStableSince < VISION_STABLE_ALERT_MS) {
+      || now - fomoStableSince < deviceVisionStableAlertMs) {
     return;
   }
 
@@ -871,6 +936,10 @@ void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysi
   if (fomoVisionState == FOMO_VISION_TRACKING_STRANGER) alertType = "stranger_detected";
   else if (fomoVisionState == FOMO_VISION_TRACKING_OBJECT) alertType = "object_left";
   if (!alertType) return;
+  if ((fomoVisionState == FOMO_VISION_TRACKING_STRANGER && !deviceStrangerAlertEnabled)
+      || (fomoVisionState == FOMO_VISION_TRACKING_OBJECT && !deviceObjectLeftAlertEnabled)) {
+    return;
+  }
 
   fomoVisionAlertSent = fomo_queueVisionAlert(
     alertType,
@@ -880,6 +949,18 @@ void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysi
     now - fomoStableSince,
     fomoTrackedFrameCached
   );
+  if (fomoVisionAlertSent) {
+    if (!alarmActive || !alarmManualOverrideActive) {
+      fomoAutoAlarmActive = true;
+      alarmManualOverrideActive = false;
+      actuators_setAlarm(true);
+    }
+    Serial.printf(
+      "[Vision] %s alarm activated after %lu ms\n",
+      alertType,
+      now - fomoStableSince
+    );
+  }
 }
 
 void fomo_processFrame(
@@ -903,6 +984,18 @@ void fomo_processFrame(
   // against the frame associated with the previous inference.
   if (lastFomoInferenceAt != 0
       && now - lastFomoInferenceAt < FOMO_INFERENCE_COOLDOWN_MS) {
+    return;
+  }
+
+  // Once AI owns an active alarm, periodically confirm presence even when the
+  // sampled scene change stays below the normal 60% reclassification gate.
+  // Two consecutive misses are required before the automatic alarm is cleared.
+  if (fomoAutoAlarmActive
+      && (fomoVisionState == FOMO_VISION_TRACKING_STRANGER
+          || fomoVisionState == FOMO_VISION_TRACKING_OBJECT)
+      && now - lastFomoInferenceAt >= FOMO_ALARM_PRESENCE_CHECK_MS
+      && analysis.changePercent < CAMERA_FOMO_RECHECK_CHANGE_PERCENT) {
+    fomo_verifyActiveAlarmPresence(now, frameWidth, frameHeight, analysis);
     return;
   }
 
@@ -1000,6 +1093,19 @@ void fomo_httpTask(void *parameter) {
       continue;
     }
 
+    if (mqtt_publishPayload(
+          "/telemetry/inference",
+          message.payload,
+          message.length
+        )) {
+      Serial.printf(
+        "[FOMO] HTTP failed; inference event %lu delivered through MQTT fallback\n",
+        static_cast<unsigned long>(message.eventId)
+      );
+      hasPendingMessage = false;
+      continue;
+    }
+
     vTaskDelay(pdMS_TO_TICKS(FOMO_HTTP_RETRY_MS));
   }
 }
@@ -1071,49 +1177,31 @@ bool fomo_postHttpResult(const FomoHttpMessage &message) {
 }
 
 void fomo_loop() {
-  if (!mqttClient.connected()) return;
-
   FomoAlertMessage alertMessage = {};
   if (!fomoAlertQueue || xQueueReceive(fomoAlertQueue, &alertMessage, 0) != pdTRUE) return;
 
-  String topic = mqtt_topic("/telemetry/vision-alert");
-  const size_t estimatedPacketBytes =
-    5 + 2 + topic.length() + alertMessage.length;  // MQTT header + topic + payload.
-
-  if (estimatedPacketBytes > MQTT_PACKET_BUFFER_BYTES) {
-    Serial.printf(
-      "[Vision] MQTT packet needs about %u bytes; configured buffer is %u bytes\n",
-      static_cast<unsigned int>(estimatedPacketBytes),
-      static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
-    );
+  if (!transport_httpAvailable() && !mqttClient.connected()) {
+    xQueueSendToFront(fomoAlertQueue, &alertMessage, 0);
     return;
   }
 
-  bool published = mqttClient.publish(
-    topic.c_str(),
-    reinterpret_cast<const uint8_t *>(alertMessage.payload),
-    alertMessage.length,
-    false
+  bool published = transport_publishPayload(
+    "/telemetry/vision-alert",
+    alertMessage.payload,
+    alertMessage.length
   );
 
   if (!published) {
-    Serial.printf(
-      "[Vision] MQTT alert publish failed: topic=%u bytes, payload=%u bytes, state=%d\n",
-      static_cast<unsigned int>(topic.length()),
-      static_cast<unsigned int>(alertMessage.length),
-      mqttClient.state()
-    );
-    // Keep the alert for the next loop instead of silently dropping it.
+    Serial.println("[Vision] HTTP and MQTT alert delivery both failed");
     if (xQueueSendToFront(fomoAlertQueue, &alertMessage, 0) != pdTRUE) {
-      Serial.println("[Vision] Could not requeue failed MQTT alert");
+      Serial.println("[Vision] Could not requeue failed alert");
     }
     return;
   }
 
   Serial.printf(
-    "[Vision] MQTT alert sent: %u-byte payload on %s\n",
-    static_cast<unsigned int>(alertMessage.length),
-    topic.c_str()
+    "[Vision] Alert delivered: %u-byte payload\n",
+    static_cast<unsigned int>(alertMessage.length)
   );
 }
 

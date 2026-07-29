@@ -5,8 +5,12 @@
 #include "config.h"
 #include "mqtt.h"
 #include "esp_heap_caps.h"
+#include <ctype.h>
 
 extern volatile bool deviceCameraPublishEnabled;
+extern bool alarmActive;
+extern bool doorOpenState;
+extern void device_handleCommand(String topic, String payload);
 
 volatile bool cameraReady = false;
 unsigned long lastCameraInitAttempt = 0;
@@ -28,11 +32,16 @@ String cameraHealthUrl;
 String cameraPublishedIp;
 bool cameraEndpointsPublished = false;
 unsigned long lastCameraEndpointAttempt = 0;
-uint8_t *cameraEventFrameBuffer = nullptr;
-size_t cameraEventFrameCapacity = 0;
-size_t cameraEventFrameLength = 0;
-uint32_t cameraEventFrameId = 0;
-unsigned long cameraEventFrameCapturedAt = 0;
+const size_t CAMERA_EVENT_FRAME_CACHE_SIZE = 4;
+struct CameraEventFrameSlot {
+  uint8_t *buffer;
+  size_t capacity;
+  size_t length;
+  uint32_t eventId;
+  unsigned long capturedAt;
+  unsigned long storedAt;
+};
+CameraEventFrameSlot cameraEventFrames[CAMERA_EVENT_FRAME_CACHE_SIZE] = {};
 
 static const char *CAMERA_STREAM_CONTENT_TYPE =
   "multipart/x-mixed-replace;boundary=edgeguard-frame";
@@ -94,7 +103,24 @@ bool camera_cacheEventFrame(
     return false;
   }
 
-  if (length > cameraEventFrameCapacity) {
+  size_t slotIndex = CAMERA_EVENT_FRAME_CACHE_SIZE;
+  size_t oldestIndex = 0;
+  unsigned long oldestStoredAt = UINT32_MAX;
+  for (size_t index = 0; index < CAMERA_EVENT_FRAME_CACHE_SIZE; index++) {
+    CameraEventFrameSlot &candidate = cameraEventFrames[index];
+    if (candidate.eventId == eventId || candidate.length == 0) {
+      slotIndex = index;
+      break;
+    }
+    if (candidate.storedAt < oldestStoredAt) {
+      oldestStoredAt = candidate.storedAt;
+      oldestIndex = index;
+    }
+  }
+  if (slotIndex == CAMERA_EVENT_FRAME_CACHE_SIZE) slotIndex = oldestIndex;
+  CameraEventFrameSlot &slot = cameraEventFrames[slotIndex];
+
+  if (length > slot.capacity) {
     uint8_t *replacement = static_cast<uint8_t *>(heap_caps_malloc(
       length,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
@@ -104,19 +130,21 @@ bool camera_cacheEventFrame(
       Serial.printf("[Camera Event] Could not allocate %u bytes\n", static_cast<unsigned int>(length));
       return false;
     }
-    if (cameraEventFrameBuffer) heap_caps_free(cameraEventFrameBuffer);
-    cameraEventFrameBuffer = replacement;
-    cameraEventFrameCapacity = length;
+    if (slot.buffer) heap_caps_free(slot.buffer);
+    slot.buffer = replacement;
+    slot.capacity = length;
   }
 
-  memcpy(cameraEventFrameBuffer, jpeg, length);
-  cameraEventFrameLength = length;
-  cameraEventFrameId = eventId;
-  cameraEventFrameCapturedAt = capturedAt;
+  memcpy(slot.buffer, jpeg, length);
+  slot.length = length;
+  slot.eventId = eventId;
+  slot.capturedAt = capturedAt;
+  slot.storedAt = millis();
   xSemaphoreGive(cameraEventFrameMutex);
   Serial.printf(
-    "[Camera Event] Cached exact frame for event %lu (%u bytes)\n",
+    "[Camera Event] Cached exact frame for event %lu in slot %u (%u bytes)\n",
     static_cast<unsigned long>(eventId),
+    static_cast<unsigned int>(slotIndex),
     static_cast<unsigned int>(length)
   );
   return true;
@@ -134,15 +162,18 @@ esp_err_t camera_indexHandler(httpd_req_t *request) {
 }
 
 esp_err_t camera_healthHandler(httpd_req_t *request) {
-  char payload[320];
+  char payload[384];
   snprintf(
     payload,
     sizeof(payload),
-    "{\"ok\":true,\"device_id\":\"%s\",\"ip\":\"%s\",\"camera_ready\":%s,\"stream_enabled\":%s,\"last_frame_bytes\":%u}",
+    "{\"ok\":true,\"device_id\":\"%s\",\"ip\":\"%s\",\"camera_ready\":%s,\"stream_enabled\":%s,\"door_open\":%s,\"alarm_active\":%s,\"uptime_ms\":%lu,\"last_frame_bytes\":%u}",
     MQTT_DEVICE_ID,
     WiFi.localIP().toString().c_str(),
     cameraReady ? "true" : "false",
     deviceCameraPublishEnabled ? "true" : "false",
+    doorOpenState ? "true" : "false",
+    alarmActive ? "true" : "false",
+    static_cast<unsigned long>(millis()),
     static_cast<unsigned int>(lastCameraFrameBytes)
   );
   httpd_resp_set_type(request, "application/json");
@@ -150,8 +181,80 @@ esp_err_t camera_healthHandler(httpd_req_t *request) {
   return httpd_resp_send(request, payload, HTTPD_RESP_USE_STRLEN);
 }
 
+bool camera_readJsonBody(httpd_req_t *request, String &body) {
+  if (request->content_len == 0 || request->content_len >= MQTT_JSON_PAYLOAD_BYTES) return false;
+  body = "";
+  body.reserve(request->content_len);
+  size_t remaining = request->content_len;
+  char chunk[256];
+  while (remaining > 0) {
+    size_t wanted = min(remaining, sizeof(chunk));
+    int received = httpd_req_recv(request, chunk, wanted);
+    if (received <= 0) return false;
+    body.concat(chunk, received);
+    remaining -= received;
+  }
+  return true;
+}
+
+esp_err_t camera_sendCommandResponse(httpd_req_t *request, const char *command) {
+  char response[192];
+  snprintf(
+    response,
+    sizeof(response),
+    "{\"ok\":true,\"transport\":\"http\",\"command\":\"%s\",\"door_open\":%s,\"alarm_active\":%s}",
+    command,
+    doorOpenState ? "true" : "false",
+    alarmActive ? "true" : "false"
+  );
+  httpd_resp_set_type(request, "application/json");
+  camera_setNoCacheHeaders(request);
+  return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t camera_commandHandler(httpd_req_t *request) {
+  String body;
+  if (!camera_readJsonBody(request, body)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_send(request, "Invalid request body", HTTPD_RESP_USE_STRLEN);
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body) || !doc["command"].is<const char *>()) {
+    httpd_resp_set_status(request, "422 Unprocessable Entity");
+    return httpd_resp_send(request, "command is required", HTTPD_RESP_USE_STRLEN);
+  }
+  String command = doc["command"].as<String>();
+  if (command.length() == 0 || command.length() > 32) {
+    httpd_resp_set_status(request, "422 Unprocessable Entity");
+    return httpd_resp_send(request, "command is invalid", HTTPD_RESP_USE_STRLEN);
+  }
+  for (size_t index = 0; index < command.length(); index++) {
+    char value = command.charAt(index);
+    if (!isalnum(static_cast<unsigned char>(value)) && value != '_' && value != '-') {
+      httpd_resp_set_status(request, "422 Unprocessable Entity");
+      return httpd_resp_send(request, "command is invalid", HTTPD_RESP_USE_STRLEN);
+    }
+  }
+
+  device_handleCommand(String("/command/") + command, body);
+  return camera_sendCommandResponse(request, command.c_str());
+}
+
+esp_err_t camera_configHandler(httpd_req_t *request) {
+  String body;
+  JsonDocument doc;
+  if (!camera_readJsonBody(request, body) || deserializeJson(doc, body)) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_send(request, "Invalid config JSON", HTTPD_RESP_USE_STRLEN);
+  }
+  device_handleCommand("/command/config", body);
+  return camera_sendCommandResponse(request, "config");
+}
+
 esp_err_t camera_captureHandler(httpd_req_t *request) {
-  if (!cameraReady || !deviceCameraPublishEnabled || !camera_take()) {
+  // Event snapshots must remain available even when live viewing is disabled.
+  if (!cameraReady || !camera_take()) {
     httpd_resp_set_status(request, "503 Service Unavailable");
     return httpd_resp_send(request, "Camera is unavailable", HTTPD_RESP_USE_STRLEN);
   }
@@ -198,9 +301,15 @@ esp_err_t camera_eventFrameHandler(httpd_req_t *request) {
     return httpd_resp_send(request, "Event frame is busy", HTTPD_RESP_USE_STRLEN);
   }
 
-  if (!cameraEventFrameBuffer
-      || cameraEventFrameLength == 0
-      || cameraEventFrameId != static_cast<uint32_t>(requestedId)) {
+  CameraEventFrameSlot *slot = nullptr;
+  for (size_t index = 0; index < CAMERA_EVENT_FRAME_CACHE_SIZE; index++) {
+    if (cameraEventFrames[index].length > 0
+        && cameraEventFrames[index].eventId == static_cast<uint32_t>(requestedId)) {
+      slot = &cameraEventFrames[index];
+      break;
+    }
+  }
+  if (!slot || !slot->buffer) {
     xSemaphoreGive(cameraEventFrameMutex);
     httpd_resp_set_status(request, "404 Not Found");
     return httpd_resp_send(request, "Exact event frame is unavailable", HTTPD_RESP_USE_STRLEN);
@@ -213,7 +322,7 @@ esp_err_t camera_eventFrameHandler(httpd_req_t *request) {
     capturedAtHeader,
     sizeof(capturedAtHeader),
     "%lu",
-    static_cast<unsigned long>(cameraEventFrameCapturedAt)
+    static_cast<unsigned long>(slot->capturedAt)
   );
   httpd_resp_set_type(request, "image/jpeg");
   camera_setNoCacheHeaders(request);
@@ -221,8 +330,8 @@ esp_err_t camera_eventFrameHandler(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "X-Frame-Uptime-Ms", capturedAtHeader);
   esp_err_t result = httpd_resp_send(
     request,
-    reinterpret_cast<const char *>(cameraEventFrameBuffer),
-    cameraEventFrameLength
+    reinterpret_cast<const char *>(slot->buffer),
+    slot->length
   );
   xSemaphoreGive(cameraEventFrameMutex);
   return result;
@@ -297,7 +406,7 @@ void camera_refreshUrls() {
 }
 
 void camera_startHttpServer() {
-  if (!cameraReady || WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) return;
   cameraHttpServersStopping = false;
 
   if (!cameraControlHttpServer) {
@@ -330,6 +439,18 @@ void camera_startHttpServer() {
     eventFrameUri.method = HTTP_GET;
     eventFrameUri.handler = camera_eventFrameHandler;
     httpd_register_uri_handler(cameraControlHttpServer, &eventFrameUri);
+
+    httpd_uri_t commandUri = {};
+    commandUri.uri = "/api/command";
+    commandUri.method = HTTP_POST;
+    commandUri.handler = camera_commandHandler;
+    httpd_register_uri_handler(cameraControlHttpServer, &commandUri);
+
+    httpd_uri_t configUri = {};
+    configUri.uri = "/api/config";
+    configUri.method = HTTP_POST;
+    configUri.handler = camera_configHandler;
+    httpd_register_uri_handler(cameraControlHttpServer, &configUri);
 
     Serial.printf(
       "[Camera HTTP] Control server on port %u: %s\n",
@@ -452,6 +573,24 @@ void camera_restartAfterCaptureFailures(unsigned long now) {
 
 void camera_loop() {
   unsigned long now = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    cameraEndpointsPublished = false;
+    if (cameraControlHttpServer || cameraStreamHttpServer) camera_stopHttpServer();
+    return;
+  }
+
+  camera_refreshUrls();
+  camera_startHttpServer();
+
+  // MQTT is intentionally retained for initial IP/HTTP endpoint discovery.
+  if (mqttClient.connected()
+      && !cameraEndpointsPublished
+      && (lastCameraEndpointAttempt == 0
+          || now - lastCameraEndpointAttempt >= CAMERA_ENDPOINT_RETRY_MS)) {
+    lastCameraEndpointAttempt = now;
+    camera_publishEndpoints();
+  }
+
   if (!cameraReady) {
     if (now - lastCameraInitAttempt >= CAMERA_INIT_RETRY_MS) {
       Serial.println("[Camera] Retrying initialization");
@@ -465,24 +604,7 @@ void camera_loop() {
     return;
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    cameraEndpointsPublished = false;
-    camera_stopHttpServer();
-    return;
-  }
-
-  camera_refreshUrls();
-  camera_startHttpServer();
-  if (!mqttClient.connected()) {
-    cameraEndpointsPublished = false;
-    return;
-  }
-
-  if (!cameraEndpointsPublished
-      && (lastCameraEndpointAttempt == 0 || now - lastCameraEndpointAttempt >= CAMERA_ENDPOINT_RETRY_MS)) {
-    lastCameraEndpointAttempt = now;
-    camera_publishEndpoints();
-  }
+  if (!mqttClient.connected()) cameraEndpointsPublished = false;
 }
 
 #endif

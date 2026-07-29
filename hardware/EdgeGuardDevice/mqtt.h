@@ -54,39 +54,32 @@ void mqtt_serviceWifi() {
   }
 }
 
-bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
+bool mqtt_publishPayload(
+  String suffix,
+  const char *payload,
+  size_t size,
+  bool retain = false
+) {
   if (!mqttClient.connected()) return false;
 
   String topic = mqtt_topic(suffix);
-  size_t measuredSize = measureJson(doc);
-  if (measuredSize == 0 || measuredSize >= MQTT_JSON_PAYLOAD_BYTES) {
+  if (!payload || size == 0 || size >= MQTT_JSON_PAYLOAD_BYTES) {
     Serial.printf(
       "[MQTT] JSON payload is too large: %u bytes for %s (limit %u)\n",
-      static_cast<unsigned int>(measuredSize),
+      static_cast<unsigned int>(size),
       topic.c_str(),
       static_cast<unsigned int>(MQTT_JSON_PAYLOAD_BYTES - 1)
     );
     return false;
   }
 
-  const size_t estimatedPacketBytes = 5 + 2 + topic.length() + measuredSize;
+  const size_t estimatedPacketBytes = 5 + 2 + topic.length() + size;
   if (estimatedPacketBytes > MQTT_PACKET_BUFFER_BYTES) {
     Serial.printf(
       "[MQTT] Packet is too large: about %u bytes for %s (buffer %u)\n",
       static_cast<unsigned int>(estimatedPacketBytes),
       topic.c_str(),
       static_cast<unsigned int>(MQTT_PACKET_BUFFER_BYTES)
-    );
-    return false;
-  }
-
-  char payload[MQTT_JSON_PAYLOAD_BYTES];
-  size_t size = serializeJson(doc, payload, sizeof(payload));
-  if (size == 0 || size >= sizeof(payload)) {
-    Serial.printf(
-      "[MQTT] JSON serialization failed for %s: %u bytes\n",
-      topic.c_str(),
-      static_cast<unsigned int>(size)
     );
     return false;
   }
@@ -107,6 +100,15 @@ bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
     );
   }
   return published;
+}
+
+bool mqtt_publishJson(String suffix, JsonDocument &doc, bool retain = false) {
+  size_t measuredSize = measureJson(doc);
+  if (measuredSize == 0 || measuredSize >= MQTT_JSON_PAYLOAD_BYTES) return false;
+  char payload[MQTT_JSON_PAYLOAD_BYTES];
+  size_t size = serializeJson(doc, payload, sizeof(payload));
+  if (size == 0 || size >= sizeof(payload)) return false;
+  return mqtt_publishPayload(suffix, payload, size, retain);
 }
 
 void mqtt_publishStatus(const char *status, bool retain = true) {

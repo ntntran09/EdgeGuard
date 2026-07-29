@@ -14,9 +14,12 @@ const char *MQTT_TOPIC_BASE = "/EdgeGuard/device_001";
 const uint16_t MQTT_PACKET_BUFFER_BYTES = 2048;
 const size_t MQTT_JSON_PAYLOAD_BYTES = 1536;
 const char *DEFAULT_FOMO_HTTP_RESULT_URL = "http://172.20.10.3:3000/api/fomo/inference";
+const char *DEFAULT_BACKEND_HTTP_URL = "http://172.20.10.3:3000";
 const unsigned long FOMO_HTTP_RETRY_MS = 2000;
 const uint16_t FOMO_HTTP_CONNECT_TIMEOUT_MS = 2000;
 const uint16_t FOMO_HTTP_RESPONSE_TIMEOUT_MS = 4000;
+const uint16_t TELEMETRY_HTTP_CONNECT_TIMEOUT_MS = 1500;
+const uint16_t TELEMETRY_HTTP_RESPONSE_TIMEOUT_MS = 2500;
 
 // Peripheral pins from the supplied ESP32-CAM wiring diagram.
 #define PN532_SDA_PIN 13
@@ -67,7 +70,8 @@ const uint8_t CAMERA_CHANGE_SAMPLE_HEIGHT = 15;
 const uint8_t CAMERA_PIXEL_CHANGE_THRESHOLD = 24;
 const float CAMERA_FOMO_TRIGGER_CHANGE_PERCENT = 30.0f;
 const float CAMERA_FOMO_RECHECK_CHANGE_PERCENT = 60.0f;
-const unsigned long VISION_STABLE_ALERT_MS = 5000;
+const unsigned long MIN_VISION_STABLE_ALERT_MS = 5000;
+const unsigned long MAX_VISION_STABLE_ALERT_MS = 3600000;
 // Occlusion is confirmed across several samples to avoid one-frame exposure
 // changes. Extreme darkness/brightness or a nearly textureless frame counts.
 const uint8_t CAMERA_BLOCKED_CONFIRM_SAMPLES = 3;

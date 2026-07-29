@@ -4,7 +4,7 @@ import { backendApiUrl } from '@/lib/backend-url';
 
 export async function syncDeviceAccessConfig() {
   try {
-    const response = await fetch(backendApiUrl('/api/mqtt/sync-access'), {
+    const response = await fetch(backendApiUrl('/api/device/sync-access'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       cache: 'no-store',
@@ -17,7 +17,7 @@ export async function syncDeviceAccessConfig() {
 
     return true;
   } catch (error) {
-    console.warn('[Device sync] Access config was saved for the next MQTT reconnect:', error);
+    console.warn('[Device sync] HTTP delivery failed; MQTT fallback was unavailable:', error);
     return false;
   }
 }
