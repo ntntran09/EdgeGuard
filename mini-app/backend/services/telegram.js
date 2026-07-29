@@ -1,11 +1,33 @@
 import fs from 'fs';
 
-export function createTelegramService(options) {
+export function createTelegramService(options = {}) {
   const botToken = options.botToken || process.env.TELEGRAM_BOT_TOKEN;
   const chatId = options.chatId || process.env.TELEGRAM_CHAT_ID;
   const ready = Boolean(options.enabled !== false && botToken && chatId);
+  let cachedBotUsername = options.botUsername || null;
 
   return {
+    async getBotUsername() {
+      if (cachedBotUsername) return cachedBotUsername;
+      if (!ready) return null;
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+        const data = await res.json();
+        if (data.ok && data.result?.username) {
+          cachedBotUsername = data.result.username;
+          return cachedBotUsername;
+        }
+      } catch (err) {
+        console.error('[Telegram] Failed to fetch bot info via getMe:', err.message);
+      }
+      return null;
+    },
+
+    async getBotLink() {
+      const username = await this.getBotUsername();
+      return username ? `https://t.me/${username}` : 'https://t.me';
+    },
+
     async sendMessage(text) {
       if (!ready) {
         console.log('[Telegram] Disabled or missing credentials.');

@@ -88,6 +88,16 @@ export default function SettingsPage() {
   const [newFaceImageName, setNewFaceImageName] = useState('');
   const [faceUploadInputKey, setFaceUploadInputKey] = useState(0);
 
+  const [editingEmailUserId, setEditingEmailUserId] = useState<string | null>(null);
+  const [expandedEmailUserId, setExpandedEmailUserId] = useState<string | null>(null);
+  const [emailInput, setEmailInput] = useState('');
+  // OTP flow
+  const [otpStep, setOtpStep] = useState<Record<string, 'idle' | 'sending' | 'otp_sent' | 'verifying'>>({});
+  const [otpInput, setOtpInput] = useState('');
+  const [confirmDeleteEmailUserId, setConfirmDeleteEmailUserId] = useState<string | null>(null);
+  const [me, setMe] = useState<TelegramDeviceUser | null>(null);
+  const [meRole, setMeRole] = useState<'admin' | 'user'>('user');
+
   const activeCards = useMemo(() => cards.filter((card) => card.isActive).length, [cards]);
   const isRfidCardConfigEnabled = Boolean(alertConfig.rfidCardConfigurationEnabled);
 
@@ -99,12 +109,13 @@ export default function SettingsPage() {
   const loadSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [cardsRes, settingsRes, facesRes, statusRes, usersRes] = await Promise.all([
-        api.getCards(),
-        api.getSettings(),
-        api.getFaces(),
+      const [cardsRes, settingsRes, facesRes, statusRes, usersRes, meRes] = await Promise.all([
+        api.getCards().catch(() => ({ cards: [], pending: [] })),
+        api.getSettings().catch(() => ({ settings: null })),
+        api.getFaces().catch(() => ({ faces: [] })),
         api.getStatus().catch(() => null),
-        api.getUsers(),
+        api.getUsers().catch(() => ({ users: [] })),
+        api.getMe().catch(() => ({ user: null, role: 'user' as const })),
       ]);
 
       setCards(cardsRes.cards || []);
@@ -112,6 +123,9 @@ export default function SettingsPage() {
       setFaces(facesRes.faces || []);
       setCameraEndpoints(statusRes?.cameraEndpoints || null);
       setTelegramUsers(usersRes.users || []);
+      if (meRes.user) setMe(meRes.user);
+      if (meRes.role) setMeRole(meRes.role);
+
       if (settingsRes.settings) {
         setAlertConfig((prev) => ({
           ...prev,
@@ -267,6 +281,36 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveUserEmail = async (userId: string, emailValue: string | null, otp?: string) => {
+    setActionLoading(true);
+    try {
+      const result = await api.updateUserEmail(userId, emailValue, undefined, otp);
+      setTelegramUsers((current) => current.map((item) => item.id === userId ? result.user : item));
+      setEditingEmailUserId(null);
+      setEmailInput('');
+      setOtpInput('');
+      setOtpStep(p => ({ ...p, [userId]: 'idle' }));
+      showToast(emailValue ? 'Đã lưu Email nhận cảnh báo thành công' : 'Đã xóa Email nhận cảnh báo');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Không thể lưu Email');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleToggleEmailAlert = async (user: TelegramDeviceUser) => {
+    setActionLoading(true);
+    try {
+      const result = await api.updateUserEmail(user.id, user.email, !user.emailAlertEnabled);
+      setTelegramUsers((current) => current.map((item) => item.id === user.id ? result.user : item));
+      showToast(result.user.emailAlertEnabled ? 'Đã bật nhận Email cảnh báo' : 'Đã tắt nhận Email cảnh báo');
+    } catch {
+      showToast('Không thể thay đổi cài đặt nhận Email');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (isLoading) return <div className="empty-state">Đang tải cài đặt...</div>;
 
   const titleMap: Record<SettingsSection, string> = {
@@ -303,8 +347,8 @@ export default function SettingsPage() {
           <button className="settings-menu-card" onClick={() => setSection('users')}>
             <ShieldFilledIcon size={24} />
             <span>
-              <strong>Người dùng Telegram</strong>
-              <small>{telegramUsers.filter((user) => !user.isActive).length} tài khoản chờ duyệt</small>
+              <strong>Người dùng Telegram & Email</strong>
+              <small>{telegramUsers.length} tài khoản ({telegramUsers.filter((u) => u.email).length} có email nhận tin)</small>
             </span>
             <ChevronRightFilledIcon size={18} />
           </button>
@@ -424,32 +468,171 @@ export default function SettingsPage() {
           <div className="rfid-list">
             {telegramUsers.length === 0 ? (
               <div className="empty-state">Chưa có tài khoản Telegram nào gửi /start.</div>
-            ) : telegramUsers.map((user) => (
-              <div className="rfid-card-row" key={user.id}>
-                <div className="rfid-icon"><ShieldFilledIcon size={22} /></div>
-                <div className="rfid-card-copy">
-                  <div>
-                    <strong>{user.displayName}</strong>
-                    <span className={`badge ${user.role === 'admin' || user.isActive ? 'badge-success' : 'badge-warning'}`}>
-                      {user.role === 'admin' ? 'Admin' : user.isActive ? 'Đã cấp quyền' : 'Chờ duyệt'}
-                    </span>
+            ) : telegramUsers.map((user) => {
+              const isSelf = me && String(me.telegramId) === String(user.telegramId);
+              const canEditEmail = (meRole === 'admin' || isSelf) && (user.isActive || user.role === 'admin');
+              const isEditingEmail = editingEmailUserId === user.id;
+              const isExpandedEmail = expandedEmailUserId === user.id;
+
+              return (
+                <div key={user.id}>
+                  {/* rfid-card-row — giữ nguyên y chang commit, không đổi gì */}
+                  <div className="rfid-card-row">
+                    <div className="rfid-icon"><ShieldFilledIcon size={22} /></div>
+                    <div className="rfid-card-copy">
+                      <div>
+                        <strong>{user.displayName}</strong>
+                        <span className={`badge ${user.role === 'admin' || user.isActive ? 'badge-success' : 'badge-warning'}`}>
+                          {user.role === 'admin' ? 'Admin' : user.isActive ? 'Đã cấp quyền' : 'Chờ duyệt'}
+                        </span>
+                      </div>
+                      <small>Telegram ID: {user.telegramId}</small>
+                      <small>Đăng ký {formatTimeAgo(user.addedAt)}</small>
+                    </div>
+                    <div className="row-actions">
+                      {canEditEmail && (
+                        <button
+                          className="mini-btn"
+                          style={{ color: user.email ? (user.emailAlertEnabled !== false ? '#4ade80' : '#888') : undefined }}
+                          onClick={() => {
+                            const opening = expandedEmailUserId !== user.id;
+                            setExpandedEmailUserId(opening ? user.id : null);
+                            if (!opening) { setEditingEmailUserId(null); setEmailInput(''); }
+                          }}
+                        >
+                          {user.email ? '✉ Email' : 'Email'}
+                        </button>
+                      )}
+                      {user.role !== 'admin' && (
+                        <button
+                          className={`mini-btn ${user.isActive ? 'danger' : ''}`}
+                          onClick={() => void handleUserAccess(user)}
+                          disabled={actionLoading}
+                        >
+                          {user.isActive ? 'Thu hồi' : 'Cấp quyền'}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <small>Telegram ID: {user.telegramId}</small>
-                  <small>Đăng ký {formatTimeAgo(user.addedAt)}</small>
+
+                  {/* Email panel — sibling bên dưới, chỉ hiện khi bấm nút Email */}
+                  {isExpandedEmail && (() => {
+                    const step = otpStep[user.id] ?? 'idle';
+                    const isConfirmingDelete = confirmDeleteEmailUserId === user.id;
+
+                    // --- Xoá email: confirm trước ---
+                    if (isConfirmingDelete) {
+                      return (
+                        <div style={{ padding: '8px 14px 10px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <small style={{ flex: 1, color: '#f87171' }}>Xoá email? Sẽ gửi thông báo tới {user.email}.</small>
+                          <button className="mini-btn danger" style={{ fontSize: 12 }}
+                            onClick={() => { setConfirmDeleteEmailUserId(null); void handleSaveUserEmail(user.id, null); }}
+                            disabled={actionLoading}>Xác nhận xóa</button>
+                          <button className="mini-btn" style={{ fontSize: 12 }}
+                            onClick={() => setConfirmDeleteEmailUserId(null)}>Hủy</button>
+                        </div>
+                      );
+                    }
+
+                    // --- Nhập email + OTP ---
+                    if (isEditingEmail) {
+                      return (
+                        <div style={{ padding: '8px 14px 10px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {/* Bước 1: nhập email */}
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              type="email"
+                              placeholder="email@example.com"
+                              value={emailInput}
+                              onChange={(e) => setEmailInput(e.target.value)}
+                              autoFocus
+                              disabled={step === 'otp_sent' || step === 'sending'}
+                              style={{
+                                flex: 1, padding: '6px 10px', borderRadius: 6,
+                                border: '1px solid rgba(255,255,255,0.15)',
+                                background: 'rgba(255,255,255,0.07)',
+                                color: 'inherit', fontSize: 13,
+                                opacity: step === 'otp_sent' ? 0.5 : 1,
+                              }}
+                            />
+                            {step !== 'otp_sent' && (
+                              <button className="mini-btn" style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+                                onClick={async () => {
+                                  if (!emailInput.trim()) return;
+                                  setOtpStep(p => ({ ...p, [user.id]: 'sending' }));
+                                  try {
+                                    const res = await fetch('/api/users/email-otp', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ userId: user.id, email: emailInput.trim() }),
+                                    });
+                                    const data = await res.json() as { ok: boolean; error?: string };
+                                    if (!data.ok) { showToast(data.error ?? 'Gửi OTP thất bại'); setOtpStep(p => ({ ...p, [user.id]: 'idle' })); return; }
+                                    setOtpStep(p => ({ ...p, [user.id]: 'otp_sent' }));
+                                    setOtpInput('');
+                                  } catch { showToast('Lỗi kết nối'); setOtpStep(p => ({ ...p, [user.id]: 'idle' })); }
+                                }}
+                                disabled={step === 'sending' || actionLoading}>
+                                {step === 'sending' ? 'Đang gửi...' : 'Gửi OTP'}
+                              </button>
+                            )}
+                            <button className="mini-btn" style={{ fontSize: 12 }}
+                              onClick={() => { setEditingEmailUserId(null); setEmailInput(''); setOtpInput(''); setOtpStep(p => ({ ...p, [user.id]: 'idle' })); }}>Hủy</button>
+                          </div>
+
+                          {/* Bước 2: nhập OTP */}
+                          {step === 'otp_sent' && (
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <small style={{ color: '#4ade80', flexShrink: 0 }}>OTP đã gửi →</small>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Nhập mã 6 số"
+                                maxLength={6}
+                                value={otpInput}
+                                onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                                onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveUserEmail(user.id, emailInput.trim(), otpInput); }}
+                                autoFocus
+                                style={{
+                                  flex: 1, padding: '6px 10px', borderRadius: 6,
+                                  border: '1px solid rgba(74,222,128,0.4)',
+                                  background: 'rgba(74,222,128,0.06)',
+                                  color: 'inherit', fontSize: 14, letterSpacing: 4, fontWeight: 600,
+                                }}
+                              />
+                              <button className="mini-btn" style={{ background: '#16a34a', color: '#fff', fontSize: 12 }}
+                                onClick={() => void handleSaveUserEmail(user.id, emailInput.trim(), otpInput)}
+                                disabled={actionLoading || otpInput.length < 6}>Xác nhận</button>
+                              <button className="mini-btn" style={{ fontSize: 12 }}
+                                onClick={() => setOtpStep(p => ({ ...p, [user.id]: 'idle' }))}>Gửi lại</button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // --- Hiển thị email hiện tại ---
+                    return (
+                      <div style={{ padding: '8px 14px 10px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <small style={{ flex: 1, fontStyle: user.email ? 'normal' : 'italic', opacity: user.email ? 1 : 0.4, color: user.email ? (user.emailAlertEnabled !== false ? '#4ade80' : '#888') : undefined }}>
+                          {user.email ?? 'Chưa có email'}
+                          {user.email && user.emailAlertEnabled === false && <span style={{ marginLeft: 6, opacity: 0.6 }}>(Tắt)</span>}
+                        </small>
+                        {user.email && <ToggleSwitch checked={user.emailAlertEnabled !== false} onChange={() => void handleToggleEmailAlert(user)} label="Bật/tắt email" />}
+                        <button className="mini-btn" style={{ fontSize: 12 }}
+                          onClick={() => { setEditingEmailUserId(user.id); setEmailInput(user.email || ''); setOtpStep(p => ({ ...p, [user.id]: 'idle' })); }}
+                          disabled={actionLoading}>
+                          {user.email ? 'Đổi' : '+ Thêm'}
+                        </button>
+                        {user.email && <button className="mini-btn danger" style={{ fontSize: 12 }}
+                          onClick={() => setConfirmDeleteEmailUserId(user.id)}
+                          disabled={actionLoading}>Xóa</button>}
+                      </div>
+                    );
+                  })()}
                 </div>
-                {user.role !== 'admin' && (
-                  <div className="row-actions">
-                    <button
-                      className={`mini-btn ${user.isActive ? 'danger' : ''}`}
-                      onClick={() => void handleUserAccess(user)}
-                      disabled={actionLoading}
-                    >
-                      {user.isActive ? 'Thu hồi' : 'Cấp quyền'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}

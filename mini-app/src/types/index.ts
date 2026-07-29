@@ -110,6 +110,8 @@ export interface TelegramDeviceUser {
   displayName: string;
   role: DeviceRole;
   isActive: boolean;
+  email?: string | null;
+  emailAlertEnabled?: boolean;
   addedAt: string;
 }
 

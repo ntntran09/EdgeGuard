@@ -15,6 +15,20 @@ let lastAiLogTime = 0;
 let lastAiLogEventKey = null;
 const AI_LOG_COOLDOWN_MS = 8000;
 
+const notificationCooldowns = new Map();
+const NOTIFICATION_COOLDOWN_MS = 2 * 60 * 1000; // Cooldown 2 phút cho thông báo email/telegram cùng loại
+
+function checkAndTouchNotificationCooldown(deviceId, alertType) {
+  const key = `${deviceId}:${alertType}`;
+  const lastTime = notificationCooldowns.get(key) || 0;
+  const now = Date.now();
+  if (now - lastTime < NOTIFICATION_COOLDOWN_MS) {
+    return false;
+  }
+  notificationCooldowns.set(key, now);
+  return true;
+}
+
 const TELEMETRY_KEYS = {
   status: '/status',
   environment: '/telemetry/environment',
@@ -379,7 +393,39 @@ export function createMqttService() {
     }
   }
 
-  async function captureEventImage({ eventId = null, exactFrame = false } = {}) {
+  async function captureEventImage({ eventId = null, exactFrame = false, payloadImageBase64 = null } = {}) {
+    console.log('[MQTT captureEventImage] Called with payloadImageBase64 length:', payloadImageBase64 ? payloadImageBase64.length : 'none');
+    if (payloadImageBase64) {
+      try {
+        const frame = createTransientImageFromJson(
+          { image_base64: payloadImageBase64 },
+          { source: 'telemetry_payload_base64', deviceId: config.mqtt.deviceId }
+        );
+        const publicFrame = { ...frame };
+        delete publicFrame.buffer;
+        latestFrame = frame;
+        snapshot.latestImage = publicFrame;
+        snapshot.summary.cameraReady = true;
+        snapshot.summary.cameraLastFrameAt = frame.receivedAt;
+        snapshot.summary.cameraLastFrameBytes = frame.buffer.length;
+        snapshot.summary.updatedAt = frame.receivedAt;
+        for (const subscriber of frameSubscribers) {
+          try {
+            subscriber(frame);
+          } catch (error) {
+            console.error('[MQTT] Live-frame subscriber failed', error);
+          }
+        }
+        return {
+          imagePath: frame.base64,
+          source: 'telemetry_payload_base64',
+          eventId,
+        };
+      } catch (err) {
+        console.warn('[MQTT] Failed to process payloadImageBase64:', err.message);
+      }
+    }
+
     const captureUrl = exactFrame
       ? cameraEventFrameEndpoint(snapshot.summary, eventId)
       : cameraCaptureEndpoint(snapshot.summary);
@@ -474,7 +520,7 @@ export function createMqttService() {
         } : {}),
       };
     } catch (error) {
-      console.error('[MQTT] Could not capture a camera frame for AI event:', error);
+      console.warn(`[MQTT] Could not capture a camera frame for AI event: ${error}`);
       if (exactFrame) {
         return mqttEventImage
           ?? { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
@@ -489,7 +535,8 @@ export function createMqttService() {
 
   async function recordAiInference(parsed, detections) {
     const eventId = Number(parsed.event_id);
-    const eventImage = await captureEventImage({ eventId, exactFrame: true });
+    const payloadImage = parsed.image_base64 || parsed.imageBase64 || parsed.data;
+    const eventImage = await captureEventImage({ eventId, exactFrame: true, payloadImageBase64: payloadImage });
 
     const isPersonDetected =
       String(parsed.label || '').toLowerCase().includes('person') ||
@@ -670,23 +717,36 @@ export function createMqttService() {
 
     const alertSeverity = alert.severity || 'info';
     if (alertSeverity === 'danger' || alertSeverity === 'warning') {
-      const messageText = `*[CẢNH BÁO EDGEGUARD]*\n` +
-                          `• *Mức độ:* ${alertSeverity.toUpperCase()}\n` +
-                          `• *Loại:* ${alert.alertType}\n` +
-                          `• *Nội dung:* ${alert.message}\n` +
-                          `• *Thời gian:* ${new Date().toLocaleString('vi-VN')}`;
+      const canNotify = checkAndTouchNotificationCooldown(alert.deviceId || config.mqtt.deviceId, alert.alertType);
+      if (!canNotify) {
+        console.log(`[Anti-SPAM] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 2m). DB record was saved.`);
+      } else {
+        const messageText = `*[CẢNH BÁO EDGEGUARD]*\n` +
+                            `• *Mức độ:* ${alertSeverity.toUpperCase()}\n` +
+                            `• *Loại:* ${alert.alertType}\n` +
+                            `• *Nội dung:* ${alert.message}\n` +
+                            `• *Thời gian:* ${new Date().toLocaleString('vi-VN')}`;
 
-      telegramService.sendImage(imagePath, messageText).catch((err) => {
-        console.error('[MQTT] Telegram notify failed:', err);
-      });
+        telegramService.sendImage(imagePath, messageText).catch((err) => {
+          console.error('[MQTT] Telegram notify failed:', err);
+        });
 
-      emailService.sendImage(
-        imagePath, 
-        messageText, 
-        `[EdgeGuard Alert] ${alert.message}`
-      ).catch((err) => {
-        console.error('[MQTT] Email notify failed:', err);
-      });
+        emailService.sendImage(
+          imagePath, 
+          messageText, 
+          `[EdgeGuard Alert] ${alert.message}`,
+          await supabaseService.getActiveDeviceNotificationEmails(alert.deviceId),
+          {
+            severity: alertSeverity,
+            message: alert.message,
+            deviceId: alert.deviceId || config.mqtt.deviceId,
+            time: new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+            telegramBotLink: await telegramService.getBotLink(),
+          }
+        ).catch((err) => {
+          console.error('[MQTT] Email notify failed:', err);
+        });
+      }
     }
 
     return alertResult;
@@ -701,19 +761,25 @@ export function createMqttService() {
     }
 
     const eventId = Number(parsed.event_id);
-    const eventImage = await captureEventImage({ eventId, exactFrame: true });
+    const payloadImage = parsed.image_base64 || parsed.imageBase64 || parsed.data;
+    const eventImage = await captureEventImage({ eventId, exactFrame: true, payloadImageBase64: payloadImage });
     const alertMessages = {
       stranger_detected: 'Phát hiện người lạ đứng yên trong vùng quan sát',
       object_left: 'Phát hiện vật thể bị để lại trong vùng quan sát',
       camera_blocked: 'Phát hiện camera bị che hoặc mất tầm nhìn',
     };
+    const cleanedMetadata = { ...parsed };
+    delete cleanedMetadata.image_base64;
+    delete cleanedMetadata.imageBase64;
+    delete cleanedMetadata.data;
+
     await insertAlertWithEventImage({
       deviceId: config.mqtt.deviceId,
       alertType,
       message: alertMessages[alertType],
       severity: alertType === 'object_left' ? 'warning' : 'danger',
       source: 'ai',
-      metadata: parsed,
+      metadata: cleanedMetadata,
     }, eventImage);
   }
 
@@ -975,8 +1041,25 @@ export function createMqttService() {
       if (latestFrame && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS) subscriber(latestFrame);
       return () => frameSubscribers.delete(subscriber);
     },
-    publishJson(topic, message, options = {}) {
-      return publish(topic, JSON.stringify(message), options);
+    async publishJson(topic, message, options = {}) {
+      const payloadStr = JSON.stringify(message);
+      let result = null;
+      if (client && client.connected) {
+        try {
+          result = await publish(topic, payloadStr, options);
+        } catch (err) {
+          console.warn('[MQTT] Broker publish failed, proceeding with local dispatch:', err.message);
+        }
+      }
+      if (typeof topic === 'string') {
+        const rawBuffer = Buffer.from(payloadStr);
+        if (topic.startsWith(`${topicBase}/image`)) {
+          await handleImageMessage(topic, rawBuffer).catch((e) => console.error('[MQTT] Local image dispatch failed:', e));
+        } else {
+          handleTelemetryMessage(topic, rawBuffer);
+        }
+      }
+      return result;
     },
     publishCommand(command, payload = {}) {
       const safeCommand = command.trim();

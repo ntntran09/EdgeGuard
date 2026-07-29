@@ -97,11 +97,16 @@ create table if not exists public.telegram_device_users (
   telegram_id text not null,
   display_name text not null default 'Người dùng Telegram',
   role text not null default 'user' check (role in ('admin', 'user')),
+  email text check (email is null or email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
+  email_alert_enabled boolean not null default true,
   is_active boolean not null default true,
   added_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (device_id, telegram_id)
 );
+
+alter table public.telegram_device_users add column if not exists email text;
+alter table public.telegram_device_users add column if not exists email_alert_enabled boolean not null default true;
 
 -- RFID/NFC access credentials.
 create table if not exists public.rfid_credentials (

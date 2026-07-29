@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -33,7 +33,7 @@ if (args.has('--help') || args.has('-h')) {
 
 const port = Number(process.env.PORT || readEnvFiles().PORT || 4000);
 const cloudflaredPath = process.env.CLOUDFLARED_PATH
-  || (isWindows ? 'C:\\tmp\\edgeguard-cloudflared.exe' : 'cloudflared');
+  || (fs.existsSync('/tmp/cloudflared') ? '/tmp/cloudflared' : (isWindows ? 'C:\\tmp\\edgeguard-cloudflared.exe' : 'cloudflared'));
 
 const children = new Set();
 let shuttingDown = false;

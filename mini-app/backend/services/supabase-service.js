@@ -100,12 +100,17 @@ async function uploadImageToStorage({ deviceId, imagePath, metadata, folder = 'e
     `${now.toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}.${extension}`,
   ].join('/');
 
+  const storageMetadata = {
+    deviceId: String(deviceId || config.mqtt.deviceId || 'device'),
+    folder: String(safeFolder),
+  };
+
   const { error } = await supabase.storage
     .from(config.supabase.imageBucket)
     .upload(objectPath, parsed.buffer, {
       contentType: parsed.contentType,
       upsert: false,
-      metadata: metadata || {},
+      metadata: storageMetadata,
     });
 
   if (error) throw error;
@@ -383,6 +388,34 @@ export const supabaseService = {
       .maybeSingle();
     if (error) throw new Error(`Cannot verify Telegram user: ${error.message}`);
     return Boolean(data);
+  },
+
+  async getActiveDeviceNotificationEmails(deviceId) {
+    const defaultReceiver = process.env.EMAIL_RECEIVER;
+    if (!supabase) return defaultReceiver ? [defaultReceiver] : [];
+
+    const targetDeviceId = deviceId || config.mqtt.deviceId;
+    const { data, error } = await supabase
+      .from('telegram_device_users')
+      .select('email')
+      .eq('device_id', targetDeviceId)
+      .eq('is_active', true)
+      .eq('email_alert_enabled', true)
+      .not('email', 'is', null);
+
+    if (error) {
+      console.error('[Supabase] Error fetching notification emails:', error.message);
+      return defaultReceiver ? [defaultReceiver] : [];
+    }
+
+    const emails = (data || [])
+      .map((row) => String(row.email || '').trim().toLowerCase())
+      .filter(Boolean);
+
+    // Unique email list
+    const uniqueEmails = Array.from(new Set(emails));
+    if (uniqueEmails.length > 0) return uniqueEmails;
+    return defaultReceiver ? [defaultReceiver] : [];
   },
 
   async getDeviceSettings(deviceId) {

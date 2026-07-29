@@ -10,7 +10,10 @@
     "lint": "eslint",
     "test:auth": "node --test --experimental-test-isolation=none tests/telegram-auth.test.mjs tests/telegram-bot-update.test.mjs",
     "telegram": "npm run build && node scripts/run-telegram-miniapp.mjs --force --skip-build",
-    "telegram:quick": "node scripts/run-telegram-miniapp.mjs --force --skip-build"
+    "telegram:quick": "node scripts/run-telegram-miniapp.mjs --force --skip-build",
+    "test:telegram": "node scripts/test-telegram-direct.mjs",
+    "test:alert": "node scripts/test-alert-simulation.mjs",
+    "test:cam": "node scripts/test-camera-simulation.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.700.0",
