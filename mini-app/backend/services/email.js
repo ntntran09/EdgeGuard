@@ -155,8 +155,8 @@ export function createEmailService(options = {}) {
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Loại:</span> ${escapeHtml(alertType)}</p>
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Mô tả:</span> ${escapeHtml(alertMessage)}</p>
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Thời gian:</span> ${escapeHtml(formattedTime)}</p>
-      ${buttonBlock}
       ${imageBlock}
+      ${buttonBlock}
     </div>
     <div style="padding:14px 20px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:12px;line-height:1.45;">
       Email này được gửi tự động từ hệ thống EdgeGuard. Thông báo email trùng loại được giới hạn tối đa 1 lần mỗi phút.
