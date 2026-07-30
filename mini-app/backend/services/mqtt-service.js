@@ -40,6 +40,7 @@ const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
 const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
 const LIVE_FRAME_MAX_AGE_MS = 5000;
+const DEVICE_ONLINE_MAX_AGE_MS = 30 * 1000;
 const EVENT_FRAME_MAX_AGE_MS = 60 * 1000;
 const MAX_CACHED_EVENT_FRAMES = 8;
 const AI_MIN_CONFIDENCE = 0.7;
@@ -916,16 +917,20 @@ export function createMqttService() {
     });
   }
 
-  function handleTelemetryMessage(topic, payload) {
+  function handleTelemetryMessage(topic, payload, { retained = false } = {}) {
     const receivedAt = new Date().toISOString();
     const { raw, parsed } = parsePayload(payload);
     const key = telemetryByTopic.get(topic);
 
-    snapshot.connection.lastMessageAt = receivedAt;
+    if (!retained) {
+      snapshot.connection.lastMessageAt = receivedAt;
+    }
 
     if (key) {
-      snapshot.topics[key] = { topic, raw, parsed, receivedAt };
-      snapshot.summary.updatedAt = receivedAt;
+      snapshot.topics[key] = { topic, raw, parsed, receivedAt, retained };
+      if (!retained) {
+        snapshot.summary.updatedAt = receivedAt;
+      }
       summarizeTelemetry(snapshot.summary, key, parsed);
 
       if (key === 'visionAlert' && parsed && typeof parsed === 'object') {
@@ -1043,7 +1048,7 @@ export function createMqttService() {
         return;
       }
 
-      handleTelemetryMessage(topic, payload);
+      handleTelemetryMessage(topic, payload, { retained: packet.retain === true });
     });
 
     client.on('close', () => {
@@ -1069,11 +1074,20 @@ export function createMqttService() {
       const latestFrameAge = latestFrame?.receivedAt
         ? Date.now() - Date.parse(latestFrame.receivedAt)
         : Number.POSITIVE_INFINITY;
+      const lastMessageAge = snapshot.connection.lastMessageAt
+        ? Date.now() - Date.parse(snapshot.connection.lastMessageAt)
+        : Number.POSITIVE_INFINITY;
+      const deviceOnline = snapshot.connection.connected && lastMessageAge <= DEVICE_ONLINE_MAX_AGE_MS;
       const latestImage = snapshot.latestImage && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS
         ? { ...snapshot.latestImage, base64: undefined, url: '/api/mqtt/stream' }
         : null;
       return {
         ...snapshot,
+        connection: {
+          ...snapshot.connection,
+          brokerConnected: snapshot.connection.connected,
+          connected: deviceOnline,
+        },
         latestImage,
         topicBase,
         imageTopics: {

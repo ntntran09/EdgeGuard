@@ -160,6 +160,8 @@ export interface AiDetection {
 
 export interface SystemStatus {
   mqttConnected: boolean;
+  mqttBrokerConnected?: boolean;
+  lastDeviceMessageAt?: string | null;
   doorOpen: boolean;
   motionDetected: boolean;
   temperatureC?: number;

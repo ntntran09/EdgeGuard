@@ -6,6 +6,7 @@ import { normalizeAiDetections } from '@/lib/ai-detections';
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
 const AI_DETECTION_MAX_AGE_MS = 5000;
+const DEVICE_ONLINE_MAX_AGE_MS = 30_000;
 
 interface MqttInferenceSnapshot {
   receivedAt?: string;
@@ -13,7 +14,11 @@ interface MqttInferenceSnapshot {
 }
 
 interface MqttStatusPayload {
-  connection?: { connected?: boolean };
+  connection?: {
+    connected?: boolean;
+    lastConnectedAt?: string | null;
+    lastMessageAt?: string | null;
+  };
   summary?: Record<string, unknown>;
   latestImage?: { base64?: string; url?: string };
   topics?: { modelInference?: MqttInferenceSnapshot };
@@ -48,6 +53,11 @@ function freshAiDetections(inference?: MqttInferenceSnapshot) {
   return normalizeAiDetections(inference?.parsed);
 }
 
+function isFreshTimestamp(value?: string | null, maxAgeMs = DEVICE_ONLINE_MAX_AGE_MS) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= maxAgeMs;
+}
+
 export async function GET() {
   try {
     const [res, settingsResult] = await Promise.all([
@@ -80,8 +90,12 @@ export async function GET() {
     const inference = data.topics?.modelInference;
     const aiDetections = freshAiDetections(inference);
     const cameraEndpoints = data.summary?.cameraEndpoints as MqttCameraEndpoints | undefined;
+    const lastDeviceMessageAt = data.connection?.lastMessageAt || null;
+    const deviceOnline = Boolean(data.connection?.connected) && isFreshTimestamp(lastDeviceMessageAt);
     return NextResponse.json({
-      mqttConnected: data.connection?.connected ?? false,
+      mqttConnected: deviceOnline,
+      mqttBrokerConnected: data.connection?.connected ?? false,
+      lastDeviceMessageAt,
       doorOpen: data.summary?.doorOpen ?? false,
       motionDetected: data.summary?.motionDetected ?? false,
       temperatureC: data.summary?.temperatureC,
