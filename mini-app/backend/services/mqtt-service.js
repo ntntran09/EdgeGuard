@@ -788,7 +788,7 @@ export function createMqttService() {
           return emailService.sendImage(
             telegramImagePath,
             messageText,
-            `[EdgeGuard] ${emailSeverityLabel} - ${alertCopy.typeLabel}`,
+            `[EdgeGuard] ${emailSeverityLabel} - ${alertCopy.typeLabel} - ${alertDisplayTime}`,
             emails,
             {
               severity: alertDisplaySeverity,

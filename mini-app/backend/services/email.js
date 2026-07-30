@@ -170,6 +170,9 @@ export function createEmailService(options = {}) {
           from: `"EdgeGuard System" <${user}>`,
           to: Array.isArray(targetReceivers) ? targetReceivers.join(', ') : targetReceivers,
           subject,
+          headers: {
+            'X-Entity-Ref-ID': `edgeguard-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          },
           html: htmlContent,
           text: [
             'EDGEGUARD SECURITY',
