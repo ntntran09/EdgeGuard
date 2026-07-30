@@ -10,6 +10,72 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+async function attachmentFromImage(imagePath, cid) {
+  if (typeof imagePath !== 'string') return { attachment: null, hasImage: false };
+
+  if (imagePath.startsWith('data:image/')) {
+    const contentType = imagePath.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/jpeg';
+    const base64Data = imagePath.replace(/^data:image\/[\w.+-]+;base64,/, '');
+    return {
+      hasImage: true,
+      attachment: {
+        filename: 'alert_capture.jpg',
+        content: Buffer.from(base64Data, 'base64'),
+        cid,
+        contentType,
+        contentDisposition: 'inline',
+      },
+    };
+  }
+
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    try {
+      const response = await fetch(imagePath);
+      if (!response.ok) return { attachment: null, hasImage: false };
+      return {
+        hasImage: true,
+        attachment: {
+          filename: 'alert_capture.jpg',
+          content: Buffer.from(await response.arrayBuffer()),
+          cid,
+          contentType: response.headers.get('content-type') || 'image/jpeg',
+          contentDisposition: 'inline',
+        },
+      };
+    } catch (error) {
+      console.warn('[Email] Failed to fetch remote image for attachment:', error.message);
+      return { attachment: null, hasImage: false };
+    }
+  }
+
+  if (fs.existsSync(imagePath)) {
+    return {
+      hasImage: true,
+      attachment: {
+        filename: 'alert_capture.jpg',
+        path: imagePath,
+        cid,
+        contentType: 'image/jpeg',
+        contentDisposition: 'inline',
+      },
+    };
+  }
+
+  return { attachment: null, hasImage: false };
+}
+
+function severityLabel(severity) {
+  if (severity === 'danger') return 'Nguy hiểm';
+  if (severity === 'warning') return 'Cảnh báo';
+  return 'Thông báo';
+}
+
+function severityColor(severity) {
+  if (severity === 'danger') return '#dc2626';
+  if (severity === 'warning') return '#d97706';
+  return '#2563eb';
+}
+
 export function createEmailService(options = {}) {
   const user = options.user || process.env.EMAIL_USER;
   const pass = options.pass || process.env.EMAIL_PASS;
@@ -42,63 +108,11 @@ export function createEmailService(options = {}) {
       }
 
       try {
-        let attachmentOptions = null;
-        let hasImage = false;
-
-        if (typeof imagePath === 'string') {
-          if (imagePath.startsWith('data:image/')) {
-            const contentType = imagePath.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/jpeg';
-            const base64Data = imagePath.replace(/^data:image\/[\w.+-]+;base64,/, '');
-            const buffer = Buffer.from(base64Data, 'base64');
-            attachmentOptions = {
-              filename: 'alert_capture.jpg',
-              content: buffer,
-              cid: 'captured_image@edgeguard',
-              contentType,
-              contentDisposition: 'inline',
-            };
-            hasImage = true;
-          } else if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-            try {
-              const res = await fetch(imagePath);
-              if (res.ok) {
-                const arrayBuf = await res.arrayBuffer();
-                const contentType = res.headers.get('content-type') || 'image/jpeg';
-                attachmentOptions = {
-                  filename: 'alert_capture.jpg',
-                  content: Buffer.from(arrayBuf),
-                  cid: 'captured_image@edgeguard',
-                  contentType,
-                  contentDisposition: 'inline',
-                };
-                hasImage = true;
-              }
-            } catch (err) {
-              console.warn('[Email] Failed to fetch remote image for attachment:', err.message);
-            }
-          } else if (fs.existsSync(imagePath)) {
-            attachmentOptions = {
-              filename: 'alert_capture.jpg',
-              path: imagePath,
-              cid: 'captured_image@edgeguard',
-              contentType: 'image/jpeg',
-              contentDisposition: 'inline',
-            };
-            hasImage = true;
-          }
-        }
-
-        const severity = (alertInfo.severity || 'danger').toLowerCase();
-        const accentColor = severity === 'danger'
-          ? '#dc2626'
-          : severity === 'warning'
-            ? '#d97706'
-            : '#2563eb';
-        const severityText = severity === 'danger'
-          ? 'Nguy hiểm'
-          : severity === 'warning'
-            ? 'Cảnh báo'
-            : 'Thông báo';
+        const inlineImageCid = 'captured_image@edgeguard';
+        const { attachment: attachmentOptions, hasImage } = await attachmentFromImage(imagePath, inlineImageCid);
+        const severity = String(alertInfo.severity || 'danger').toLowerCase();
+        const accentColor = severityColor(severity);
+        const severityText = severityLabel(severity);
         const formattedTime = alertInfo.time
           || new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
         const alertType = alertInfo.typeLabel || 'Sự kiện an ninh';
@@ -109,18 +123,21 @@ export function createEmailService(options = {}) {
           || alertInfo.telegramBotLink
           || process.env.TELEGRAM_BOT_LINK
           || 'https://t.me';
+        const imageUrl = typeof imagePath === 'string' && imagePath.startsWith('http') ? imagePath : '';
 
-        const imageUrl = typeof imagePath === 'string' && imagePath.startsWith('http')
-          ? imagePath
-          : '';
-        const imageBlock = imageUrl
-          ? `
-      <a href="${escapeHtml(imageUrl)}" style="display:block;margin:16px 0 0;text-decoration:none;">
-        <img src="${escapeHtml(imageUrl)}" alt="Ảnh cảnh báo" style="display:block;width:100%;max-width:520px;margin:0 auto;border:1px solid #e5e7eb;border-radius:6px;" />
-      </a>`
-          : hasImage
-            ? '<img src="cid:captured_image@edgeguard" alt="Ảnh cảnh báo" style="display:block;width:100%;max-width:520px;margin:16px auto 0;border:1px solid #e5e7eb;border-radius:6px;" />'
-            : '';
+        const buttonBlock = webAppUrl ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 0;">
+        <tr>
+          <td bgcolor="#111827" style="border-radius:6px;">
+            <a href="${escapeHtml(webAppUrl)}" target="_blank" style="display:block;padding:12px 16px;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;line-height:1.2;">Mở EdgeGuard Telegram App</a>
+          </td>
+        </tr>
+      </table>` : '';
+
+        const imageBlock = hasImage ? `
+      <a href="${escapeHtml(imageUrl || webAppUrl)}" style="display:block;margin:18px 0 0;text-decoration:none;">
+        <img src="cid:${inlineImageCid}" alt="Ảnh cảnh báo" width="520" style="display:block;width:100%;max-width:520px;height:auto;margin:0 auto;border:1px solid #e5e7eb;border-radius:6px;" />
+      </a>` : '';
 
         const htmlContent = `
 <!DOCTYPE html>
@@ -138,10 +155,8 @@ export function createEmailService(options = {}) {
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Loại:</span> ${escapeHtml(alertType)}</p>
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Mô tả:</span> ${escapeHtml(alertMessage)}</p>
       <p style="margin:0 0 10px;font-size:15px;line-height:1.45;"><span style="font-weight:700;color:#374151;">Thời gian:</span> ${escapeHtml(formattedTime)}</p>
+      ${buttonBlock}
       ${imageBlock}
-      <div style="margin-top:18px;">
-        <a href="${escapeHtml(webAppUrl)}" style="display:inline-block;padding:12px 16px;border-radius:6px;background:#111827;color:#ffffff !important;text-decoration:none;font-size:14px;font-weight:700;">Mở EdgeGuard Telegram App</a>
-      </div>
     </div>
     <div style="padding:14px 20px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:12px;line-height:1.45;">
       Email này được gửi tự động từ hệ thống EdgeGuard. Thông báo email trùng loại được giới hạn tối đa 1 lần mỗi phút.
@@ -172,14 +187,14 @@ export function createEmailService(options = {}) {
           to: mailOptions.to,
           hasImage,
           hasButton: Boolean(webAppUrl),
-          imageSource: typeof imagePath === 'string' && imagePath.startsWith('http') ? 'remote-url' : hasImage ? 'inline-data-or-file' : 'none',
+          imageSource: imageUrl ? 'inline-cid-from-remote-url' : hasImage ? 'inline-data-or-file' : 'none',
         }));
         const info = await transporter.sendMail(mailOptions);
         console.log('[Email] Sent alert email successfully to:', mailOptions.to, info.messageId);
         return { success: true, info };
-      } catch (err) {
-        console.error('[Email] Failed to send alert email:', err.message);
-        return { success: false, error: err.message };
+      } catch (error) {
+        console.error('[Email] Failed to send alert email:', error.message);
+        return { success: false, error: error.message };
       }
     },
   };
