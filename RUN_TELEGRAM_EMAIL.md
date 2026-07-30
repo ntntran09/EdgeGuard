@@ -1,19 +1,20 @@
 # EdgeGuard Telegram + Email Runbook
 
-File này hướng dẫn chạy branch merge Telegram chatbot + Email alert.
+File nay huong dan chay branch merge Telegram chatbot + Email alert tren may local.
 
-## 1. Chuẩn bị
+## 1. Chuan bi
 
-Yêu cầu:
+Yeu cau:
 
-- Node.js đã cài.
-- Đã pull branch `feat/telegram-email-integration`.
-- Có file env riêng, không commit lên Git.
-- Có Supabase project/schema đã cập nhật theo `schema.sql`.
-- Có Telegram bot token và Gmail app password/email SMTP nếu muốn test Email.
-- Có `cloudflared` nếu muốn mở Telegram Mini App qua tunnel.
+- Da pull branch `feat/telegram-email-integration`.
+- Da cai Node.js.
+- Da cai dependencies trong `mini-app`.
+- Co file env rieng, khong commit len Git.
+- Co Supabase schema theo `schema.sql`.
+- Co Telegram bot token va Gmail app password/email SMTP neu muon test email.
+- Co `cloudflared` neu muon mo Telegram Mini App qua tunnel.
 
-Cài dependencies:
+Cai dependencies:
 
 ```powershell
 cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
@@ -22,14 +23,14 @@ npm.cmd ci
 
 ## 2. File Env
 
-Tạo một trong các file sau:
+Tao mot trong cac file sau:
 
 - `EdgeGuard-telegram-email-integration\.env`
-- hoặc `EdgeGuard-telegram-email-integration\mini-app\.env.local`
+- `EdgeGuard-telegram-email-integration\mini-app\.env.local`
 
-Không commit file env. Repo đã ignore `.env`, `.env.*`, `*.env`.
+Khong commit file env. Repo da ignore `.env`, `.env.*`, `*.env`.
 
-Các biến chính cần có:
+Bien chinh can co:
 
 ```env
 SUPABASE_URL=
@@ -53,16 +54,55 @@ MQTT_TOPIC_BASE=/EdgeGuard/device_001
 MQTT_ENABLED=false
 ```
 
-Ghi chú:
+Ghi chu:
 
-- `ADMIN_TELEGRAM_IDS` là Telegram ID admin, dùng để bootstrap quyền Mini App.
-- Telegram nhận cảnh báo theo bảng `telegram_device_users` với `is_active = true`.
-- Email nhận cảnh báo theo user active có `email` và `email_alert_enabled = true`.
-- `EMAIL_RECEIVER` chỉ là fallback khi không load được danh sách email active.
+- `ADMIN_TELEGRAM_IDS` la Telegram ID admin, dung de bootstrap quyen Mini App.
+- Telegram nhan canh bao theo bang `telegram_device_users` voi `is_active = true`.
+- Email nhan canh bao theo active users co `email` va `email_alert_enabled = true`.
+- `EMAIL_RECEIVER` chi la fallback khi khong load duoc danh sach email active.
 
-## 3. Chạy Dashboard Web Trên Laptop
+## 3. Chay Telegram Mini App
 
-Dashboard web mở trực tiếp bằng browser, không cần Telegram auth.
+Mini App phai chay production qua HTTPS tunnel. Khong dung Next dev server cho Telegram WebView vi de bi ket spinner do HMR/dev websocket.
+
+Lenh nen dung khi demo local:
+
+```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+$env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
+npm.cmd run telegram:quick
+```
+
+Script nay se:
+
+- chay server production o port `4000`,
+- mo Cloudflare quick tunnel,
+- cap nhat Telegram bot menu button sang tunnel URL moi,
+- in ra Mini App URL.
+
+Giu terminal nay mo. Dong terminal la server/tunnel dung.
+
+Sau khi script bao `READY`:
+
+1. Mo Telegram bot `@IoT_23CLC06_bot`.
+2. Dong Mini App cu neu dang mo.
+3. Bam nut menu `Mo EdgeGuard`.
+
+Neu muon build lai production truoc khi mo Mini App, dung:
+
+```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+$env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
+npm.cmd run telegram
+```
+
+Neu `npm.cmd run telegram` fail o buoc `next build` do mang chan Google Font, dung lai `npm.cmd run telegram:quick` voi build co san.
+
+## 4. Chay Dashboard Web Tren Laptop
+
+Dashboard web mo truc tiep bang browser, khong can Telegram auth.
+
+Chay trong terminal thu hai neu dang mo Mini App:
 
 ```powershell
 cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
@@ -75,7 +115,7 @@ $env:TELEGRAM_BOT_UPDATES_ENABLED="false"
 node server.js
 ```
 
-Mở:
+Mo:
 
 ```text
 http://localhost:4001
@@ -83,52 +123,24 @@ http://localhost:4001/logs
 http://localhost:4001/settings
 ```
 
-Lưu ý:
+Luu y:
 
-- `localhost` chỉ mở được trên máy đang chạy server.
-- Nếu dashboard báo `Ngoại tuyến`, đó là MQTT/live device offline, không có nghĩa logs/Supabase bị lỗi.
+- `localhost` chi mo duoc tren may dang chay server.
+- Neu dashboard bao `Ngoai tuyen`, do thuong la MQTT/live device offline, khong co nghia logs/Supabase bi loi.
 
-## 4. Chạy Telegram Mini App
+## 5. Chay Song Song Web + Mini App
 
-Mini App phải chạy production qua HTTPS tunnel. Không dùng Next dev server cho Telegram WebView vì dễ bị kẹt spinner do HMR/dev websocket.
+Dung 2 terminal:
 
-Nếu dùng Windows và `cloudflared` nằm ở `C:\tmp\edgeguard-cloudflared.exe`:
-
-```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
-$env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
-npm.cmd run telegram
-```
-
-Script này sẽ:
-
-- build production,
-- chạy server ở port `4000`,
-- mở Cloudflare quick tunnel,
-- cập nhật Telegram bot menu button,
-- in ra Mini App URL.
-
-Giữ terminal này mở. Đóng terminal là server/tunnel dừng.
-
-Sau khi script báo READY:
-
-1. Mở Telegram bot.
-2. Đóng Mini App cũ nếu đang mở.
-3. Bấm nút menu `Mo EdgeGuard`.
-
-## 5. Chạy Song Song Web + Mini App
-
-Dùng 2 terminal:
-
-Terminal 1 cho Mini App:
+Terminal 1 cho Telegram Mini App:
 
 ```powershell
 cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
 $env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
-npm.cmd run telegram
+npm.cmd run telegram:quick
 ```
 
-Terminal 2 cho web laptop:
+Terminal 2 cho dashboard laptop:
 
 ```powershell
 cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
@@ -141,158 +153,107 @@ $env:TELEGRAM_BOT_UPDATES_ENABLED="false"
 node server.js
 ```
 
-Quy ước port:
+Quy uoc port:
 
 - `4000`: Telegram Mini App production qua tunnel.
 - `4001`: dashboard web laptop.
-- `3000`: không dùng trong setup này.
+- `3000`: khong dung trong setup local nay.
 
-## 6. Test Cơ Bản
+## 6. Test Co Ban
 
-Chạy test Telegram logic:
+Chay test Telegram logic:
 
 ```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
 npm.cmd run test:telegram
-```
-
-Kỳ vọng hiện tại:
-
-```text
-pass 22/22
 ```
 
 Lint:
 
 ```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
 npm.cmd run lint
 ```
-
-Hiện còn vài warning cũ/nhỏ, nhưng không có error.
 
 Build:
 
 ```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
 npm.cmd run build
 ```
 
-Kỳ vọng: build pass.
+## 7. Test Gui Canh Bao Telegram + Email
 
-## 7. Test Gửi Cảnh Báo Telegram + Email
+Chay server `4000` truoc bang `npm.cmd run telegram:quick`.
 
-Chạy server `4000` trước. Có thể dùng `npm.cmd run telegram`, hoặc chạy production server thủ công.
-
-Gửi test alert qua endpoint nội bộ:
+Gui test alert qua endpoint noi bo:
 
 ```powershell
 cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
 
-node -e "import dotenv from 'dotenv'; import { createInternalApiKey, INTERNAL_API_KEY_HEADER } from './shared/telegram-auth.js'; dotenv.config({path:'../.env'}); dotenv.config({path:'.env'}); dotenv.config({path:'.env.local'}); const token=process.env.TELEGRAM_BOT_TOKEN||''; const body={alertType:'object_left',message:'Kiểm tra cảnh báo vật thể bị bỏ lại',thumbnailUrl:'https://fcfftrlmljvrvgoxlmul.supabase.co/storage/v1/object/public/event-images/events/device_001/2026-07-29/2026-07-29T13-58-21-346Z-0ef106f0-33e7-49cd-a30c-ae26de0306bc.png',severity:'warning',source:'ai',metadata:{test:'manual_runbook',checked_at:new Date().toISOString()}}; const res=await fetch('http://localhost:4000/api/mqtt/events',{method:'POST',headers:{'Content-Type':'application/json',[INTERNAL_API_KEY_HEADER]:createInternalApiKey(token)},body:JSON.stringify(body)}); console.log('status',res.status); console.log(await res.text());"
+node -e "import dotenv from 'dotenv'; import { createInternalApiKey, INTERNAL_API_KEY_HEADER } from './shared/telegram-auth.js'; dotenv.config({path:'../.env'}); dotenv.config({path:'.env'}); dotenv.config({path:'.env.local'}); const token=process.env.TELEGRAM_BOT_TOKEN||''; const body={alertType:'object_left',message:'Kiem tra canh bao vat the bi bo lai',thumbnailUrl:'https://fcfftrlmljvrvgoxlmul.supabase.co/storage/v1/object/public/event-images/events/device_001/2026-07-29/2026-07-29T13-58-21-346Z-0ef106f0-33e7-49cd-a30c-ae26de0306bc.png',severity:'warning',source:'ai',metadata:{test:'manual_runbook',checked_at:new Date().toISOString()}}; const res=await fetch('http://localhost:4000/api/mqtt/events',{method:'POST',headers:{'Content-Type':'application/json',[INTERNAL_API_KEY_HEADER]:createInternalApiKey(token)},body:JSON.stringify(body)}); console.log('status',res.status); console.log(await res.text());"
 ```
 
-Kỳ vọng:
+Ky vong:
 
-- API trả `201 {"ok":true}`.
-- Terminal server log có `Telegram Send image successfully`.
-- Terminal server log có `Email Sent alert email successfully`.
+- API tra `201 {"ok":true}`.
+- Terminal server log co `Telegram Send image successfully`.
+- Terminal server log co `Email Sent alert email successfully`.
 
-Lưu ý:
+Luu y:
 
-- Email có cooldown 1 phút theo `deviceId + alertType`.
-- Telegram hiện không có cooldown.
-- Telegram gửi các alert theo rule:
-  - `danger`: gửi.
-  - `object_left` dù là `warning`: vẫn gửi.
-  - `info`: không gửi.
-  - warning khác `object_left`: không gửi.
+- Email co cooldown 1 phut theo `deviceId + alertType`.
+- Telegram hien khong co cooldown.
+- Telegram gui cac alert theo rule:
+  - `danger`: gui.
+  - `object_left` du la `warning`: van gui.
+  - `info`: khong gui.
+  - warning khac `object_left`: khong gui.
 
-## 8. Quyền Người Dùng
+## 8. Quyen Nguoi Dung
 
 Mini App:
 
-- Người mở Mini App phải có trong `telegram_device_users`.
+- Nguoi mo Mini App phai co trong `telegram_device_users`.
 - `is_active = true`.
-- Admin bootstrap có thể được xác định bằng `ADMIN_TELEGRAM_IDS`.
+- Admin bootstrap co the duoc xac dinh bang `ADMIN_TELEGRAM_IDS`.
 
 Telegram notification:
 
-- Gửi tới active Telegram users trong `telegram_device_users`.
+- Gui toi active Telegram users trong `telegram_device_users`.
 
 Email notification:
 
-- Gửi tới active users có `email` và `email_alert_enabled = true`.
+- Gui toi active users co `email` va `email_alert_enabled = true`.
 
-## 9. Lỗi Hay Gặp
+## 9. Loi Hay Gap
 
-### Mini App xoay mãi
+### Mini App xoay mai
 
-Nguyên nhân thường gặp:
+Nguyen nhan thuong gap:
 
-- Đang serve dev build qua tunnel.
-- Telegram WebView bị kẹt cache URL cũ.
-- Tunnel chết hoặc server `4000` tắt.
+- Dang serve dev build qua tunnel.
+- Telegram WebView bi ket cache URL cu.
+- Tunnel chet hoac server `4000` tat.
 
-Cách xử lý:
+Cach xu ly:
 
-- Chạy lại `npm.cmd run telegram`.
-- Đóng hẳn Mini App trên điện thoại rồi mở lại từ bot.
-- Kiểm tra public URL không chứa dev HMR:
+- Chay lai `npm.cmd run telegram:quick`.
+- Dong han Mini App tren dien thoai roi mo lai tu bot.
+- Dam bao terminal bao `READY`.
 
-```powershell
-node -e "fetch(process.argv[1]).then(async r=>{const t=await r.text(); console.log({status:r.status, hasDev:t.includes('hmr-client')})})" "PASTE_TUNNEL_URL_HERE"
-```
+### Browser localhost bao khong co quyen
 
-Kỳ vọng: `hasDev: false`.
+Do dang mo port Mini App `4000` voi Telegram auth that. Mo web laptop bang `4001` hoac chay auth-off nhu muc 4.
 
-### Browser localhost báo không có quyền
+### Anh logs khong hien
 
-Do đang mở port Mini App `4000` với Telegram auth thật. Mở web laptop bằng `4001` hoặc chạy auth-off như mục 3.
+Anh Supabase hien duoc load thang, khong qua Next image optimizer. Neu van khong hien:
 
-### Ảnh logs không hiện
+- kiem tra URL anh trong `/api/events`,
+- mo URL anh truc tiep tren browser,
+- kiem tra bucket `event-images` va public policy.
 
-Ảnh Supabase hiện được load thẳng, không qua Next image optimizer. Nếu vẫn không hiện:
+### JWT issued at future
 
-- kiểm tra URL ảnh trong `/api/events`,
-- mở URL ảnh trực tiếp trên browser,
-- kiểm tra bucket `event-images` và public policy.
-
-### `JWT issued at future`
-
-Lỗi này thường là lệch giờ/timing từ Supabase. `/api/status` đã fallback sang default settings để không làm dashboard đỏ. Nếu gặp liên tục, kiểm tra giờ máy và timezone.
-
-### Email không gửi
-
-Kiểm tra:
-
-- `EMAIL_ENABLED=true`,
-- `EMAIL_USER`,
-- `EMAIL_PASS` là Gmail app password,
-- user active có email và `email_alert_enabled = true`,
-- không bị cooldown 1 phút.
-
-### Telegram không gửi
-
-Kiểm tra:
-
-- `TELEGRAM_ENABLED=true`,
-- `TELEGRAM_BOT_TOKEN`,
-- user active có `telegram_id`,
-- bot chưa bị block bởi user,
-- alert type có nằm trong rule gửi không.
-
-## 10. Push/Pull Branch
-
-Branch hiện tại:
-
-```text
-feat/telegram-email-integration
-```
-
-Pull về:
-
-```powershell
-git clone https://github.com/ntntran09/EdgeGuard.git
-cd EdgeGuard
-git checkout feat/telegram-email-integration
-```
-
-Sau đó làm từ mục 1.
+Loi nay thuong la lech gio/timing tu Supabase. Neu gap lien tuc, kiem tra gio may va timezone.
