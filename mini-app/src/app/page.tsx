@@ -65,8 +65,10 @@ export default function DashboardPage() {
   const alarmActive = Boolean(activeStatus.alarmActive);
   const deviceConnected = activeStatus.deviceConnected ?? activeStatus.mqttConnected;
   const recentEvents = events;
+  const unseenDangerEventCount = recentEvents.filter(
+    (event) => event.severity === 'danger' && !event.isViewed
+  ).length;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
-  const isSafe = deviceConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
   const cameraStreamProxyUrl = activeStatus.cameraEndpoints?.streamProxyUrl;
   const cameraFrameProxyUrl = activeStatus.cameraEndpoints?.frameProxyUrl;
   const useCameraStream = Boolean(cameraStreamProxyUrl)
@@ -76,6 +78,9 @@ export default function DashboardPage() {
     : cameraFrameProxyUrl
       ? `${cameraFrameProxyUrl}?frame=${cameraFrameSequence}`
       : activeStatus.latestImageUrl;
+  const cameraFeedOnline = Boolean(cameraSource) && cameraFrameState === 'online';
+  const headerOnline = deviceConnected || cameraFeedOnline;
+  const isSafe = deviceConnected && !alarmActive && unseenDangerEventCount === 0;
   const cameraPublishingEnabled = activeStatus.cameraImagePublishingEnabled !== false;
   const aiDetections = (activeStatus.aiDetections || [])
     .filter((detection) => detection.confidence > AI_MIN_CONFIDENCE);
@@ -151,7 +156,10 @@ export default function DashboardPage() {
       setCameraFrameState('connecting');
       return;
     }
-    if (!cameraFrameProxyUrl) return;
+    if (!cameraFrameProxyUrl) {
+      setCameraFrameState('offline');
+      return;
+    }
     setCameraFrameState('offline');
     scheduleNextCameraFrame(1500);
   }, [cameraFrameProxyUrl, cameraStreamProxyUrl, scheduleNextCameraFrame, useCameraStream]);
@@ -224,7 +232,7 @@ export default function DashboardPage() {
             {getGreeting()}, {user?.first_name || 'người dùng'}
           </h1>
         </div>
-        <span className={`connection-chip ${deviceConnected ? 'is-online' : 'is-offline'}`}>
+        <span className={`connection-chip ${headerOnline ? 'is-online' : 'is-offline'}`}>
           <WifiFilledIcon size={16} />
           {deviceConnected
             ? `Trực tuyến qua ${activeStatus.activeTransport === 'mqtt'
@@ -232,7 +240,9 @@ export default function DashboardPage() {
               : activeStatus.activeTransport === 'mqtt-bootstrap'
                 ? 'MQTT bootstrap'
                 : 'HTTP'}`
-            : 'Ngoại tuyến'}
+            : cameraFeedOnline
+              ? 'Camera trực tiếp'
+              : 'Ngoại tuyến'}
         </span>
       </header>
 
@@ -251,6 +261,8 @@ export default function DashboardPage() {
                   ? activeStatus.alarmSource === 'vision'
                     ? 'AI đã bật còi sau khi phát hiện kéo dài quá ngưỡng cấu hình'
                     : 'Còi báo động đang hoạt động'
+                  : unseenDangerEventCount > 0
+                    ? `${unseenDangerEventCount} sự kiện nguy hiểm chưa xem`
                   : activeStatus.lastUpdate
                   ? `Cập nhật ${formatTimeAgo(activeStatus.lastUpdate)}`
                   : deviceConnected
@@ -326,6 +338,8 @@ export default function DashboardPage() {
                 muted
                 playsInline
                 preload="auto"
+                onLoadedData={() => setCameraFrameState('online')}
+                onError={() => setCameraFrameState('offline')}
               />
             ) : canShowCameraSource(cameraSource) ? (
               // A native img element is required for the multipart MJPEG stream.
