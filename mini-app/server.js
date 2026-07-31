@@ -11,6 +11,9 @@ import { createFomoRouter } from './backend/routes/fomo.js';
 import { createImagesRouter } from './backend/routes/images.js';
 import { createMqttRouter } from './backend/routes/mqtt.js';
 import { createMqttService } from './backend/services/mqtt-service.js';
+import { createTelegramAuthMiddleware } from './backend/middleware/telegram-auth.js';
+import { createTelegramBotUpdateService } from './backend/services/telegram-bot-update-service.js';
+import { supabaseService } from './backend/services/supabase-service.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
@@ -22,6 +25,14 @@ const handle = nextApp.getRequestHandler();
 
 nextApp.prepare().then(() => {
   const mqttService = createMqttService();
+  const telegramBotService = createTelegramBotUpdateService({
+    enabled: config.telegram.botUpdatesEnabled,
+    botToken: config.telegram.botToken,
+    deviceId: config.mqtt.deviceId,
+    pollingTimeoutSeconds: config.telegram.pollingTimeoutSeconds,
+    pollingConflictBackoffSeconds: config.telegram.pollingConflictBackoffSeconds,
+    supabaseService,
+  });
 
   if (config.mqtt.enabled) {
     mqttService.start();
@@ -29,18 +40,23 @@ nextApp.prepare().then(() => {
     console.log('[MQTT] Disabled by MQTT_ENABLED=false');
   }
 
+  telegramBotService.start();
+
   const app = express();
   const jsonParser = express.json({ limit: `${config.images.maxBytes + 1024}b` });
 
   app.use(cors());
   app.use(morgan('dev'));
+  app.use('/api', createTelegramAuthMiddleware({ supabaseService }));
 
   app.get('/health', (_request, response) => {
     response.json({
       ok: true,
       service: 'edgeguard-unified',
-      fomo: mqttService.getFomoHttpStatus(),
-      mqtt: mqttService.getStatus(),
+      ...(config.telegram.authRequired ? {} : {
+        fomo: mqttService.getFomoHttpStatus(),
+        mqtt: mqttService.getStatus(),
+      }),
     });
   });
 
@@ -65,6 +81,7 @@ nextApp.prepare().then(() => {
   function shutdown() {
     console.log('[Unified] Shutting down');
     mqttService.stop();
+    void telegramBotService.stop();
     server.close(() => process.exit(0));
   }
 

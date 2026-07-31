@@ -2,6 +2,8 @@ import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import type { DeviceRole, TelegramDeviceUser } from '@/types';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
+const TRUSTED_TELEGRAM_ID_HEADER = 'x-edgeguard-telegram-id';
+const TRUSTED_TELEGRAM_NAME_HEADER = 'x-edgeguard-telegram-name';
 
 interface TelegramUserRow {
   id: string;
@@ -9,12 +11,14 @@ interface TelegramUserRow {
   display_name: string | null;
   role?: DeviceRole | null;
   is_active: boolean;
+  email?: string | null;
+  email_alert_enabled?: boolean | null;
   added_at: string;
 }
 
 export function getRequestTelegramUser(request: Request) {
-  const telegramId = request.headers.get('x-telegram-user-id')?.trim() || null;
-  const displayName = request.headers.get('x-telegram-user-name')?.trim() || 'Người dùng Telegram';
+  const telegramId = request.headers.get(TRUSTED_TELEGRAM_ID_HEADER)?.trim() || null;
+  const displayName = request.headers.get(TRUSTED_TELEGRAM_NAME_HEADER)?.trim() || 'Người dùng Telegram';
   return { telegramId, displayName };
 }
 
@@ -25,6 +29,8 @@ export function mapTelegramUser(row: TelegramUserRow): TelegramDeviceUser {
     displayName: row.display_name || 'Người dùng Telegram',
     role: row.role || 'admin',
     isActive: row.is_active,
+    email: row.email || null,
+    emailAlertEnabled: row.email_alert_enabled !== false,
     addedAt: row.added_at,
   };
 }
@@ -37,7 +43,10 @@ function adminIds() {
 }
 
 function debugAdminEnabled() {
-  return process.env.NODE_ENV !== 'production' || process.env.DEBUG_ADMIN_SETTINGS === 'true';
+  const req = process.env.TELEGRAM_AUTH_REQUIRED ?? process.env.NEXT_PUBLIC_TELEGRAM_AUTH_REQUIRED;
+  if (req === 'false' || req === '0' || req === 'off') return true;
+  if (process.env.DEBUG_ADMIN_SETTINGS === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
 }
 
 export async function getRequester(request: Request): Promise<{
@@ -49,7 +58,8 @@ export async function getRequester(request: Request): Promise<{
   const { telegramId, displayName } = getRequestTelegramUser(request);
 
   if (!isSupabaseConfigured || debugAdminEnabled()) {
-    return { telegramId, displayName, role: 'admin', user: null };
+    const effectiveTelegramId = telegramId || adminIds()[0] || '8349107353';
+    return { telegramId: effectiveTelegramId, displayName, role: 'admin', user: null };
   }
 
   if (!telegramId) {

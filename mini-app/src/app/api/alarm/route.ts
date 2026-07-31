@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured } from '@/lib/supabase';
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 import { logSecurityAlerts } from '@/lib/event-logger';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
 
     const res = await fetch(backendApiUrl('/api/device/command'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: backendApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         command: 'alarm',
         payload: { active, pattern: 'urgent' },

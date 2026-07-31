@@ -1,4 +1,11 @@
 import { Router } from 'express';
+import { createTelegramService } from '../services/telegram.js';
+
+const telegramService = createTelegramService({
+  enabled: true,
+  botToken: process.env.TELEGRAM_BOT_TOKEN,
+  chatId: process.env.TELEGRAM_CHAT_ID,
+});
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -90,7 +97,7 @@ export function createMqttRouter(mqttService) {
 
   router.post('/events', async (request, response, next) => {
     try {
-      const { alertType, message, severity, source, metadata, resolved } = request.body;
+      const { alertType, message, thumbnailUrl, severity, source, metadata, resolved } = request.body;
       if (typeof alertType !== 'string' || !alertType.trim() || alertType.length > 80) {
         response.status(422).json({ error: 'alertType must be a non-empty string up to 80 characters.' });
         return;
@@ -107,6 +114,10 @@ export function createMqttRouter(mqttService) {
         response.status(422).json({ error: 'source must be a string up to 80 characters.' });
         return;
       }
+      if (thumbnailUrl !== undefined && (typeof thumbnailUrl !== 'string' || thumbnailUrl.length > 2048)) {
+        response.status(422).json({ error: 'thumbnailUrl must be a string up to 2048 characters.' });
+        return;
+      }
       if (metadata !== undefined && !isPlainObject(metadata)) {
         response.status(422).json({ error: 'metadata must be an object when provided.' });
         return;
@@ -119,6 +130,7 @@ export function createMqttRouter(mqttService) {
       await mqttService.recordEvent({
         alertType: alertType.trim(),
         message: message.trim(),
+        thumbnailUrl,
         severity,
         source,
         metadata,
@@ -152,12 +164,16 @@ export function createMqttRouter(mqttService) {
         return;
       }
 
-      await mqttService.publishJson(topic, message, { retain: Boolean(retain) });
-      response.json({ ok: true, topic });
-    } catch (error) {
-      next(error);
-    }
-  });
+    await mqttService.publishJson(topic, message, { retain: Boolean(retain) });
+
+    const teleText = `*MQTT Published*\n• *Topic:* \`${topic}\`\n• *Content:* \`\`\`json\n${JSON.stringify(message, null, 2)}\n\`\`\``;
+    telegramService.sendMessage(teleText).catch(err => console.error('[MQTT Route] Telegram error:', err));
+
+    response.json({ ok: true, topic });
+  } catch (error) {
+    next(error);
+  }
+});
 
   return router;
 }

@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { backendApiUrl } from '@/lib/backend-url';
+import { backendApiHeaders, backendApiUrl } from '@/lib/backend-url';
 import { normalizeAiDetections } from '@/lib/ai-detections';
 
 const DEVICE_ID = process.env.MQTT_DEVICE_ID || 'device_001';
 const DEFAULT_AUTO_LOCK_SECONDS = 10;
 const AI_DETECTION_MAX_AGE_MS = 6000;
+const DEVICE_ONLINE_MAX_AGE_MS = 30_000;
 
 interface MqttInferenceSnapshot {
   receivedAt?: string;
@@ -15,10 +16,12 @@ interface MqttInferenceSnapshot {
 interface MqttStatusPayload {
   connection?: {
     connected?: boolean;
+    brokerConnected?: boolean;
     deviceConnected?: boolean;
     activeTransport?: 'http' | 'mqtt' | 'mqtt-bootstrap' | null;
-    lastMessageAt?: string;
-    lastHttpMessageAt?: string;
+    lastConnectedAt?: string | null;
+    lastMessageAt?: string | null;
+    lastHttpMessageAt?: string | null;
   };
   summary?: Record<string, unknown>;
   latestImage?: { base64?: string; url?: string };
@@ -54,10 +57,16 @@ function freshAiDetections(inference?: MqttInferenceSnapshot) {
   return normalizeAiDetections(inference?.parsed);
 }
 
+function isFreshTimestamp(value?: string | null, maxAgeMs = DEVICE_ONLINE_MAX_AGE_MS) {
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= maxAgeMs;
+}
+
 export async function GET() {
   try {
     const [res, settingsResult] = await Promise.all([
       fetch(backendApiUrl('/api/device/status'), {
+        headers: backendApiHeaders(),
         cache: 'no-store',
       }),
       isSupabaseConfigured
@@ -77,20 +86,23 @@ export async function GET() {
     }
 
     if (settingsResult.error) {
-      return NextResponse.json(
-        { ok: false, error: settingsResult.error.message },
-        { status: 400 }
-      );
+      console.warn('[API /status] Cannot load device settings, using defaults:', settingsResult.error.message);
     }
 
     const data = await res.json() as MqttStatusPayload;
+    const settings = settingsResult.error ? null : settingsResult.data;
     const inference = data.topics?.modelInference;
     const aiDetections = freshAiDetections(inference);
     const cameraEndpoints = data.summary?.cameraEndpoints as MqttCameraEndpoints | undefined;
+    const lastDeviceMessageAt = data.connection?.lastMessageAt || null;
+    const deviceOnline = data.connection?.deviceConnected
+      ?? (Boolean(data.connection?.connected) && isFreshTimestamp(lastDeviceMessageAt));
     return NextResponse.json({
-      mqttConnected: data.connection?.connected ?? false,
-      deviceConnected: data.connection?.deviceConnected ?? false,
+      mqttConnected: deviceOnline,
+      mqttBrokerConnected: data.connection?.brokerConnected ?? false,
+      deviceConnected: deviceOnline,
       activeTransport: data.connection?.activeTransport ?? null,
+      lastDeviceMessageAt,
       doorOpen: data.summary?.doorOpen ?? false,
       motionDetected: data.summary?.motionDetected ?? false,
       temperatureC: data.summary?.temperatureC,
@@ -109,7 +121,7 @@ export async function GET() {
       cameraPublishFailures: data.summary?.cameraPublishFailures,
       cameraImagePublishingEnabled: typeof data.summary?.cameraImagePublishingEnabled === 'boolean'
         ? data.summary.cameraImagePublishingEnabled
-        : settingsResult.data?.camera_image_publish_enabled ?? true,
+        : settings?.camera_image_publish_enabled ?? true,
       cameraEndpoints: cameraEndpoints ? {
         baseUrl: cameraEndpoints.baseUrl,
         captureUrl: cameraEndpoints.captureUrl,
@@ -124,14 +136,14 @@ export async function GET() {
       } : undefined,
       aiDetectionEnabled: typeof data.summary?.aiDetectionEnabled === 'boolean'
         ? data.summary.aiDetectionEnabled
-        : settingsResult.data?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',
+        : settings?.ai_detection_enabled ?? process.env.AI_DETECTION_ENABLED === 'true',
       aiDetections,
       aiDetectionsAt: aiDetections.length ? inference?.receivedAt : undefined,
-      autoLockEnabled: settingsResult.data
-        ? (settingsResult.data.auto_lock_enabled ?? settingsResult.data.auto_lock_seconds !== null)
+      autoLockEnabled: settings
+        ? (settings.auto_lock_enabled ?? settings.auto_lock_seconds !== null)
         : false,
-      autoLockSeconds: settingsResult.data && settingsResult.data.auto_lock_enabled !== false
-        ? settingsResult.data.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS
+      autoLockSeconds: settings && settings.auto_lock_enabled !== false
+        ? settings.auto_lock_seconds ?? DEFAULT_AUTO_LOCK_SECONDS
         : null,
       ...integrationStatus(),
     });

@@ -110,6 +110,8 @@ export interface TelegramDeviceUser {
   displayName: string;
   role: DeviceRole;
   isActive: boolean;
+  email?: string | null;
+  emailAlertEnabled?: boolean;
   addedAt: string;
 }
 
@@ -160,6 +162,8 @@ export interface SystemStatus {
   mqttConnected: boolean;
   deviceConnected?: boolean;
   activeTransport?: 'http' | 'mqtt' | 'mqtt-bootstrap' | null;
+  mqttBrokerConnected?: boolean;
+  lastDeviceMessageAt?: string | null;
   doorOpen: boolean;
   motionDetected: boolean;
   alarmActive?: boolean;

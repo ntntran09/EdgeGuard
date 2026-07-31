@@ -8,7 +8,14 @@
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
     "lint": "eslint",
-    "test": "node --test backend/routes/device.test.js"
+    "test": "node --test backend/routes/device.test.js",
+    "test:auth": "node --test --experimental-test-isolation=none tests/telegram-auth.test.mjs tests/telegram-bot-update.test.mjs",
+    "test:telegram-notification": "node --test --experimental-test-isolation=none tests/telegram-notification.test.mjs tests/telegram-service.test.mjs",
+    "test:telegram": "node --test --experimental-test-isolation=none tests/telegram-auth.test.mjs tests/telegram-bot-update.test.mjs tests/telegram-notification.test.mjs tests/telegram-service.test.mjs",
+    "test:alert": "node scripts/test-alert-simulation.mjs",
+    "test:cam": "node scripts/test-camera-simulation.mjs",
+    "telegram": "npm run build && node scripts/run-telegram-miniapp.mjs --force --skip-build",
+    "telegram:quick": "node scripts/run-telegram-miniapp.mjs --force --skip-build"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.700.0",
@@ -19,6 +26,7 @@
     "morgan": "^1.11.0",
     "mqtt": "^5.15.1",
     "next": "16.2.9",
+    "nodemailer": "^9.0.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "sharp": "^0.35.3"

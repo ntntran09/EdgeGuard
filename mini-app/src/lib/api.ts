@@ -1,30 +1,20 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
-function telegramHeaders() {
-  if (typeof window === 'undefined') return {};
-
-  const user = window.Telegram?.WebApp?.initDataUnsafe?.user;
-  if (!user) return {};
-
-  return {
-    'x-telegram-user-id': String(user.id),
-    'x-telegram-user-name': [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || 'Người dùng Telegram',
-  };
-}
-
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   headers.set('Content-Type', 'application/json');
-  Object.entries(telegramHeaders()).forEach(([key, value]) => headers.set(key, value));
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers,
+    credentials: 'same-origin',
   });
 
   if (!res.ok) {
-    throw new Error(`API Error: ${res.status} ${res.statusText}`);
+    const json = await res.json().catch(() => null);
+    const msg = json?.error || json?.message || `Lỗi hệ thống (${res.status})`;
+    throw new Error(msg);
   }
 
   return res.json();
@@ -114,6 +104,16 @@ export const api = {
     }),
   deleteUser: (id: string) =>
     fetchApi(`/api/users?id=${id}`, { method: 'DELETE' }),
+  updateUserAccess: (id: string, isActive: boolean) =>
+    fetchApi<{ user: import('@/types').TelegramDeviceUser }>('/api/users', {
+      method: 'PATCH',
+      body: JSON.stringify({ id, isActive }),
+    }),
+  updateUserEmail: (id: string, email?: string | null, emailAlertEnabled?: boolean, otp?: string) =>
+    fetchApi<{ user: import('@/types').TelegramDeviceUser }>('/api/users', {
+      method: 'PATCH',
+      body: JSON.stringify({ id, email, emailAlertEnabled, otp }),
+    }),
   getFaces: () => fetchApi<{ faces: import('@/types').KnownFace[] }>('/api/faces'),
   addFace: (displayName: string, imageBase64?: string) =>
     fetchApi<{ face: import('@/types').KnownFace }>('/api/faces', {

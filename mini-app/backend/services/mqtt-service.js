@@ -8,9 +8,22 @@ import {
 import { supabaseService } from './supabase-service.js';
 import { rekognitionService } from './rekognition-service.js';
 
+import { createEmailService } from './email.js';
+import { createTelegramService } from './telegram.js';
+import {
+  escapeTelegramMarkdownText,
+  notificationCopyForAlert,
+  notificationDisplaySeverityForAlert,
+  notificationSeverityCopy,
+  shouldNotifyTelegramAlert,
+} from './alert-notification-policy.js';
+import { formatTelegramAlertTime } from './telegram-time.js';
+
 let lastAiLogTime = 0;
 let lastAiLogEventKey = null;
 const AI_LOG_COOLDOWN_MS = 8000;
+const emailNotificationCooldowns = new Map();
+const EMAIL_NOTIFICATION_COOLDOWN_MS = 60 * 1000;
 
 const TELEMETRY_KEYS = {
   status: '/status',
@@ -27,12 +40,56 @@ const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
 const MAX_AUTO_LOCK_MS = 60 * 60 * 1000;
 const LIVE_FRAME_MAX_AGE_MS = 5000;
+const DEVICE_ONLINE_MAX_AGE_MS = 30 * 1000;
 const EVENT_FRAME_MAX_AGE_MS = 60 * 1000;
 const MAX_CACHED_EVENT_FRAMES = 8;
 const AI_MIN_CONFIDENCE = 0.7;
 const EVENT_IMAGE_CAPTURE_TIMEOUT_MS = 6000;
 const DEVICE_HTTP_TIMEOUT_MS = 2500;
-const DEVICE_ONLINE_MAX_AGE_MS = 30 * 1000;
+
+function checkAndTouchEmailNotificationCooldown(deviceId, alertType) {
+  const key = `${deviceId || config.mqtt.deviceId}:${alertType || 'unknown'}`;
+  const lastTime = emailNotificationCooldowns.get(key) || 0;
+  const now = Date.now();
+  if (now - lastTime < EMAIL_NOTIFICATION_COOLDOWN_MS) {
+    return false;
+  }
+  emailNotificationCooldowns.set(key, now);
+  return true;
+}
+
+function validDateString(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function imageTimestampFromStoragePath(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+
+  let raw = value;
+  try {
+    raw = decodeURIComponent(value);
+  } catch {}
+
+  const dashed = raw.match(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/);
+  if (dashed) {
+    return validDateString(`${dashed[1]}T${dashed[2]}:${dashed[3]}:${dashed[4]}.${dashed[5]}Z`);
+  }
+
+  const iso = raw.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)/);
+  return iso ? validDateString(iso[1]) : null;
+}
+
+function alertNotificationTimestamp({ alert, alertResult, capturedImage, imagePath }) {
+  return validDateString(capturedImage?.capturedAt)
+    || validDateString(alertResult?.metadata?.event_image_captured_at)
+    || validDateString(alert?.metadata?.event_image_captured_at)
+    || imageTimestampFromStoragePath(alertResult?.thumbnailUrl)
+    || imageTimestampFromStoragePath(imagePath)
+    || validDateString(alertResult?.created_at)
+    || new Date().toISOString();
+}
 
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -286,6 +343,8 @@ export function createMqttService() {
     summary: {},
     latestImage: null,
   };
+  const telegramService = createTelegramService(config.telegram);
+  const emailService = createEmailService(config.email);
 
   let client = null;
   let deviceAccessConfig = buildDeviceAccessPayload();
@@ -534,7 +593,11 @@ export function createMqttService() {
     const frameAge = latestFrame ? Date.now() - new Date(latestFrame.receivedAt).getTime() : Infinity;
     if (!exactFrame && (!captureUrl || frameAge < 5000)) {
       return fallbackImage
-        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        ? {
+            imagePath: fallbackImage,
+            source: 'mqtt_latest_frame',
+            capturedAt: latestFrame?.capturedAt || latestFrame?.receivedAt,
+          }
         : { imagePath: null, source: 'unavailable' };
     }
 
@@ -606,7 +669,11 @@ export function createMqttService() {
         return { imagePath: null, source: 'exact_event_frame_unavailable', eventId };
       }
       return fallbackImage
-        ? { imagePath: fallbackImage, source: 'mqtt_latest_frame' }
+        ? {
+            imagePath: fallbackImage,
+            source: 'mqtt_latest_frame',
+            capturedAt: latestFrame?.capturedAt || latestFrame?.receivedAt,
+          }
         : { imagePath: null, source: 'capture_failed' };
     } finally {
       clearTimeout(timeout);
@@ -800,13 +867,93 @@ export function createMqttService() {
     };
   }
 
+  async function telegramRecipientsForDevice(deviceId) {
+    try {
+      const recipients = await supabaseService.getActiveTelegramRecipients({ deviceId });
+      const chatIds = recipients.map((recipient) => recipient.telegramId);
+      if (chatIds.length) return chatIds;
+    } catch (error) {
+      console.error('[MQTT] Could not load Telegram recipients:', error instanceof Error ? error.message : error);
+    }
+
+    return config.telegram.chatId ? [config.telegram.chatId] : [];
+  }
+
+  async function emailRecipientsForDevice(deviceId) {
+    try {
+      return await supabaseService.getActiveDeviceNotificationEmails(deviceId);
+    } catch (error) {
+      console.error('[MQTT] Could not load Email recipients:', error instanceof Error ? error.message : error);
+      return process.env.EMAIL_RECEIVER ? [process.env.EMAIL_RECEIVER] : [];
+    }
+  }
+
   async function insertAlertWithEventImage(alert, eventImage) {
     const capturedImage = eventImage ?? await captureEventImageWithRetry();
-    return supabaseService.insertAlert({
+    const imagePath = capturedImage.imagePath || alert.thumbnailUrl;
+    const alertResult = await supabaseService.insertAlert({
       ...alert,
-      thumbnailUrl: capturedImage.imagePath || alert.thumbnailUrl,
+      thumbnailUrl: imagePath,
       metadata: metadataWithEventImage(alert.metadata, capturedImage),
     });
+
+    const severityForAlertType = supabaseService.severityForAlertType.bind(supabaseService);
+    if (shouldNotifyTelegramAlert(alert, severityForAlertType)) {
+      const alertCopy = notificationCopyForAlert(alert);
+      const alertDisplaySeverity = notificationDisplaySeverityForAlert(alert, severityForAlertType);
+      const severityCopy = notificationSeverityCopy(alertDisplaySeverity);
+      const telegramImagePath = alertResult?.thumbnailUrl || imagePath;
+      const alertImageTimestamp = alertNotificationTimestamp({
+        alert,
+        alertResult,
+        capturedImage,
+        imagePath: telegramImagePath,
+      });
+      const alertDisplayTime = formatTelegramAlertTime(alertImageTimestamp);
+      const messageText = `${severityCopy.icon} *[EDGEGUARD SECURITY]*\n` +
+                          `• *Mức độ:* ${escapeTelegramMarkdownText(severityCopy.badge)}\n` +
+                          `• *Loại:* ${escapeTelegramMarkdownText(alertCopy.typeLabel)}\n` +
+                          `• *Mô tả:* ${escapeTelegramMarkdownText(alertCopy.description)}\n` +
+                          `• *Thời gian:* ${escapeTelegramMarkdownText(alertDisplayTime)}`;
+
+      telegramRecipientsForDevice(alert.deviceId).then((chatIds) => (
+        telegramService.sendImageToChats(chatIds, telegramImagePath, messageText)
+      )).catch((err) => {
+        console.error('[MQTT] Telegram notify failed:', err);
+      });
+
+      if (checkAndTouchEmailNotificationCooldown(alert.deviceId, alert.alertType)) {
+        emailRecipientsForDevice(alert.deviceId).then(async (emails) => {
+          const telegramBotLink = await telegramService.getBotLink();
+          const emailSeverityLabel = alertDisplaySeverity === 'danger'
+            ? 'Nguy hiểm'
+            : alertDisplaySeverity === 'warning'
+              ? 'Cảnh báo'
+              : 'Thông báo';
+          return emailService.sendImage(
+            telegramImagePath,
+            messageText,
+            `[EdgeGuard] ${emailSeverityLabel} - ${alertCopy.typeLabel} - ${alertDisplayTime}`,
+            emails,
+            {
+              severity: alertDisplaySeverity,
+              typeLabel: alertCopy.typeLabel,
+              message: alertCopy.description,
+              deviceId: alert.deviceId || config.mqtt.deviceId,
+              time: alertDisplayTime,
+              telegramBotLink,
+            }
+          );
+        }).catch((err) => {
+          console.error('[MQTT] Email notify failed:', err);
+        });
+      } else {
+        console.log(`[Email] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 1m).`);
+      }
+
+    }
+
+    return alertResult;
   }
 
   async function recordVisionAlert(parsed) {
@@ -925,22 +1072,27 @@ export function createMqttService() {
     topic = `/api/device/telemetry/${key}`,
     raw = JSON.stringify(parsed),
     transport = 'http',
+    retained = false,
   } = {}) {
     const receivedAt = new Date().toISOString();
-    snapshot.connection.lastMessageAt = receivedAt;
-    snapshot.connection.activeTransport = key === 'endpoints' && transport === 'mqtt'
-      ? 'mqtt-bootstrap'
-      : transport;
-    if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
-    if (key === 'status' && typeof parsed === 'string') {
-      snapshot.connection.deviceReportedOnline = parsed.toLowerCase() === 'online';
-    } else if (key) {
-      snapshot.connection.deviceReportedOnline = true;
+    if (!retained) {
+      snapshot.connection.lastMessageAt = receivedAt;
+      snapshot.connection.activeTransport = key === 'endpoints' && transport === 'mqtt'
+        ? 'mqtt-bootstrap'
+        : transport;
+      if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
+      if (key === 'status' && typeof parsed === 'string') {
+        snapshot.connection.deviceReportedOnline = parsed.toLowerCase() === 'online';
+      } else if (key) {
+        snapshot.connection.deviceReportedOnline = true;
+      }
     }
 
     if (key) {
-      snapshot.topics[key] = { topic, raw, parsed, receivedAt, transport };
-      snapshot.summary.updatedAt = receivedAt;
+      snapshot.topics[key] = { topic, raw, parsed, receivedAt, transport, retained };
+      if (!retained) {
+        snapshot.summary.updatedAt = receivedAt;
+      }
       summarizeTelemetry(snapshot.summary, key, parsed);
 
       if (key === 'visionAlert' && parsed && typeof parsed === 'object') {
@@ -991,17 +1143,17 @@ export function createMqttService() {
     return { receivedAt };
   }
 
-  function handleTelemetryMessage(topic, payload) {
+  function handleTelemetryMessage(topic, payload, { retained = false } = {}) {
     const { raw, parsed } = parsePayload(payload);
     const key = telemetryByTopic.get(topic);
     if (key === 'modelInference' && parsed && typeof parsed === 'object') {
-      receiveFomoInference(parsed, 'mqtt');
+      receiveFomoInference(parsed, 'mqtt', { retained });
       return;
     }
-    receiveTelemetry(key, parsed, { topic, raw, transport: 'mqtt' });
+    receiveTelemetry(key, parsed, { topic, raw, transport: 'mqtt', retained });
   }
 
-  function receiveFomoInference(parsed, transport = 'http') {
+  function receiveFomoInference(parsed, transport = 'http', { retained = false } = {}) {
     const receivedAt = new Date().toISOString();
     const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
     const detections = Array.isArray(parsed.detections)
@@ -1012,18 +1164,21 @@ export function createMqttService() {
         ))
       : [];
 
-    snapshot.connection.lastMessageAt = receivedAt;
-    if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
-    snapshot.connection.activeTransport = transport;
-    snapshot.connection.deviceReportedOnline = true;
+    if (!retained) {
+      snapshot.connection.lastMessageAt = receivedAt;
+      if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
+      snapshot.connection.activeTransport = transport;
+      snapshot.connection.deviceReportedOnline = true;
+    }
     snapshot.topics.modelInference = {
       topic: transport === 'http' ? '/api/fomo/inference' : topics.telemetry.modelInference,
       raw: JSON.stringify(parsed),
       parsed,
       receivedAt,
       transport,
+      retained,
     };
-    snapshot.summary.updatedAt = receivedAt;
+    if (!retained) snapshot.summary.updatedAt = receivedAt;
     summarizeTelemetry(snapshot.summary, 'modelInference', parsed);
 
     if (Number.isFinite(confidence) && confidence > AI_MIN_CONFIDENCE) {
@@ -1107,7 +1262,7 @@ export function createMqttService() {
         return;
       }
 
-      handleTelemetryMessage(topic, payload);
+      handleTelemetryMessage(topic, payload, { retained: packet.retain === true });
     });
 
     client.on('close', () => {
@@ -1146,6 +1301,8 @@ export function createMqttService() {
         ...snapshot,
         connection: {
           ...snapshot.connection,
+          brokerConnected: snapshot.connection.connected,
+          connected: deviceConnected,
           deviceConnected,
         },
         latestImage,
@@ -1203,11 +1360,12 @@ export function createMqttService() {
         return { ok: true, transport: 'mqtt' };
       }
     },
-    recordEvent({ alertType, message, severity, source, metadata, resolved = false }) {
+    recordEvent({ alertType, message, thumbnailUrl, severity, source, metadata, resolved = false }) {
       return insertAlertWithEventImage({
         deviceId: config.mqtt.deviceId,
         alertType,
         message,
+        thumbnailUrl,
         severity,
         source,
         metadata,

@@ -206,6 +206,7 @@ export default function LogsPage() {
                   height={292}
                   className="event-card-img"
                   priority={event.id === events[0]?.id}
+                  unoptimized
                 />
               ) : (
                 <div className="event-card-image-placeholder">
@@ -317,6 +318,7 @@ export default function LogsPage() {
                   fill
                   sizes="(min-width: 768px) 420px, 100vw"
                   className="event-card-img"
+                  unoptimized
                 />
                 <AiOverlays detections={selectedEvent.aiDetections} />
                 <button className="icon-close-btn" onClick={() => setSelectedEvent(null)} aria-label="Đóng">
