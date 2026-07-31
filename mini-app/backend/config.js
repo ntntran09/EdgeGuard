@@ -150,10 +150,8 @@ export const config = {
     botToken: process.env.TELEGRAM_BOT_TOKEN,
     chatId: process.env.TELEGRAM_CHAT_ID,
     adminIds: process.env.ADMIN_TELEGRAM_IDS,
-    authRequired: booleanFromEnv(
-      'TELEGRAM_AUTH_REQUIRED',
-      process.env.NODE_ENV === 'production'
-    ),
+    authRequired: process.env.NODE_ENV === 'production'
+      && booleanFromEnv('TELEGRAM_AUTH_REQUIRED', true),
     botUpdatesEnabled: booleanFromEnv('TELEGRAM_BOT_UPDATES_ENABLED', false),
     pollingTimeoutSeconds: numberFromEnv('TELEGRAM_POLLING_TIMEOUT_SECONDS', 25),
     pollingConflictBackoffSeconds: numberFromEnv('TELEGRAM_POLLING_CONFLICT_BACKOFF_SECONDS', 60),

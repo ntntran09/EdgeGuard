@@ -10,9 +10,11 @@ dotenv.config({ path: path.resolve(appRoot, "../.env") });
 dotenv.config({ path: path.resolve(appRoot, ".env"), override: true });
 dotenv.config({ path: path.resolve(appRoot, ".env.local"), override: true });
 
-const telegramAuthRequired = process.env.NEXT_PUBLIC_TELEGRAM_AUTH_REQUIRED
-  ?? process.env.TELEGRAM_AUTH_REQUIRED
-  ?? "true";
+const telegramAuthRequired = process.env.NODE_ENV !== "production"
+  ? "false"
+  : process.env.NEXT_PUBLIC_TELEGRAM_AUTH_REQUIRED
+    ?? process.env.TELEGRAM_AUTH_REQUIRED
+    ?? "true";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
