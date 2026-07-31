@@ -435,6 +435,19 @@ export function createMqttService() {
     return { ok: true, command, transport };
   }
 
+  async function publishVisionResult(payload) {
+    try {
+      await publishDeviceCommand('vision-result', payload);
+      return true;
+    } catch (error) {
+      console.error(
+        '[Transport] Could not return vision-result to device; AI event processing will continue:',
+        error instanceof Error ? error.message : error
+      );
+      return false;
+    }
+  }
+
   async function publishBootstrapNetworkConfig() {
     const backend = currentBackendConfig();
     const networkConfig = {
@@ -796,7 +809,7 @@ export function createMqttService() {
         const allPeopleAreKnown = knownFaceCount >= expectedPeopleCount && strangerCount === 0;
 
         if (Number.isInteger(eventId) && eventId >= 0) {
-          await publishDeviceCommand('vision-result', {
+          await publishVisionResult({
             event_id: eventId,
             verified: true,
             known: allPeopleAreKnown,
@@ -829,19 +842,17 @@ export function createMqttService() {
       } catch (err) {
         console.error('[MQTT] Rekognition analyzeFrame inside recordAiInference failed:', err);
         if (Number.isInteger(eventId) && eventId >= 0) {
-          await publishDeviceCommand('vision-result', {
+          await publishVisionResult({
             event_id: eventId,
             verified: false,
             known: false,
             stranger_count: 0,
             reason: 'recognition_failed',
-          }).catch((publishError) => {
-            console.error('[MQTT] Failed to return Rekognition error to device', publishError);
           });
         }
       }
     } else if (isPersonDetected && Number.isInteger(eventId) && eventId >= 0) {
-      await publishDeviceCommand('vision-result', {
+      await publishVisionResult({
         event_id: eventId,
         verified: false,
         known: false,
