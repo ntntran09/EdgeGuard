@@ -23,6 +23,21 @@ The main `EdgeGuardDevice` firmware serves MJPEG `/stream` on port 81 and `/capt
 
 AI events use HTTP end to end for device-to-backend delivery. Firmware caches the original JPEG used for FOMO and posts the inference JSON to `/api/fomo/inference`. The backend then requests `/event-frame?event_id=<id>` from the device and verifies `X-EdgeGuard-Event-Id`. The raw detection is inserted before recognition begins. If the exact frame is unavailable, the event is stored without an image; a newer live frame is never substituted.
 
+## HTTP-first device transport
+
+The retained MQTT endpoint announcement and retained backend/FOMO URL config
+bootstrap the LAN addresses. After discovery, device telemetry, RFID scans,
+FOMO results, vision alerts, commands, access config, and recognition results
+use HTTP. Each flow automatically falls back to its MQTT topic when HTTP is
+unreachable. The dashboard online state comes from recent device traffic, not
+from the backend's broker connection alone.
+
+The configured `object_left_max_seconds` value is synchronized to the firmware
+as the shared stranger/object persistence threshold. When the threshold is
+reached, the device raises the vision event and starts its urgent alarm. It
+reports the active alarm immediately and stops only the AI-owned alarm after
+the person/object leaves; a manually enabled alarm remains active.
+
 Open **Settings → System → Dynamic connection paths** to inspect the MQTT topic, device URLs, and server proxy currently in use. The dashboard uses the backend MJPEG proxy and falls back to individual JPEG frames only when the stream cannot be opened.
 
 ## Getting Started

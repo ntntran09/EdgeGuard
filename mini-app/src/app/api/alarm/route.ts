@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({ active: true }));
     const active = body.active ?? true;
 
-    const res = await fetch(backendApiUrl('/api/mqtt/command'), {
+    const res = await fetch(backendApiUrl('/api/device/command'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

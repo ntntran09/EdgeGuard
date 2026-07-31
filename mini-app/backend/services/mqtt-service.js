@@ -21,6 +21,7 @@ const TELEMETRY_KEYS = {
   endpoints: '/telemetry/endpoints',
   nfc: '/telemetry/nfc',
   visionAlert: '/telemetry/vision-alert',
+  modelInference: '/telemetry/inference',
 };
 const MAX_OFFLINE_RFID_CARDS = 32;
 const MIN_AUTO_LOCK_MS = 1000;
@@ -30,6 +31,8 @@ const EVENT_FRAME_MAX_AGE_MS = 60 * 1000;
 const MAX_CACHED_EVENT_FRAMES = 8;
 const AI_MIN_CONFIDENCE = 0.7;
 const EVENT_IMAGE_CAPTURE_TIMEOUT_MS = 6000;
+const DEVICE_HTTP_TIMEOUT_MS = 2500;
+const DEVICE_ONLINE_MAX_AGE_MS = 30 * 1000;
 
 function clampNumber(value, minimum, maximum, fallback) {
   const number = Number(value);
@@ -64,6 +67,14 @@ export function buildDeviceAccessPayload(
     auto_lock_ms: autoLockMs,
     camera_publish_enabled: settings.camera_image_publish_enabled !== false,
     ai_detection_enabled: settings.ai_detection_enabled === true,
+    object_left_alert_enabled: settings.object_left_alert_enabled !== false,
+    stranger_alert_enabled: settings.stranger_alert_enabled !== false,
+    vision_stable_alert_ms: clampNumber(
+      Number(settings.object_left_max_seconds) * 1000,
+      5000,
+      60 * 60 * 1000,
+      60 * 1000
+    ),
     camera_blocked_alert_enabled: settings.camera_blocked_alert_enabled !== false,
     backend_url: backend.publicUrl,
     fomo_inference_url: backend.fomoInferenceUrl,
@@ -151,6 +162,12 @@ function summarizeTelemetry(summary, key, parsed) {
       summary.doorOpen = parsed.door_open;
     }
     summary.distanceMm = Number(parsed.distance_mm) || summary.distanceMm;
+    if (typeof parsed.alarm_active === 'boolean') {
+      summary.alarmActive = parsed.alarm_active;
+      summary.alarmSource = typeof parsed.alarm_source === 'string'
+        ? parsed.alarm_source
+        : summary.alarmSource;
+    }
     return;
   }
 
@@ -178,6 +195,12 @@ function summarizeTelemetry(summary, key, parsed) {
     }
     if (typeof parsed.camera_blocked === 'boolean') {
       summary.cameraBlocked = parsed.camera_blocked;
+    }
+    if (typeof parsed.alarm_active === 'boolean') {
+      summary.alarmActive = parsed.alarm_active;
+      summary.alarmSource = typeof parsed.alarm_source === 'string'
+        ? parsed.alarm_source
+        : summary.alarmSource;
     }
     summary.fomoHttpLastStatus = Number(parsed.fomo_http_last_status) || 0;
     summary.fomoHttpLastSuccessMs = Number(parsed.fomo_http_last_success_ms) || 0;
@@ -254,6 +277,10 @@ export function createMqttService() {
       connected: false,
       lastConnectedAt: null,
       lastMessageAt: null,
+      lastHttpMessageAt: null,
+      lastHttpCommandAt: null,
+      activeTransport: null,
+      deviceReportedOnline: null,
     },
     topics: {},
     summary: {},
@@ -271,6 +298,36 @@ export function createMqttService() {
       client?.stream?.localAddress,
       snapshot.summary.cameraEndpoints?.ip
     );
+  }
+
+  function deviceControlEndpoint(pathname) {
+    const baseUrl = normalizeDeviceEndpoint(snapshot.summary.cameraEndpoints?.baseUrl);
+    return baseUrl ? new URL(pathname, baseUrl).toString() : null;
+  }
+
+  async function postDeviceJson(pathname, body) {
+    const endpoint = deviceControlEndpoint(pathname);
+    if (!endpoint) throw new Error('Device HTTP endpoint has not been announced through MQTT.');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DEVICE_HTTP_TIMEOUT_MS);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-EdgeGuard-Device-Id': config.mqtt.deviceId,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Device HTTP ${response.status}.`);
+      snapshot.connection.lastHttpCommandAt = new Date().toISOString();
+      snapshot.connection.activeTransport = 'http';
+      return response.json().catch(() => ({ ok: true }));
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   function publish(topic, payload, options = {}) {
@@ -291,17 +348,44 @@ export function createMqttService() {
   }
 
   async function publishDeviceCommand(command, payload = {}) {
-    await publish(`${topics.commandBase}/${command}`, JSON.stringify({
+    const envelope = {
       requested_at: new Date().toISOString(),
       source: 'backend',
       payload,
-    }));
+    };
+    let transport = 'http';
+    try {
+      await postDeviceJson('/api/command', { command, ...envelope });
+    } catch (httpError) {
+      transport = 'mqtt';
+      console.warn(`[Transport] HTTP command ${command} failed; using MQTT fallback:`, httpError.message);
+      await publish(`${topics.commandBase}/${command}`, JSON.stringify(envelope));
+      snapshot.connection.activeTransport = 'mqtt';
+    }
 
     if (command === 'servo' && (payload.action === 'lock' || payload.action === 'unlock')) {
       snapshot.summary.doorOpen = payload.action === 'unlock';
       snapshot.summary.doorStateReason = 'command';
       snapshot.summary.updatedAt = new Date().toISOString();
     }
+    if (command === 'alarm') {
+      snapshot.summary.alarmActive = payload.active !== false;
+      snapshot.summary.alarmSource = payload.source || 'manual';
+      snapshot.summary.updatedAt = new Date().toISOString();
+    }
+    return { ok: true, command, transport };
+  }
+
+  async function publishBootstrapNetworkConfig() {
+    const backend = currentBackendConfig();
+    const networkConfig = {
+      backend_url: backend.publicUrl,
+      fomo_inference_url: backend.fomoInferenceUrl,
+      requested_at: new Date().toISOString(),
+      source: 'mqtt_bootstrap',
+    };
+    await publish(topics.config, JSON.stringify(networkConfig), { qos: 1, retain: true });
+    return networkConfig;
   }
 
   async function syncAccessConfig() {
@@ -311,15 +395,7 @@ export function createMqttService() {
     );
     const backend = currentBackendConfig();
     if (!storedConfig) {
-      const networkConfig = {
-        backend_url: backend.publicUrl,
-        fomo_inference_url: backend.fomoInferenceUrl,
-      };
-      await publish(topics.config, JSON.stringify({
-        ...networkConfig,
-        requested_at: new Date().toISOString(),
-        source: 'network_config_sync',
-      }), { qos: 1, retain: true });
+      const networkConfig = await publishBootstrapNetworkConfig();
       console.warn(
         `[MQTT] Device settings unavailable; synced network config only: FOMO HTTP ${networkConfig.fomo_inference_url}`
       );
@@ -336,11 +412,24 @@ export function createMqttService() {
       storedConfig.rfidAllowlist,
       backend
     );
-    await publish(topics.config, JSON.stringify({
+    const configEnvelope = {
       ...deviceAccessConfig,
       requested_at: new Date().toISOString(),
       source: 'access_config_sync',
-    }), { qos: 1, retain: true });
+    };
+    let transport = 'http';
+    try {
+      await postDeviceJson('/api/config', configEnvelope);
+      // Keep retained MQTT limited to the bootstrap network addresses. This is
+      // intentionally the one configuration step that always remains on MQTT.
+      await publishBootstrapNetworkConfig().catch((mqttError) => {
+        console.warn('[MQTT] Could not refresh retained bootstrap config:', mqttError.message);
+      });
+    } catch (httpError) {
+      transport = 'mqtt';
+      console.warn('[Transport] HTTP config failed; using MQTT fallback:', httpError.message);
+      await publish(topics.config, JSON.stringify(configEnvelope), { qos: 1, retain: true });
+    }
 
     console.log(
       `[MQTT] Synced access config: auto-lock ${deviceAccessConfig.auto_lock_enabled ? 'on' : 'off'} `
@@ -351,7 +440,7 @@ export function createMqttService() {
       + `FOMO HTTP ${deviceAccessConfig.fomo_inference_url}, `
       + `${deviceAccessConfig.rfid_allowlist.length} RFID card(s)`
     );
-    return { synced: true, config: deviceAccessConfig };
+    return { synced: true, transport, config: deviceAccessConfig };
   }
 
   async function pulseAccessActuators(tagId) {
@@ -524,9 +613,21 @@ export function createMqttService() {
     }
   }
 
+  async function captureEventImageWithRetry(options = {}, maxAttempts = 3) {
+    let result = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      result = await captureEventImage(options);
+      if (result.imagePath) return { ...result, captureAttempts: attempt };
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
+    return { ...result, captureAttempts: maxAttempts };
+  }
+
   async function recordAiInference(parsed, detections) {
     const eventId = Number(parsed.event_id);
-    const eventImage = await captureEventImage({ eventId, exactFrame: true });
+    const eventImage = await captureEventImageWithRetry({ eventId, exactFrame: true });
 
     const isPersonDetected =
       String(parsed.label || '').toLowerCase().includes('person') ||
@@ -693,11 +794,14 @@ export function createMqttService() {
       ...(Number.isFinite(eventImage.frameUptimeMs)
         ? { event_image_frame_uptime_ms: eventImage.frameUptimeMs }
         : {}),
+      ...(Number.isInteger(eventImage.captureAttempts)
+        ? { event_image_capture_attempts: eventImage.captureAttempts }
+        : {}),
     };
   }
 
   async function insertAlertWithEventImage(alert, eventImage) {
-    const capturedImage = eventImage ?? await captureEventImage();
+    const capturedImage = eventImage ?? await captureEventImageWithRetry();
     return supabaseService.insertAlert({
       ...alert,
       thumbnailUrl: capturedImage.imagePath || alert.thumbnailUrl,
@@ -714,7 +818,13 @@ export function createMqttService() {
     }
 
     const eventId = Number(parsed.event_id);
-    const eventImage = await captureEventImage({ eventId, exactFrame: true });
+    if (typeof parsed.alarm_active === 'boolean') {
+      snapshot.summary.alarmActive = parsed.alarm_active;
+      snapshot.summary.alarmSource = parsed.alarm_active
+        ? (parsed.alarm_source || 'vision')
+        : null;
+    }
+    const eventImage = await captureEventImageWithRetry({ eventId, exactFrame: true });
     const alertMessages = {
       stranger_detected: 'Phát hiện người lạ đứng yên trong vùng quan sát',
       object_left: 'Phát hiện vật thể bị để lại trong vùng quan sát',
@@ -791,7 +901,7 @@ export function createMqttService() {
     if (!config.access.allowAllRfid) {
       const settings = await supabaseService.getDeviceSettings(config.mqtt.deviceId);
       if (settings?.master_key_enabled) {
-        const eventImage = await captureEventImage();
+        const eventImage = await captureEventImageWithRetry();
         await supabaseService.recordPendingRfidScan({
           deviceId: config.mqtt.deviceId,
           tagId: normalizedTagId,
@@ -811,15 +921,25 @@ export function createMqttService() {
     });
   }
 
-  function handleTelemetryMessage(topic, payload) {
+  function receiveTelemetry(key, parsed, {
+    topic = `/api/device/telemetry/${key}`,
+    raw = JSON.stringify(parsed),
+    transport = 'http',
+  } = {}) {
     const receivedAt = new Date().toISOString();
-    const { raw, parsed } = parsePayload(payload);
-    const key = telemetryByTopic.get(topic);
-
     snapshot.connection.lastMessageAt = receivedAt;
+    snapshot.connection.activeTransport = key === 'endpoints' && transport === 'mqtt'
+      ? 'mqtt-bootstrap'
+      : transport;
+    if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
+    if (key === 'status' && typeof parsed === 'string') {
+      snapshot.connection.deviceReportedOnline = parsed.toLowerCase() === 'online';
+    } else if (key) {
+      snapshot.connection.deviceReportedOnline = true;
+    }
 
     if (key) {
-      snapshot.topics[key] = { topic, raw, parsed, receivedAt };
+      snapshot.topics[key] = { topic, raw, parsed, receivedAt, transport };
       snapshot.summary.updatedAt = receivedAt;
       summarizeTelemetry(snapshot.summary, key, parsed);
 
@@ -868,9 +988,20 @@ export function createMqttService() {
         });
       }
     }
+    return { receivedAt };
   }
 
-  function receiveFomoInference(parsed) {
+  function handleTelemetryMessage(topic, payload) {
+    const { raw, parsed } = parsePayload(payload);
+    const key = telemetryByTopic.get(topic);
+    if (key === 'modelInference' && parsed && typeof parsed === 'object') {
+      receiveFomoInference(parsed, 'mqtt');
+      return;
+    }
+    receiveTelemetry(key, parsed, { topic, raw, transport: 'mqtt' });
+  }
+
+  function receiveFomoInference(parsed, transport = 'http') {
     const receivedAt = new Date().toISOString();
     const confidence = Number(parsed.confidence ?? parsed.score ?? parsed.anomaly_score);
     const detections = Array.isArray(parsed.detections)
@@ -882,12 +1013,15 @@ export function createMqttService() {
       : [];
 
     snapshot.connection.lastMessageAt = receivedAt;
+    if (transport === 'http') snapshot.connection.lastHttpMessageAt = receivedAt;
+    snapshot.connection.activeTransport = transport;
+    snapshot.connection.deviceReportedOnline = true;
     snapshot.topics.modelInference = {
-      topic: '/api/fomo/inference',
+      topic: transport === 'http' ? '/api/fomo/inference' : topics.telemetry.modelInference,
       raw: JSON.stringify(parsed),
       parsed,
       receivedAt,
-      transport: 'http',
+      transport,
     };
     snapshot.summary.updatedAt = receivedAt;
     summarizeTelemetry(snapshot.summary, 'modelInference', parsed);
@@ -948,8 +1082,8 @@ export function createMqttService() {
         console.log('[MQTT] Subscribed:', subscriptions.join(', '));
       });
 
-      syncAccessConfig().catch((error) => {
-        console.error('[MQTT] Failed to sync access config after connect', error);
+      publishBootstrapNetworkConfig().catch((error) => {
+        console.error('[MQTT] Failed to sync bootstrap network config after connect', error);
       });
     });
 
@@ -1002,8 +1136,18 @@ export function createMqttService() {
       const latestImage = snapshot.latestImage && latestFrameAge <= LIVE_FRAME_MAX_AGE_MS
         ? { ...snapshot.latestImage, base64: undefined, url: '/api/mqtt/stream' }
         : null;
+      const lastDeviceMessageMs = snapshot.connection.lastMessageAt
+        ? Date.parse(snapshot.connection.lastMessageAt)
+        : Number.NaN;
+      const deviceConnected = Number.isFinite(lastDeviceMessageMs)
+        && Date.now() - lastDeviceMessageMs <= DEVICE_ONLINE_MAX_AGE_MS
+        && snapshot.connection.deviceReportedOnline !== false;
       return {
         ...snapshot,
+        connection: {
+          ...snapshot.connection,
+          deviceConnected,
+        },
         latestImage,
         topicBase,
         imageTopics: {
@@ -1024,6 +1168,7 @@ export function createMqttService() {
       return () => frameSubscribers.delete(subscriber);
     },
     receiveFomoInference,
+    receiveTelemetry,
     getFomoHttpStatus,
     publishJson(topic, message, options = {}) {
       return publish(topic, JSON.stringify(message), options);
@@ -1037,15 +1182,26 @@ export function createMqttService() {
 
       return publishDeviceCommand(safeCommand, payload);
     },
-    publishConfig(payload) {
+    async publishConfig(payload) {
       const backend = currentBackendConfig();
-      return publish(topics.config, JSON.stringify({
+      const envelope = {
         ...payload,
         backend_url: backend.publicUrl,
         fomo_inference_url: backend.fomoInferenceUrl,
         requested_at: new Date().toISOString(),
         source: 'api',
-      }), { retain: true });
+      };
+      try {
+        await postDeviceJson('/api/config', envelope);
+        await publishBootstrapNetworkConfig().catch((mqttError) => {
+          console.warn('[MQTT] Could not refresh retained bootstrap config:', mqttError.message);
+        });
+        return { ok: true, transport: 'http' };
+      } catch (httpError) {
+        console.warn('[Transport] HTTP config API failed; using MQTT fallback:', httpError.message);
+        await publish(topics.config, JSON.stringify(envelope), { retain: true });
+        return { ok: true, transport: 'mqtt' };
+      }
     },
     recordEvent({ alertType, message, severity, source, metadata, resolved = false }) {
       return insertAlertWithEventImage({

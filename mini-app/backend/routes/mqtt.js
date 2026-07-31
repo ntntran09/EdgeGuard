@@ -67,8 +67,8 @@ export function createMqttRouter(mqttService) {
         return;
       }
 
-      await mqttService.publishCommand(command, payload ?? {});
-      response.json({ ok: true, command });
+      const result = await mqttService.publishCommand(command, payload ?? {});
+      response.json({ ok: true, command, transport: result.transport });
     } catch (error) {
       next(error);
     }
@@ -81,8 +81,8 @@ export function createMqttRouter(mqttService) {
         return;
       }
 
-      await mqttService.publishConfig(request.body);
-      response.json({ ok: true, config: request.body });
+      const result = await mqttService.publishConfig(request.body);
+      response.json({ ok: true, config: request.body, transport: result.transport });
     } catch (error) {
       next(error);
     }

@@ -11,10 +11,14 @@ bool deviceAutoLockEnabled = true;
 volatile bool deviceCameraPublishEnabled = true;
 volatile bool deviceAiDetectionEnabled = true;
 volatile bool deviceCameraBlockedAlertEnabled = true;
+volatile bool deviceObjectLeftAlertEnabled = true;
+volatile bool deviceStrangerAlertEnabled = true;
+unsigned long deviceVisionStableAlertMs = 60000UL;
 unsigned long deviceAutoLockMs = DEFAULT_AUTO_LOCK_MS;
 int deviceLockAngle = SERVO_LOCK_ANGLE;
 int deviceUnlockAngle = SERVO_UNLOCK_ANGLE;
 String deviceFomoHttpResultUrl = DEFAULT_FOMO_HTTP_RESULT_URL;
+String deviceBackendHttpUrl = DEFAULT_BACKEND_HTTP_URL;
 SemaphoreHandle_t deviceFomoHttpUrlMutex = nullptr;
 String deviceRfidAllowlist[MAX_OFFLINE_RFID_CARDS];
 size_t deviceRfidAllowlistCount = 0;
@@ -119,6 +123,16 @@ String device_getFomoHttpResultUrl() {
   return value;
 }
 
+String device_getBackendHttpUrl() {
+  if (!deviceFomoHttpUrlMutex
+      || xSemaphoreTake(deviceFomoHttpUrlMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    return String();
+  }
+  String value = deviceBackendHttpUrl;
+  xSemaphoreGive(deviceFomoHttpUrlMutex);
+  return value;
+}
+
 bool device_setFomoHttpResultUrl(const String &value) {
   if (!deviceFomoHttpUrlMutex
       || xSemaphoreTake(deviceFomoHttpUrlMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -138,13 +152,23 @@ void device_setup() {
     deviceCameraPublishEnabled = preferences.getBool("campub", true);
     deviceAiDetectionEnabled = preferences.getBool("aienabled", true);
     deviceCameraBlockedAlertEnabled = preferences.getBool("camblock", true);
+    deviceObjectLeftAlertEnabled = preferences.getBool("objalert", true);
+    deviceStrangerAlertEnabled = preferences.getBool("stralert", true);
+    deviceVisionStableAlertMs = preferences.getULong("visionms", 60000UL);
+    deviceVisionStableAlertMs = constrain(
+      deviceVisionStableAlertMs,
+      MIN_VISION_STABLE_ALERT_MS,
+      MAX_VISION_STABLE_ALERT_MS
+    );
     deviceAutoLockMs = preferences.getULong("lockms", DEFAULT_AUTO_LOCK_MS);
     deviceLockAngle = preferences.getInt("lockang", SERVO_LOCK_ANGLE);
     deviceUnlockAngle = preferences.getInt("unlockang", SERVO_UNLOCK_ANGLE);
     deviceFomoHttpResultUrl = preferences.getString("fomourl", DEFAULT_FOMO_HTTP_RESULT_URL);
+    deviceBackendHttpUrl = preferences.getString("backendurl", DEFAULT_BACKEND_HTTP_URL);
     if (!device_isHttpUrl(deviceFomoHttpResultUrl)) {
       deviceFomoHttpResultUrl = DEFAULT_FOMO_HTTP_RESULT_URL;
     }
+    if (!device_isHttpUrl(deviceBackendHttpUrl)) deviceBackendHttpUrl = DEFAULT_BACKEND_HTTP_URL;
     device_loadRfidCsv(preferences.getString("rfiduids", ""));
     preferences.end();
   }
@@ -185,10 +209,14 @@ void device_applyConfig(JsonDocument &doc) {
   bool persistCameraPublish = false;
   bool persistAiDetection = false;
   bool persistCameraBlockedAlert = false;
+  bool persistObjectLeftAlert = false;
+  bool persistStrangerAlert = false;
+  bool persistVisionStableMs = false;
   bool persistAutoLockMs = false;
   bool persistLockAngle = false;
   bool persistUnlockAngle = false;
   bool persistFomoHttpUrl = false;
+  bool persistBackendHttpUrl = false;
   bool persistRfidAllowlist = false;
 
   if (source["auto_lock_enabled"].is<bool>()) {
@@ -214,6 +242,28 @@ void device_applyConfig(JsonDocument &doc) {
     bool next = source["camera_blocked_alert_enabled"].as<bool>();
     persistCameraBlockedAlert = next != deviceCameraBlockedAlertEnabled;
     deviceCameraBlockedAlertEnabled = next;
+  }
+
+  if (source["object_left_alert_enabled"].is<bool>()) {
+    bool next = source["object_left_alert_enabled"].as<bool>();
+    persistObjectLeftAlert = next != deviceObjectLeftAlertEnabled;
+    deviceObjectLeftAlertEnabled = next;
+  }
+
+  if (source["stranger_alert_enabled"].is<bool>()) {
+    bool next = source["stranger_alert_enabled"].as<bool>();
+    persistStrangerAlert = next != deviceStrangerAlertEnabled;
+    deviceStrangerAlertEnabled = next;
+  }
+
+  if (!source["vision_stable_alert_ms"].isNull()) {
+    unsigned long next = constrain(
+      source["vision_stable_alert_ms"].as<unsigned long>(),
+      MIN_VISION_STABLE_ALERT_MS,
+      MAX_VISION_STABLE_ALERT_MS
+    );
+    persistVisionStableMs = next != deviceVisionStableAlertMs;
+    deviceVisionStableAlertMs = next;
   }
 
   if (!source["auto_lock_ms"].isNull()) {
@@ -254,19 +304,37 @@ void device_applyConfig(JsonDocument &doc) {
     }
   }
 
+  if (source["backend_url"].is<const char *>()) {
+    String nextBackendUrl = String(source["backend_url"].as<const char *>());
+    nextBackendUrl.trim();
+    while (nextBackendUrl.endsWith("/")) nextBackendUrl.remove(nextBackendUrl.length() - 1);
+    if (device_isHttpUrl(nextBackendUrl)) {
+      persistBackendHttpUrl = nextBackendUrl != deviceBackendHttpUrl;
+      deviceBackendHttpUrl = nextBackendUrl;
+    } else {
+      Serial.println("[Device] Ignored invalid backend HTTP URL from config");
+    }
+  }
+
   if (source["rfid_allowlist"].is<JsonArrayConst>()) {
     String next = device_buildRfidCsv(source["rfid_allowlist"].as<JsonArrayConst>());
     persistRfidAllowlist = next != deviceRfidAllowlistCsv;
     if (persistRfidAllowlist) device_loadRfidCsv(next);
   }
 
-  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistCameraBlockedAlert || persistAutoLockMs || persistLockAngle || persistUnlockAngle || persistFomoHttpUrl || persistRfidAllowlist) {
+  if (persistAutoLock || persistCameraPublish || persistAiDetection || persistCameraBlockedAlert
+      || persistObjectLeftAlert || persistStrangerAlert || persistVisionStableMs
+      || persistAutoLockMs || persistLockAngle || persistUnlockAngle
+      || persistFomoHttpUrl || persistBackendHttpUrl || persistRfidAllowlist) {
     Preferences preferences;
     if (preferences.begin("edgeguard", false)) {
       if (persistAutoLock) preferences.putBool("autolock", deviceAutoLockEnabled);
       if (persistCameraPublish) preferences.putBool("campub", deviceCameraPublishEnabled);
       if (persistAiDetection) preferences.putBool("aienabled", deviceAiDetectionEnabled);
       if (persistCameraBlockedAlert) preferences.putBool("camblock", deviceCameraBlockedAlertEnabled);
+      if (persistObjectLeftAlert) preferences.putBool("objalert", deviceObjectLeftAlertEnabled);
+      if (persistStrangerAlert) preferences.putBool("stralert", deviceStrangerAlertEnabled);
+      if (persistVisionStableMs) preferences.putULong("visionms", deviceVisionStableAlertMs);
       if (persistAutoLockMs) preferences.putULong("lockms", deviceAutoLockMs);
       if (persistLockAngle) preferences.putInt("lockang", deviceLockAngle);
       if (persistUnlockAngle) preferences.putInt("unlockang", deviceUnlockAngle);
@@ -274,6 +342,7 @@ void device_applyConfig(JsonDocument &doc) {
         String fomoHttpUrl = device_getFomoHttpResultUrl();
         preferences.putString("fomourl", fomoHttpUrl);
       }
+      if (persistBackendHttpUrl) preferences.putString("backendurl", deviceBackendHttpUrl);
       if (persistRfidAllowlist) {
         preferences.putString("rfiduids", deviceRfidAllowlistCsv);
         String storedRfidCsv = preferences.getString("rfiduids", "");

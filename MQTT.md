@@ -1,11 +1,15 @@
-# MQTT in EdgeGuard
+# MQTT bootstrap and fallback in EdgeGuard
 
 ## Overview
 
-MQTT is the realtime message layer between the EdgeGuard web server, IoT hardware, and optional AI model workers.
+HTTP is the primary device/server transport. MQTT is retained for initial IP
+and backend URL bootstrap, presence/LWT, and automatic fallback when an HTTP
+request cannot be delivered.
 
-- The IoT device publishes telemetry and subscribes to commands.
-- The web server subscribes to telemetry and publishes commands/configuration.
+- The device announces its control/camera IP through retained MQTT.
+- Telemetry, RFID, FOMO and vision alerts use HTTP first, then MQTT fallback.
+- Commands and operational config use device HTTP first, then MQTT fallback.
+- Retained MQTT config provides the backend/FOMO URLs needed to bootstrap HTTP.
 - AI workers can subscribe to telemetry and publish inference results.
 - Camera-capable devices can publish image payloads, and the API server saves them locally.
 
@@ -138,18 +142,20 @@ X-EdgeGuard-Device-Id: device_001
 Content-Type: application/json
 ```
 
-The inference and its exact cached JPEG are not sent through MQTT. After the
-HTTP inference is accepted, the backend retrieves
+The inference uses `{base}/telemetry/inference` only when its HTTP POST fails.
+The exact cached JPEG is not sent through MQTT. After the inference is
+accepted, the backend retrieves
 `GET /event-frame?event_id=<id>` from the device. For person detections, the
-backend returns the AWS Rekognition result to the device on:
+backend returns the AWS Rekognition result through `POST :82/api/command`.
+Its MQTT fallback topic is:
 
 ```text
 {base}/command/vision-result
 ```
 
 The device ignores a result whose `event_id` is no longer current. Stable
-stranger/object alerts and camera-occlusion alerts are published on
-`{base}/telemetry/vision-alert`.
+stranger/object alerts and camera-occlusion alerts are posted to
+`POST /api/device/telemetry`; `{base}/telemetry/vision-alert` is the fallback.
 
 `camera_blocked_alert_enabled` is synchronized in the retained device config
 independently from `ai_detection_enabled`. Camera-tamper analysis continues when
@@ -173,7 +179,7 @@ Example inference payload:
 }
 ```
 
-## Command Topics
+## MQTT fallback command topics
 
 Server to hardware:
 
@@ -197,22 +203,25 @@ Generic command payload:
 }
 ```
 
-Configuration messages are retained so devices can receive the latest config after reconnecting:
+Only bootstrap network configuration is retained during normal operation. Full
+operational config may be retained temporarily when HTTP delivery fails:
 
 ```json
 {
-  "sample_interval_ms": 5000,
-  "security_interval_ms": 1000,
-  "publish_system_metrics": true
+  "backend_url": "http://192.168.1.10:3000",
+  "fomo_inference_url": "http://192.168.1.10:3000/api/fomo/inference"
 }
 ```
 
 ## API Server
 
 - `GET /health`: API and MQTT health.
-- `GET /api/mqtt/status`: MQTT connection state and latest telemetry snapshot.
-- `POST /api/mqtt/command`: publish a named command to the device.
-- `POST /api/mqtt/config`: publish retained device configuration.
+- `GET /api/device/status`: physical-device state and latest telemetry snapshot.
+- `POST /api/device/telemetry`: receive HTTP telemetry from the device.
+- `POST /api/device/command`: send an HTTP-first command with MQTT fallback.
+- `POST /api/device/config`: send HTTP-first config with MQTT fallback.
+- `POST /api/device/sync-access`: synchronize settings and RFID allowlist.
+- `GET/POST /api/mqtt/*`: compatibility and MQTT development endpoints.
 - `POST /api/mqtt/send`: publish a custom MQTT message for development.
 - `POST /api/fomo/inference`: accept FOMO inference JSON from the ESP32 over HTTP.
 - `GET /api/fomo/status`: show the current inference URL and latest received FOMO event.

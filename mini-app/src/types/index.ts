@@ -138,7 +138,7 @@ export interface CameraEndpoints {
   frameProxyUrl: string;
   streamProxyUrl: string;
   mqttTopicBase?: string;
-  source: 'mqtt';
+  source: 'mqtt-bootstrap';
   discoveredAt?: string;
 }
 
@@ -158,8 +158,12 @@ export interface AiDetection {
 
 export interface SystemStatus {
   mqttConnected: boolean;
+  deviceConnected?: boolean;
+  activeTransport?: 'http' | 'mqtt' | 'mqtt-bootstrap' | null;
   doorOpen: boolean;
   motionDetected: boolean;
+  alarmActive?: boolean;
+  alarmSource?: 'manual' | 'vision' | null;
   temperatureC?: number;
   humidityPct?: number;
   modelLabel?: string;

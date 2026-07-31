@@ -47,7 +47,6 @@ export default function DashboardPage() {
   const { user, hapticFeedback } = useTelegram();
   const [doorLoading, setDoorLoading] = useState(false);
   const [alarmLoading, setAlarmLoading] = useState(false);
-  const [alarmActive, setAlarmActive] = useState(false);
   const [toast, setToast] = useState<{ msg: string; kind: ToastKind } | null>(null);
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
@@ -63,9 +62,11 @@ export default function DashboardPage() {
     autoLockSeconds: null,
   }), [status]);
   const doorOpen = Boolean(activeStatus.doorOpen);
+  const alarmActive = Boolean(activeStatus.alarmActive);
+  const deviceConnected = activeStatus.deviceConnected ?? activeStatus.mqttConnected;
   const recentEvents = events;
   const criticalEvent = recentEvents.find((event) => event.severity === 'danger') || recentEvents[0];
-  const isSafe = activeStatus.mqttConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
+  const isSafe = deviceConnected && !alarmActive && !recentEvents.some((event) => event.severity === 'danger');
   const cameraStreamProxyUrl = activeStatus.cameraEndpoints?.streamProxyUrl;
   const cameraFrameProxyUrl = activeStatus.cameraEndpoints?.frameProxyUrl;
   const useCameraStream = Boolean(cameraStreamProxyUrl)
@@ -80,10 +81,11 @@ export default function DashboardPage() {
     .filter((detection) => detection.confidence > AI_MIN_CONFIDENCE);
 
   const statusCopy = useMemo(() => {
-    if (!activeStatus.mqttConnected) return 'Thiết bị ngoại tuyến';
+    if (!deviceConnected) return 'Thiết bị ngoại tuyến';
+    if (alarmActive) return 'Báo động đã được bật';
     if (!isSafe) return 'Cần kiểm tra';
     return 'Hệ thống an toàn';
-  }, [activeStatus.mqttConnected, isSafe]);
+  }, [alarmActive, deviceConnected, isSafe]);
 
   const showToast = useCallback((msg: string, kind: ToastKind = 'success') => {
     setToast({ msg, kind });
@@ -174,7 +176,7 @@ export default function DashboardPage() {
       await loadDashboard();
     } catch {
       hapticFeedback('notification', 'error');
-      showToast('Không thể điều khiển cửa, kiểm tra MQTT/backend', 'error');
+      showToast('Không thể điều khiển cửa qua HTTP hoặc MQTT fallback', 'error');
     } finally {
       setDoorLoading(false);
     }
@@ -186,7 +188,11 @@ export default function DashboardPage() {
       const next = !alarmActive;
       await api.triggerAlarm(next);
       hapticFeedback('notification', next ? 'warning' : 'success');
-      setAlarmActive(next);
+      setStatus((current) => ({
+        ...(current || activeStatus),
+        alarmActive: next,
+        alarmSource: next ? 'manual' : null,
+      }));
       showToast(next ? 'Đã kích hoạt báo động' : 'Đã tắt báo động', next ? 'warn' : 'success');
     } catch {
       hapticFeedback('notification', 'error');
@@ -194,7 +200,7 @@ export default function DashboardPage() {
     } finally {
       setAlarmLoading(false);
     }
-  }, [alarmActive, hapticFeedback, showToast]);
+  }, [activeStatus, alarmActive, hapticFeedback, showToast]);
 
   const toastBg: Record<ToastKind, string> = {
     success: 'var(--accent-success)',
@@ -218,9 +224,15 @@ export default function DashboardPage() {
             {getGreeting()}, {user?.first_name || 'người dùng'}
           </h1>
         </div>
-        <span className={`connection-chip ${activeStatus.mqttConnected ? 'is-online' : 'is-offline'}`}>
+        <span className={`connection-chip ${deviceConnected ? 'is-online' : 'is-offline'}`}>
           <WifiFilledIcon size={16} />
-          {activeStatus.mqttConnected ? 'Trực tuyến' : 'Ngoại tuyến'}
+          {deviceConnected
+            ? `Trực tuyến qua ${activeStatus.activeTransport === 'mqtt'
+              ? 'MQTT fallback'
+              : activeStatus.activeTransport === 'mqtt-bootstrap'
+                ? 'MQTT bootstrap'
+                : 'HTTP'}`
+            : 'Ngoại tuyến'}
         </span>
       </header>
 
@@ -235,9 +247,15 @@ export default function DashboardPage() {
             <div className="status-details">
               <h2>{statusCopy}</h2>
               <p>
-                {activeStatus.lastUpdate
+                {alarmActive
+                  ? activeStatus.alarmSource === 'vision'
+                    ? 'AI đã bật còi sau khi phát hiện kéo dài quá ngưỡng cấu hình'
+                    : 'Còi báo động đang hoạt động'
+                  : activeStatus.lastUpdate
                   ? `Cập nhật ${formatTimeAgo(activeStatus.lastUpdate)}`
-                  : 'Đang chờ tín hiệu mới từ ESP32'}
+                  : deviceConnected
+                    ? 'Đã kết nối, đang chờ telemetry đầu tiên'
+                    : 'Đang chờ kết nối từ ESP32'}
               </p>
             </div>
           </section>
@@ -275,7 +293,7 @@ export default function DashboardPage() {
             </button>
 
             <button
-              className="quick-action-btn danger-action"
+              className={`quick-action-btn danger-action ${alarmActive ? 'is-active' : ''}`}
               onClick={handleAlarm}
               disabled={alarmLoading}
             >
@@ -325,7 +343,7 @@ export default function DashboardPage() {
                 <span>{cameraPublishingEnabled ? 'Chưa có luồng camera' : 'Gửi ảnh camera đang tắt'}</span>
                 <small>
                   {cameraPublishingEnabled
-                    ? 'Đang chờ ESP32-CAM công bố đường dẫn camera qua MQTT'
+                    ? 'Đang chờ ESP32-CAM công bố IP ban đầu qua MQTT'
                     : 'Bật lại trong Cài đặt → Hệ thống để xem luồng trực tiếp'}
                 </small>
               </div>

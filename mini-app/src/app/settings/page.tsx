@@ -328,14 +328,14 @@ export default function SettingsPage() {
             />
           </div>
           <NumberSetting
-            label="Ngưỡng cảnh báo (giây)"
+            label="Ngưỡng người lạ/vật thể (giây)"
             value={alertConfig.objectLeftMaxSeconds}
-            disabled={!alertConfig.objectLeftAlertEnabled}
+            disabled={!alertConfig.objectLeftAlertEnabled && !alertConfig.strangerAlertEnabled}
             onChange={(value) => updateSetting('objectLeftMaxSeconds', value)}
           />
 
           <div className="setting-row">
-            <div><strong>Cảnh báo người lạ</strong><small>AI phát hiện người chưa xác định.</small></div>
+            <div><strong>Cảnh báo người lạ</strong><small>Bật còi khi người chưa xác định còn trong vùng quá ngưỡng ở trên.</small></div>
             <ToggleSwitch checked={alertConfig.strangerAlertEnabled} onChange={() => updateSetting('strangerAlertEnabled', !alertConfig.strangerAlertEnabled)} label="Cảnh báo người lạ" />
           </div>
           <div className="setting-row">

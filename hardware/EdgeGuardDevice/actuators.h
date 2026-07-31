@@ -14,6 +14,8 @@ bool doorLockPending = false;
 bool doorOpenState = false;
 bool doorStateDirty = true;
 bool alarmActive = false;
+bool alarmStateDirty = true;
+bool alarmManualOverrideActive = false;
 bool alarmHighTone = false;
 unsigned long doorStateChangedAt = 0;
 String doorStateReason = "startup";
@@ -61,6 +63,7 @@ void actuators_unlockDoor(int unlockAngle, int lockAngle, unsigned long autoLock
 
 void actuators_setAlarm(bool active) {
   alarmActive = active;
+  alarmStateDirty = true;
   buzzerStopPending = false;
 
   if (!alarmActive) {
@@ -132,7 +135,9 @@ void servo_command(JsonDocument &doc) {
 void alarm_command(JsonDocument &doc) {
   JsonVariant payload = doc.as<JsonVariant>();
   if (doc["payload"].is<JsonObject>()) payload = doc["payload"];
-  actuators_setAlarm(payload["active"] | true);
+  bool active = payload["active"] | true;
+  alarmManualOverrideActive = active;
+  actuators_setAlarm(active);
 }
 
 void actuators_loop() {

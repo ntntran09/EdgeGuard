@@ -13,7 +13,13 @@ interface MqttInferenceSnapshot {
 }
 
 interface MqttStatusPayload {
-  connection?: { connected?: boolean };
+  connection?: {
+    connected?: boolean;
+    deviceConnected?: boolean;
+    activeTransport?: 'http' | 'mqtt' | 'mqtt-bootstrap' | null;
+    lastMessageAt?: string;
+    lastHttpMessageAt?: string;
+  };
   summary?: Record<string, unknown>;
   latestImage?: { base64?: string; url?: string };
   topics?: { modelInference?: MqttInferenceSnapshot };
@@ -51,7 +57,7 @@ function freshAiDetections(inference?: MqttInferenceSnapshot) {
 export async function GET() {
   try {
     const [res, settingsResult] = await Promise.all([
-      fetch(backendApiUrl('/api/mqtt/status'), {
+      fetch(backendApiUrl('/api/device/status'), {
         cache: 'no-store',
       }),
       isSupabaseConfigured
@@ -83,13 +89,19 @@ export async function GET() {
     const cameraEndpoints = data.summary?.cameraEndpoints as MqttCameraEndpoints | undefined;
     return NextResponse.json({
       mqttConnected: data.connection?.connected ?? false,
+      deviceConnected: data.connection?.deviceConnected ?? false,
+      activeTransport: data.connection?.activeTransport ?? null,
       doorOpen: data.summary?.doorOpen ?? false,
       motionDetected: data.summary?.motionDetected ?? false,
       temperatureC: data.summary?.temperatureC,
       humidityPct: data.summary?.humidityPct,
       modelLabel: data.summary?.modelLabel,
       anomalyScore: data.summary?.anomalyScore,
-      lastUpdate: data.summary?.updatedAt,
+      alarmActive: data.summary?.alarmActive ?? false,
+      alarmSource: data.summary?.alarmSource ?? null,
+      lastUpdate: data.summary?.updatedAt
+        ?? data.connection?.lastHttpMessageAt
+        ?? data.connection?.lastMessageAt,
       latestImageUrl: data.latestImage?.base64 || data.latestImage?.url,
       cameraReady: data.summary?.cameraReady ?? false,
       cameraLastFrameAt: data.summary?.cameraLastFrameAt,
@@ -107,7 +119,7 @@ export async function GET() {
         frameProxyUrl: '/api/camera/frame',
         streamProxyUrl: '/api/camera/stream',
         mqttTopicBase: data.topicBase,
-        source: 'mqtt',
+        source: 'mqtt-bootstrap',
         discoveredAt: cameraEndpoints.discoveredAt,
       } : undefined,
       aiDetectionEnabled: typeof data.summary?.aiDetectionEnabled === 'boolean'

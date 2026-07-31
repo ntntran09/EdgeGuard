@@ -37,7 +37,7 @@ async function getAutoLockConfig() {
 }
 
 async function publishCommand(command: string, payload: Record<string, unknown>) {
-  const res = await fetch(backendApiUrl('/api/mqtt/command'), {
+  const res = await fetch(backendApiUrl('/api/device/command'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command, payload }),
