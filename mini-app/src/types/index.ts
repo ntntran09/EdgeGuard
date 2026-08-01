@@ -80,6 +80,8 @@ export interface SecurityEvent {
   thumbnailUrl?: string;
   aiConfidence?: number;
   aiDetections?: AiDetection[];
+  recognizedCount?: number;
+  recognizedNames?: string[];
   severity: EventSeverity;
   cardId?: string;
   category?: EventCategory;

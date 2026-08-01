@@ -830,16 +830,19 @@ export function createMqttService() {
         // timer expires and the device checks two final FOMO frames. Seeing a
         // person in either frame confirms presence; AWS is not called again.
         if (hasKnownPerson) {
+          const recognizedCount = knownNames.length;
           await insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
             alertType: 'face_recognized',
-            message: `Nhận diện người quen: ${knownNames.join(', ')}`,
+            message: `Nhận diện ${recognizedCount} người quen: ${knownNames.join(', ')}`,
             thumbnailUrl: eventImage.imagePath,
             severity: 'info',
             source: 'ai',
             metadata: {
               rekognition: rekognitionResults,
               recognized_name: knownNames.join(', ') || 'Người lạ',
+              recognized_names: knownNames,
+              recognized_count: recognizedCount,
               unmatched_face_count: strangerCount,
               detections: knownFaceDetections,
               input_width: parsed.input_width || 320,

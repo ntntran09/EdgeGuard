@@ -260,9 +260,9 @@ export default function SettingsPage() {
       setNewFaceImageBase64('');
       setNewFaceImageName('');
       setFaceUploadInputKey((key) => key + 1);
-      showToast('Đã thêm gương mặt quen');
-    } catch {
-      showToast('Không thể thêm gương mặt');
+      showToast(`Đã lưu mẫu khuôn mặt ${newFaceName.trim()} lên AWS`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Không thể thêm gương mặt');
     } finally {
       setActionLoading(false);
     }
@@ -739,13 +739,19 @@ export default function SettingsPage() {
                 </button>
               </div>
             )}
+            <small>Có thể thêm nhiều ảnh cùng tên để tăng độ chính xác ở các góc mặt và điều kiện sáng khác nhau.</small>
             <button className="pill-btn pill-btn-primary" onClick={handleAddFace} disabled={actionLoading}>Thêm gương mặt</button>
           </div>
           <div className="face-grid">
             {faces.length === 0 ? <div className="empty-state">Chưa có gương mặt quen nào.</div> : faces.map((face) => (
               <div className="face-card" key={face.id}>
                 {face.imageUrl ? <Image src={face.imageUrl} alt={face.displayName} width={72} height={72} unoptimized /> : <ShieldFilledIcon size={28} />}
-                <span><strong>{face.displayName}</strong><small>Thêm {formatTimeAgo(face.addedAt)}</small></span>
+                <span>
+                  <strong>{face.displayName}</strong>
+                  <small className={face.rekognitionFaceId ? undefined : 'face-aws-error'}>
+                    {face.rekognitionFaceId ? `Đã lưu AWS · ${formatTimeAgo(face.addedAt)}` : 'Lỗi: chưa lưu được trên AWS'}
+                  </small>
+                </span>
                 <button
                   className="mini-btn danger"
                   onClick={async () => {

@@ -47,6 +47,35 @@ function normalizeImagePath(path?: string | null) {
   return `/api/images/${path}`;
 }
 
+function familiarPeople(metadata: Record<string, unknown>) {
+  const explicitNames = Array.isArray(metadata.recognized_names)
+    ? metadata.recognized_names
+    : [];
+  const detectionNames = Array.isArray(metadata.detections)
+    ? metadata.detections.flatMap((detection) => {
+        if (!detection || typeof detection !== 'object') return [];
+        const value = detection as Record<string, unknown>;
+        return value.type === 'face_known' && typeof value.label === 'string'
+          ? [value.label]
+          : [];
+      })
+    : [];
+  const legacyNames = typeof metadata.recognized_name === 'string'
+    ? metadata.recognized_name.split(',')
+    : [];
+  const names = [...new Set([...explicitNames, ...detectionNames, ...legacyNames]
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => name.trim())
+    .filter((name) => name && name !== 'Người lạ'))]
+    .slice(0, 3);
+  const metadataCount = Number(metadata.recognized_count);
+  const count = Math.min(3, Math.max(
+    names.length,
+    Number.isInteger(metadataCount) && metadataCount > 0 ? metadataCount : 0,
+  ));
+  return { names, count };
+}
+
 function copyForEvent(type: string, description?: string | null, metadata?: Record<string, unknown>) {
   switch (type) {
     case 'access_granted':
@@ -68,8 +97,10 @@ function copyForEvent(type: string, description?: string | null, metadata?: Reco
     case 'person_detected':
       return { type: 'person_detected' as EventType, title: 'Phát hiện người', severity: 'info' as EventSeverity };
     case 'face_recognized': {
-      // Use the full message from DB as title (e.g. "Nhận diện người: Trúc Mai và 1 người lạ")
-      const title = typeof description === 'string' && description.trim() ? description : 'Nhận diện người quen';
+      const familiar = familiarPeople(metadata || {});
+      const title = familiar.count > 0
+        ? `Nhận diện ${familiar.count} người quen${familiar.names.length ? `: ${familiar.names.join(', ')}` : ''}`
+        : (typeof description === 'string' && description.trim() ? description : 'Nhận diện người quen');
       return { type: 'face_recognized' as EventType, title, severity: 'info' as EventSeverity };
     }
     case 'object_detected':
@@ -104,6 +135,9 @@ function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityE
       : undefined;
 
   const aiConfidence = row.ai_confidence ?? undefined;
+  const familiar = row.event_type === 'face_recognized'
+    ? familiarPeople(metadata)
+    : { names: [], count: 0 };
 
   // Subtitle: for person_detected only, show AI inference format
   let eventDescription = description || copy.title;
@@ -123,6 +157,8 @@ function mapRow(row: SecurityEventRow, viewedIds = new Set<string>()): SecurityE
     thumbnailUrl: normalizeImagePath(row.thumbnail_url),
     aiConfidence,
     aiDetections: normalizeAiDetections(metadata),
+    recognizedCount: familiar.count || undefined,
+    recognizedNames: familiar.names.length ? familiar.names : undefined,
     severity: row.severity || copy.severity,
     cardId,
     category: row.category || undefined,

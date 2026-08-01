@@ -12,25 +12,29 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const region = process.env.AWS_REGION || 'ap-southeast-1';
-const collectionId =
-  process.env.AWS_REKOGNITION_COLLECTION_ID || 'edgeguard-faces';
+function currentRegion(): string {
+  return process.env.AWS_REGION || 'ap-southeast-1';
+}
 
-export const isRekognitionConfigured = Boolean(
-  process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY,
-);
+function currentCollectionId(): string {
+  return process.env.AWS_REKOGNITION_COLLECTION_ID || 'edgeguard-faces';
+}
+
+export function isRekognitionConfigured(): boolean {
+  return Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+}
 
 // ---------------------------------------------------------------------------
 // Client singleton
 // ---------------------------------------------------------------------------
 
 let client: RekognitionClient | null = null;
-let collectionReady = false;
+let readyCollectionId: string | null = null;
 
 function getClient(): RekognitionClient {
   if (!client) {
     client = new RekognitionClient({
-      region,
+      region: currentRegion(),
       credentials: {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
@@ -46,7 +50,8 @@ function getClient(): RekognitionClient {
  * credentials are missing.
  */
 async function ensureCollection(): Promise<void> {
-  if (collectionReady) return;
+  const collectionId = currentCollectionId();
+  if (readyCollectionId === collectionId) return;
 
   try {
     await getClient().send(
@@ -56,18 +61,18 @@ async function ensureCollection(): Promise<void> {
   } catch (error: unknown) {
     const name = (error as { name?: string })?.name;
     if (name === 'ResourceAlreadyExistsException') {
-      collectionReady = true;
+      readyCollectionId = collectionId;
       return;
     }
     if (name === 'AccessDeniedException') {
       console.warn(`[Rekognition] AccessDenied on CreateCollection (${collectionId}). Assuming collection already exists.`);
-      collectionReady = true;
+      readyCollectionId = collectionId;
       return;
     }
     throw error;
   }
 
-  collectionReady = true;
+  readyCollectionId = collectionId;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +99,7 @@ export async function indexFace(
   imageBuffer: Buffer,
   externalImageId: string,
 ): Promise<IndexFaceResult> {
-  if (!isRekognitionConfigured) {
+  if (!isRekognitionConfigured()) {
     throw new Error('AWS Rekognition is not configured');
   }
 
@@ -102,7 +107,7 @@ export async function indexFace(
 
   const result = await getClient().send(
     new IndexFacesCommand({
-      CollectionId: collectionId,
+      CollectionId: currentCollectionId(),
       Image: { Bytes: imageBuffer },
       ExternalImageId: externalImageId,
       MaxFaces: 1,
@@ -135,7 +140,7 @@ export async function indexFace(
     // Khuôn mặt có góc nghiêng/cúi ngẩng quá lớn (> 25 độ) hoặc độ tin cậy thấp -> Xóa ngay khỏi collection
     await getClient().send(
       new DeleteFacesCommand({
-        CollectionId: collectionId,
+        CollectionId: currentCollectionId(),
         FaceIds: [face.FaceId],
       }),
     ).catch(() => {});
@@ -175,13 +180,13 @@ export async function indexFace(
  * @param faceId  The `FaceId` returned by a prior `indexFace` call.
  */
 export async function deleteFace(faceId: string): Promise<void> {
-  if (!isRekognitionConfigured) {
+  if (!isRekognitionConfigured()) {
     throw new Error('AWS Rekognition is not configured');
   }
 
   await getClient().send(
     new DeleteFacesCommand({
-      CollectionId: collectionId,
+      CollectionId: currentCollectionId(),
       FaceIds: [faceId],
     }),
   );
@@ -200,7 +205,7 @@ export interface SearchFaceResult {
  * faces from the real-time camera stream can still match against registered faces.
  */
 export async function searchFace(imageBuffer: Buffer, threshold = 75): Promise<SearchFaceResult> {
-  if (!isRekognitionConfigured) {
+  if (!isRekognitionConfigured()) {
     throw new Error('AWS Rekognition is not configured');
   }
 
@@ -209,7 +214,7 @@ export async function searchFace(imageBuffer: Buffer, threshold = 75): Promise<S
   try {
     const result = await getClient().send(
       new SearchFacesByImageCommand({
-        CollectionId: collectionId,
+        CollectionId: currentCollectionId(),
         Image: { Bytes: imageBuffer },
         MaxFaces: 1,
         FaceMatchThreshold: threshold,

@@ -226,6 +226,9 @@ export default function LogsPage() {
                     AI {Math.round(event.aiConfidence * 100)}%
                   </span>
                 )}
+                {event.recognizedCount && (
+                  <span className="badge badge-info">{event.recognizedCount} người quen</span>
+                )}
               </div>
               <div className="event-card-timestamp-overlay">{formatTime(event.timestamp)}</div>
             </div>
@@ -351,6 +354,17 @@ export default function LogsPage() {
                   <div>
                     <span>Độ tin cậy AI</span>
                     <strong>{Math.round(selectedEvent.aiConfidence * 100)}%</strong>
+                  </div>
+                )}
+                {selectedEvent.recognizedCount && (
+                  <div>
+                    <span>Người quen</span>
+                    <strong>
+                      {selectedEvent.recognizedCount}
+                      {selectedEvent.recognizedNames?.length
+                        ? ` · ${selectedEvent.recognizedNames.join(', ')}`
+                        : ''}
+                    </strong>
                   </div>
                 )}
                 {selectedEvent.aiDetections?.map((detection, index) => (

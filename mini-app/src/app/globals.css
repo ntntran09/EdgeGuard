@@ -2752,6 +2752,11 @@ input {
   font-size: 0.78rem;
 }
 
+.face-card small.face-aws-error {
+  color: var(--accent-danger);
+  font-weight: 700;
+}
+
 /* ===== CURRENT UI REFINEMENTS ===== */
 .status-ring > svg {
   position: relative;

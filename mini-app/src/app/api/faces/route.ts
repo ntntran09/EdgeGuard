@@ -75,26 +75,33 @@ export async function POST(request: Request) {
     ? imageBase64.trim()
     : null;
 
-  if (safeImageBase64 && safeImageBase64.length > MAX_FACE_DATA_URL_LENGTH) {
+  if (!safeImageBase64) {
+    return NextResponse.json({ ok: false, error: 'Vui lòng chọn ảnh gương mặt.' }, { status: 422 });
+  }
+  if (safeImageBase64.length > MAX_FACE_DATA_URL_LENGTH) {
     return NextResponse.json({ ok: false, error: 'Image is too large' }, { status: 413 });
+  }
+  if (!isRekognitionConfigured()) {
+    return NextResponse.json(
+      { ok: false, error: 'AWS Rekognition chưa được cấu hình. Gương mặt chưa được lưu.' },
+      { status: 503 },
+    );
   }
 
   // ── Step 1: Upload image to Supabase Storage ──────────────────────────
   let storedImage = null;
-  if (safeImageBase64) {
-    try {
-      storedImage = await uploadDataUrlToStorage({
-        dataUrl: safeImageBase64,
-        folder: 'known-faces',
-        deviceId: DEVICE_ID,
-        namePrefix: displayName.trim(),
-        maxBytes: MAX_FACE_IMAGE_BYTES,
-        metadata: { display_name: displayName.trim() },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Cannot upload face image';
-      return NextResponse.json({ ok: false, error: message }, { status: 400 });
-    }
+  try {
+    storedImage = await uploadDataUrlToStorage({
+      dataUrl: safeImageBase64,
+      folder: 'known-faces',
+      deviceId: DEVICE_ID,
+      namePrefix: displayName.trim(),
+      maxBytes: MAX_FACE_IMAGE_BYTES,
+      metadata: { display_name: displayName.trim() },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Cannot upload face image';
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }
 
   // ── Step 2: Insert row into known_faces (rekognition_face_id = NULL) ──
@@ -122,82 +129,70 @@ export async function POST(request: Request) {
   }
 
   // ── Step 3: AWS Rekognition IndexFaces ─────────────────────────────────
-  // When AWS is configured and an image was provided, index the face into
-  // the Rekognition collection. If no face is detected, roll back the DB
-  // row and the Storage object so the user gets clear feedback.
-  if (safeImageBase64 && isRekognitionConfigured) {
-    const base64Match = safeImageBase64.match(DATA_URL_PATTERN);
-    const imageBuffer = base64Match
-      ? Buffer.from(base64Match[1], 'base64')
-      : null;
-
-    if (imageBuffer && imageBuffer.length > 0) {
-      try {
-        const rekResult = await indexFace(imageBuffer, data.id);
-
-        if (rekResult.faceId) {
-          // Face detected — persist the Rekognition FaceId
-          const { error: updateError } = await supabase
-            .from('known_faces')
-            .update({ rekognition_face_id: rekResult.faceId })
-            .eq('id', data.id);
-
-          if (updateError) {
-            console.error('[API /faces] Failed to save rekognition_face_id:', updateError);
-          }
-
-          return NextResponse.json({
-            ok: true,
-            face: mapFace({
-              ...data,
-              rekognition_face_id: rekResult.faceId,
-            }),
-          }, { status: 201 });
-        }
-
-        // No face detected or rejected by quality/pose filter — roll back everything
-        await supabase.from('known_faces').delete().eq('id', data.id);
-        if (storedImage) {
-          await removeStorageObject(storedImage.bucket, storedImage.path).catch(() => {});
-        }
-
-        let errorText = rekResult.errorMessage || 'Không phát hiện khuôn mặt đạt chuẩn trong ảnh. Vui lòng chụp rõ thẳng mặt.';
-        if (!rekResult.errorMessage && rekResult.unindexedReasons?.length) {
-          const reasonMap: Record<string, string> = {
-            EXTREME_POSE: 'Khuôn mặt bị nghiêng, xoay hoặc che khuất (đội nón, cúi đầu)',
-            LOW_SHARPNESS: 'Ảnh khuôn mặt bị mờ nhòe',
-            LOW_BRIGHTNESS: 'Ảnh khuôn mặt bị quá tối',
-            SHADOW: 'Khuôn mặt bị bóng râm che khuất',
-            SMALL_BOUNDING_BOX: 'Khuôn mặt trong ảnh quá nhỏ',
-            LOW_CONFIDENCE: 'Độ nhận diện khuôn mặt quá thấp',
-          };
-          const translatedReasons = rekResult.unindexedReasons
-            .map((r) => reasonMap[r] || r)
-            .join(', ');
-          errorText = `Ảnh bị từ chối do: ${translatedReasons}. Vui lòng nhìn thẳng và chụp rõ mặt.`;
-        }
-
-        return NextResponse.json(
-          { ok: false, error: errorText },
-          { status: 422 },
-        );
-      } catch (rekError) {
-        // Rekognition API error — roll back
-        console.error('[API /faces] AWS Rekognition IndexFaces failed:', rekError);
-        await supabase.from('known_faces').delete().eq('id', data.id);
-        if (storedImage) {
-          await removeStorageObject(storedImage.bucket, storedImage.path).catch(() => {});
-        }
-        const message = rekError instanceof Error
-          ? rekError.message
-          : 'AWS Rekognition error';
-        return NextResponse.json({ ok: false, error: message }, { status: 500 });
-      }
-    }
+  // Each database UUID becomes a different ExternalImageId. This deliberately
+  // allows several images of the same person to contribute separate face
+  // vectors to the collection.
+  const base64Match = safeImageBase64.match(DATA_URL_PATTERN);
+  const imageBuffer = base64Match ? Buffer.from(base64Match[1], 'base64') : null;
+  if (!imageBuffer?.length) {
+    await supabase.from('known_faces').delete().eq('id', data.id);
+    await removeStorageObject(storedImage.bucket, storedImage.path).catch(() => {});
+    return NextResponse.json({ ok: false, error: 'Dữ liệu ảnh không hợp lệ.' }, { status: 422 });
   }
 
-  // AWS not configured or no image — return the row as-is (no face indexing)
-  return NextResponse.json({ ok: true, face: mapFace(data) }, { status: 201 });
+  let indexedFaceId: string | null = null;
+  try {
+    const rekResult = await indexFace(imageBuffer, data.id);
+    indexedFaceId = rekResult.faceId;
+
+    if (!indexedFaceId) {
+      let errorText = rekResult.errorMessage || 'Không phát hiện khuôn mặt đạt chuẩn trong ảnh. Vui lòng chụp rõ thẳng mặt.';
+      if (!rekResult.errorMessage && rekResult.unindexedReasons?.length) {
+        const reasonMap: Record<string, string> = {
+          EXTREME_POSE: 'Khuôn mặt bị nghiêng, xoay hoặc che khuất (đội nón, cúi đầu)',
+          LOW_SHARPNESS: 'Ảnh khuôn mặt bị mờ nhòe',
+          LOW_BRIGHTNESS: 'Ảnh khuôn mặt bị quá tối',
+          SHADOW: 'Khuôn mặt bị bóng râm che khuất',
+          SMALL_BOUNDING_BOX: 'Khuôn mặt trong ảnh quá nhỏ',
+          LOW_CONFIDENCE: 'Độ nhận diện khuôn mặt quá thấp',
+        };
+        const translatedReasons = rekResult.unindexedReasons
+          .map((reason) => reasonMap[reason] || reason)
+          .join(', ');
+        errorText = `Ảnh bị từ chối do: ${translatedReasons}. Vui lòng nhìn thẳng và chụp rõ mặt.`;
+      }
+      throw Object.assign(new Error(errorText), { status: 422 });
+    }
+
+    const { error: updateError } = await supabase
+      .from('known_faces')
+      .update({ rekognition_face_id: indexedFaceId })
+      .eq('id', data.id);
+    if (updateError) {
+      throw new Error(`Không thể liên kết FaceId vào Supabase: ${updateError.message}`);
+    }
+
+    return NextResponse.json({
+      ok: true,
+      face: mapFace({ ...data, rekognition_face_id: indexedFaceId }),
+    }, { status: 201 });
+  } catch (rekError) {
+    console.error('[API /faces] Face registration failed:', rekError);
+    if (indexedFaceId) {
+      await deleteFace(indexedFaceId).catch((cleanupError) => {
+        console.error('[API /faces] Failed to roll back indexed AWS face:', cleanupError);
+      });
+    }
+    await supabase.from('known_faces').delete().eq('id', data.id);
+    await removeStorageObject(storedImage.bucket, storedImage.path).catch((cleanupError) => {
+      console.error('[API /faces] Failed to roll back stored face image:', cleanupError);
+    });
+    const message = rekError instanceof Error ? rekError.message : 'AWS Rekognition error';
+    const status = typeof rekError === 'object' && rekError !== null && 'status' in rekError
+      ? Number(rekError.status) || 500
+      : 500;
+    return NextResponse.json({ ok: false, error: message }, { status });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +222,7 @@ export async function DELETE(request: Request) {
 
   // ── Step 1: Remove face from AWS Rekognition collection ───────────────
   let rekognitionDeleted = true;
-  if (face?.rekognition_face_id && isRekognitionConfigured) {
+  if (face?.rekognition_face_id && isRekognitionConfigured()) {
     try {
       await deleteFace(face.rekognition_face_id);
     } catch (rekError) {
