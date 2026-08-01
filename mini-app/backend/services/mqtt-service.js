@@ -819,8 +819,9 @@ export function createMqttService() {
         }
 
         // A familiar person is informational and can be recorded immediately.
-        // Stranger alerts are emitted only after the device confirms that the
-        // scene stayed below the 60% recheck threshold for five seconds.
+        // Stranger alerts are emitted only after the configured stability
+        // timer expires and the device checks two final FOMO frames. Seeing a
+        // person in either frame confirms presence; AWS is not called again.
         if (allPeopleAreKnown) {
           await insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
@@ -982,7 +983,31 @@ export function createMqttService() {
         ? (parsed.alarm_source || 'vision')
         : null;
     }
-    const eventImage = await captureEventImageWithRetry({ eventId, exactFrame: true });
+    const frameWasCached = parsed.event_frame_cached !== false;
+    const expectedFrameUptimeMs = Number(parsed.event_frame_uptime_ms);
+    let eventImage = frameWasCached
+      ? await captureEventImageWithRetry({ eventId, exactFrame: true })
+      : {
+          imagePath: null,
+          source: 'confirmed_event_frame_unavailable',
+          eventId,
+          captureAttempts: 0,
+        };
+    if (Number.isFinite(expectedFrameUptimeMs)
+        && eventImage.imagePath
+        && eventImage.frameUptimeMs !== expectedFrameUptimeMs) {
+      console.error(
+        `[Camera HTTP] Ignored stale frame for event ${eventId}: `
+        + `expected uptime ${expectedFrameUptimeMs}, received ${eventImage.frameUptimeMs}.`
+      );
+      eventImage = {
+        imagePath: null,
+        source: 'confirmed_event_frame_mismatch',
+        eventId,
+        frameUptimeMs: eventImage.frameUptimeMs,
+        captureAttempts: eventImage.captureAttempts,
+      };
+    }
     const alertMessages = {
       stranger_detected: 'Phát hiện người lạ đứng yên trong vùng quan sát',
       object_left: 'Phát hiện vật thể bị để lại trong vùng quan sát',

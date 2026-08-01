@@ -77,7 +77,7 @@ const unsigned long MAX_VISION_STABLE_ALERT_MS = 3600000;
 const uint8_t CAMERA_BLOCKED_CONFIRM_SAMPLES = 3;
 const uint8_t CAMERA_BLOCKED_DARK_LUMA = 18;
 const uint8_t CAMERA_BLOCKED_BRIGHT_LUMA = 245;
-const float CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT = 90.0f;
+const float CAMERA_BLOCKED_EXTREME_PIXEL_PERCENT = 75.0f;
 const float CAMERA_BLOCKED_MAX_STDDEV = 12.0f;
 const float CAMERA_BLOCKED_MAX_EDGE_PERCENT = 5.0f;
 // A hand or opaque object is often brightened by the OV2640 auto-exposure, so

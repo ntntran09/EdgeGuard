@@ -45,11 +45,12 @@ const size_t FOMO_FRAME_SAMPLE_COUNT =
 // small HTTP request while avoiding MQTT packet-size constraints.
 const size_t FOMO_HTTP_PAYLOAD_BYTES = 896;
 // Vision alerts use HTTP first and stay compact enough for the MQTT fallback.
-const size_t FOMO_ALERT_PAYLOAD_BYTES = 256;
+const size_t FOMO_ALERT_PAYLOAD_BYTES = 384;
 // Minimum delay between two FOMO inferences. Camera-block detection is still
 // evaluated on every analyzed frame during this cooldown.
 const unsigned long FOMO_INFERENCE_COOLDOWN_MS = 1500UL;
 const unsigned long FOMO_ALARM_PRESENCE_CHECK_MS = 3000UL;
+const uint8_t FOMO_FINAL_CONFIRMATION_SAMPLES = 2;
 
 struct FomoHttpMessage {
   uint32_t eventId;
@@ -144,6 +145,9 @@ char fomoTrackedObjectType[24] = "object";
 float fomoTrackedConfidence = 0.0f;
 bool fomoTrackedFrameCached = false;
 uint8_t fomoAlarmMissingSamples = 0;
+uint8_t fomoFinalConfirmationSamples = 0;
+uint8_t fomoFinalConfirmationPositiveSamples = 0;
+unsigned long fomoFinalConfirmationFrameAt = 0;
 
 void fomo_task(void *parameter);
 void fomo_httpTask(void *parameter);
@@ -480,7 +484,10 @@ bool fomo_queueVisionAlert(
   float changePercent,
   unsigned long stableMs,
   bool eventFrameCached,
-  const FomoFrameAnalysis *analysis = nullptr
+  const FomoFrameAnalysis *analysis = nullptr,
+  uint8_t confirmationSamples = 0,
+  uint8_t confirmationPositiveSamples = 0,
+  unsigned long confirmationFrameAt = 0
 ) {
   if (!fomoAlertQueue) return false;
 
@@ -498,6 +505,11 @@ bool fomo_queueVisionAlert(
     ? 0.0f
     : fomoTrackedConfidence;
   doc["event_frame_cached"] = eventFrameCached;
+  if (confirmationSamples > 0) {
+    doc["confirmation_samples"] = confirmationSamples;
+    doc["confirmation_positive_samples"] = confirmationPositiveSamples;
+    doc["event_frame_uptime_ms"] = confirmationFrameAt;
+  }
   doc["stable_ms"] = stableMs;
   doc["alarm_active"] = strcmp(alertType, "stranger_detected") == 0
     || strcmp(alertType, "object_left") == 0;
@@ -544,6 +556,9 @@ void fomo_resetVisionPipeline(bool resetBlockedState = true) {
   fomoTrackedConfidence = 0.0f;
   fomoTrackedFrameCached = false;
   fomoAlarmMissingSamples = 0;
+  fomoFinalConfirmationSamples = 0;
+  fomoFinalConfirmationPositiveSamples = 0;
+  fomoFinalConfirmationFrameAt = 0;
   strncpy(fomoTrackedObjectType, "object", sizeof(fomoTrackedObjectType));
   fomoTrackedObjectType[sizeof(fomoTrackedObjectType) - 1] = '\0';
   if (resetBlockedState) {
@@ -796,6 +811,20 @@ FomoInferenceSummary fomo_runInference(
   return summary;
 }
 
+bool fomo_summaryContainsTrackedTarget(
+  const FomoInferenceSummary &summary,
+  FomoVisionState trackedState,
+  const char *trackedObjectType
+) {
+  if (trackedState == FOMO_VISION_TRACKING_STRANGER) {
+    return summary.peopleCount > 0;
+  }
+  if (trackedState != FOMO_VISION_TRACKING_OBJECT) return false;
+  if (strcmp(trackedObjectType, "bag") == 0) return summary.bagCount > 0;
+  if (strcmp(trackedObjectType, "package") == 0) return summary.packageCount > 0;
+  return summary.detectionCount > summary.peopleCount;
+}
+
 void fomo_verifyActiveAlarmPresence(
   unsigned long now,
   uint16_t frameWidth,
@@ -815,9 +844,11 @@ void fomo_verifyActiveAlarmPresence(
   if (!summary.completed) return;
 
   fomo_useCurrentFrameAsReference();
-  bool stillPresent = trackedState == FOMO_VISION_TRACKING_STRANGER
-    ? summary.peopleCount > 0
-    : summary.detectionCount > summary.peopleCount;
+  bool stillPresent = fomo_summaryContainsTrackedTarget(
+    summary,
+    trackedState,
+    fomoTrackedObjectType
+  );
   if (stillPresent) {
     fomoAlarmMissingSamples = 0;
     return;
@@ -843,6 +874,9 @@ void fomo_classifyCurrentFrame(
   uint16_t frameHeight,
   const FomoFrameAnalysis &analysis
 ) {
+  fomoFinalConfirmationSamples = 0;
+  fomoFinalConfirmationPositiveSamples = 0;
+  fomoFinalConfirmationFrameAt = 0;
   uint32_t eventId = ++fomoVisionEventId;
   fomoTrackedFrameCached = fomo_cacheCurrentFrame(eventId);
   FomoInferenceSummary summary = fomo_runInference(
@@ -926,7 +960,12 @@ void fomo_applyRecognitionResults() {
   }
 }
 
-void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysis &analysis) {
+void fomo_confirmAndMaybeAlertForStableDetection(
+  unsigned long now,
+  uint16_t frameWidth,
+  uint16_t frameHeight,
+  const FomoFrameAnalysis &analysis
+) {
   if (fomoVisionAlertSent || fomoStableSince == 0
       || now - fomoStableSince < deviceVisionStableAlertMs) {
     return;
@@ -941,15 +980,96 @@ void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysi
     return;
   }
 
+  unsigned long stableMs = now - fomoStableSince;
+  if (fomoFinalConfirmationSamples < FOMO_FINAL_CONFIRMATION_SAMPLES) {
+    if (fomoFinalConfirmationSamples == 0) {
+      // Do not let the original detection frame masquerade as final evidence.
+      // Only a frame cached from a positive confirmation may accompany alert.
+      fomoTrackedFrameCached = false;
+      fomoFinalConfirmationFrameAt = 0;
+    }
+    FomoVisionState trackedState = fomoVisionState;
+    FomoInferenceSummary confirmation = fomo_runInference(
+      now,
+      frameWidth,
+      frameHeight,
+      fomoVisionEventId,
+      analysis.changePercent,
+      false,
+      false
+    );
+    if (!confirmation.completed) {
+      Serial.println("[Vision] Final FOMO confirmation failed; sample not counted");
+      return;
+    }
+
+    fomo_useCurrentFrameAsReference();
+    bool targetSeen = fomo_summaryContainsTrackedTarget(
+      confirmation,
+      trackedState,
+      fomoTrackedObjectType
+    );
+    fomoFinalConfirmationSamples++;
+    if (targetSeen) {
+      fomoFinalConfirmationPositiveSamples++;
+      // Keep the newest positive confirmation frame as alert evidence. If the
+      // second sample is negative, a positive first-sample frame is retained.
+      bool finalFrameCached = fomo_cacheCurrentFrame(fomoVisionEventId);
+      if (finalFrameCached) {
+        fomoTrackedFrameCached = true;
+        fomoFinalConfirmationFrameAt = fomoCapturedFrameAt;
+      }
+    }
+    Serial.printf(
+      "[Vision] Final FOMO sample %u/%u for %s: %s\n",
+      fomoFinalConfirmationSamples,
+      FOMO_FINAL_CONFIRMATION_SAMPLES,
+      fomoTrackedObjectType,
+      targetSeen ? "present" : "missing"
+    );
+    if (fomoFinalConfirmationSamples < FOMO_FINAL_CONFIRMATION_SAMPLES) return;
+  }
+
+  if (fomoFinalConfirmationPositiveSamples == 0) {
+    Serial.printf(
+      "[Vision] Both final FOMO samples found no tracked %s; alert cancelled\n",
+      fomoTrackedObjectType
+    );
+    fomoVisionState = FOMO_VISION_MONITORING;
+    fomoStableSince = 0;
+    fomoVisionAlertSent = false;
+    fomoTrackedConfidence = 0.0f;
+    fomoTrackedFrameCached = false;
+    fomoFinalConfirmationSamples = 0;
+    fomoFinalConfirmationPositiveSamples = 0;
+    fomoFinalConfirmationFrameAt = 0;
+    return;
+  }
+
+  Serial.printf(
+    "[Vision] Final FOMO confirmation saw tracked %s in %u/%u samples after %lu ms\n",
+    fomoTrackedObjectType,
+    fomoFinalConfirmationPositiveSamples,
+    FOMO_FINAL_CONFIRMATION_SAMPLES,
+    stableMs
+  );
+
   fomoVisionAlertSent = fomo_queueVisionAlert(
     alertType,
     fomoTrackedObjectType,
     fomoVisionEventId,
     analysis.changePercent,
-    now - fomoStableSince,
-    fomoTrackedFrameCached
+    stableMs,
+    fomoTrackedFrameCached,
+    nullptr,
+    fomoFinalConfirmationSamples,
+    fomoFinalConfirmationPositiveSamples,
+    fomoFinalConfirmationFrameAt
   );
   if (fomoVisionAlertSent) {
+    fomoFinalConfirmationSamples = 0;
+    fomoFinalConfirmationPositiveSamples = 0;
+    fomoFinalConfirmationFrameAt = 0;
     if (!alarmActive || !alarmManualOverrideActive) {
       fomoAutoAlarmActive = true;
       alarmManualOverrideActive = false;
@@ -958,7 +1078,7 @@ void fomo_maybeAlertForStableDetection(unsigned long now, const FomoFrameAnalysi
     Serial.printf(
       "[Vision] %s alarm activated after %lu ms\n",
       alertType,
-      now - fomoStableSince
+      stableMs
     );
   }
 }
@@ -999,6 +1119,28 @@ void fomo_processFrame(
     return;
   }
 
+  // The configured wait has absolute priority over the normal scene-change
+  // gate. At expiry, run FOMO on the current frame even when the sampled scene
+  // did not change enough to trigger ordinary reclassification.
+  bool trackedAlertEnabled =
+    (fomoVisionState == FOMO_VISION_TRACKING_STRANGER && deviceStrangerAlertEnabled)
+    || (fomoVisionState == FOMO_VISION_TRACKING_OBJECT && deviceObjectLeftAlertEnabled);
+  bool stableTimerExpired = !fomoVisionAlertSent
+    && trackedAlertEnabled
+    && fomoStableSince != 0
+    && (fomoVisionState == FOMO_VISION_TRACKING_STRANGER
+        || fomoVisionState == FOMO_VISION_TRACKING_OBJECT)
+    && now - fomoStableSince >= deviceVisionStableAlertMs;
+  if (stableTimerExpired) {
+    fomo_confirmAndMaybeAlertForStableDetection(
+      now,
+      frameWidth,
+      frameHeight,
+      analysis
+    );
+    return;
+  }
+
   const float requiredChange = fomoVisionState == FOMO_VISION_MONITORING
     ? CAMERA_FOMO_TRIGGER_CHANGE_PERCENT
     : CAMERA_FOMO_RECHECK_CHANGE_PERCENT;
@@ -1015,9 +1157,7 @@ void fomo_processFrame(
     return;
   }
 
-  // No significant change: let the current stranger/object stability timer
-  // continue and emit its alert when the configured duration is reached.
-  fomo_maybeAlertForStableDetection(now, analysis);
+  // No significant change: keep the current stability timer running.
 }
 
 void fomo_task(void *parameter) {
