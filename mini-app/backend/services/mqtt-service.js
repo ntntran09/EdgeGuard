@@ -757,9 +757,9 @@ export function createMqttService() {
 
     if (isPersonDetected && eventImage.imagePath) {
       try {
-        rekognitionResults = await rekognitionService.analyzeFrame(eventImage.imagePath, 75);
+        rekognitionResults = await rekognitionService.analyzeFrame(eventImage.imagePath, 65);
         
-        const faceDetections = [];
+        const knownFaceDetections = [];
         const knownNames = [];
         let knownFaceCount = 0;
         let strangerCount = 0;
@@ -785,13 +785,16 @@ export function createMqttService() {
             strangerCount++;
           }
 
-          if (res.boundingBox && parsed.input_width && parsed.input_height) {
-            const w = parsed.input_width;
-            const h = parsed.input_height;
+          // Only persist a box after the Rekognition FaceId has been resolved
+          // to an active known_faces row. Unmatched faces must not be drawn on
+          // a familiar-person event.
+          if (isKnown && res.boundingBox) {
+            const w = Number(parsed.input_width) || 320;
+            const h = Number(parsed.input_height) || 240;
             const awsBbox = res.boundingBox;
-            faceDetections.push({
+            knownFaceDetections.push({
               label: recognizedName,
-              type: isKnown ? 'face_known' : 'face_stranger',
+              type: 'face_known',
               confidence: similarity / 100,
               x: awsBbox.Left * w,
               y: awsBbox.Top * h,
@@ -801,20 +804,24 @@ export function createMqttService() {
           }
         }
 
-        // FOMO may see a person whose face is not visible to Rekognition. Treat
-        // every unmatched/missing face as a stranger instead of silently
-        // accepting a partial match in a multi-person frame.
+        // Keep the unmatched count for diagnostics, including people FOMO saw
+        // whose faces Rekognition could not resolve. It no longer overrides a
+        // positive familiar-face match for the frame-level decision below.
         const expectedPeopleCount = Math.max(1, Number(parsed.people_count) || 0);
         strangerCount = Math.max(strangerCount, expectedPeopleCount - knownFaceCount);
-        const allPeopleAreKnown = knownFaceCount >= expectedPeopleCount && strangerCount === 0;
+        // Product rule: one recognized familiar face makes the whole frame a
+        // familiar-person event, even if other people/faces remain unmatched.
+        const hasKnownPerson = knownFaceCount > 0;
 
         if (Number.isInteger(eventId) && eventId >= 0) {
           await publishVisionResult({
             event_id: eventId,
             verified: true,
-            known: allPeopleAreKnown,
+            known: hasKnownPerson,
             known_names: knownNames,
-            stranger_count: strangerCount,
+            // Keep compatibility with deployed firmware: a familiar frame is
+            // accepted only when known=true and stranger_count=0.
+            stranger_count: hasKnownPerson ? 0 : strangerCount,
           });
         }
 
@@ -822,7 +829,7 @@ export function createMqttService() {
         // Stranger alerts are emitted only after the configured stability
         // timer expires and the device checks two final FOMO frames. Seeing a
         // person in either frame confirms presence; AWS is not called again.
-        if (allPeopleAreKnown) {
+        if (hasKnownPerson) {
           await insertAlertWithEventImage({
             deviceId: config.mqtt.deviceId,
             alertType: 'face_recognized',
@@ -833,7 +840,8 @@ export function createMqttService() {
             metadata: {
               rekognition: rekognitionResults,
               recognized_name: knownNames.join(', ') || 'Người lạ',
-              detections: faceDetections,
+              unmatched_face_count: strangerCount,
+              detections: knownFaceDetections,
               input_width: parsed.input_width || 320,
               input_height: parsed.input_height || 240,
             },
