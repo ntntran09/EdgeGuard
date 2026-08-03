@@ -5,6 +5,7 @@ EdgeGuard is an AIoT security project with these main workspaces:
 - `mini-app`: Next.js dashboard, Telegram Mini App, MQTT bridge, Supabase integration, Telegram alerts, and email alerts.
 - `hardware`: ESP32/ESP8266 firmware for the IoT device.
 - `ai-models`: Python workspace for model training, inference, and MQTT-based model outputs.
+- root web app: Edge Impulse FOMO presence evaluation dashboard.
 
 The MQTT contract follows the same pattern as the NomNom reference project: the hardware device publishes telemetry and event images, while the server subscribes to device topics and publishes commands/configuration back to the device.
 
@@ -13,7 +14,7 @@ The MQTT contract follows the same pattern as the NomNom reference project: the 
 Install dependencies:
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 npm.cmd ci
 ```
 
@@ -24,7 +25,7 @@ Prepare a local env file. Do not commit env files. Use the project root `.env` o
 Use a production server behind a Cloudflare HTTPS tunnel. Keep this terminal open while testing on Telegram.
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 $env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
 npm.cmd run telegram:quick
 ```
@@ -34,7 +35,7 @@ When the script prints `READY`, open the Telegram bot, close old Mini App window
 Use this full command only when you want to rebuild before opening the Mini App:
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 $env:CLOUDFLARED_PATH="C:\tmp\edgeguard-cloudflared.exe"
 npm.cmd run telegram
 ```
@@ -46,7 +47,7 @@ If `npm.cmd run telegram` fails during `next build` because Google Font fetching
 Run this in a second terminal so the dashboard and Telegram Mini App can run at the same time.
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 
 $env:PORT="4001"
 $env:TELEGRAM_AUTH_REQUIRED="false"
@@ -68,7 +69,7 @@ Port convention:
 
 - `4000`: Telegram Mini App production server behind Cloudflare tunnel.
 - `4001`: laptop dashboard without Telegram auth.
-- `3000`: not used by this local demo setup.
+- `3000`: FOMO web evaluation dashboard.
 
 If the dashboard says `Ngoai tuyen`, it usually means MQTT/live device is offline. It does not mean Supabase logs are broken.
 
@@ -83,24 +84,39 @@ If the dashboard says `Ngoai tuyen`, it usually means MQTT/live device is offlin
 
 ## Common Commands
 
+Run FOMO web evaluation:
+
+```powershell
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main"
+npm.cmd install
+npm.cmd run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+http://localhost:3000/no-exact-match
+```
+
 Run Telegram logic tests:
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 npm.cmd run test:telegram
 ```
 
 Run lint:
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 npm.cmd run lint
 ```
 
 Build:
 
 ```powershell
-cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-telegram-email-integration\mini-app"
+cd "D:\AIOT\FOMO WEB EVALUATION\EdgeGuard-main\mini-app"
 npm.cmd run build
 ```
 

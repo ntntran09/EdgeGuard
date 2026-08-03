@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="176" fill="#c6dfea"/><rect y="176" width="256" height="80" fill="#788d86"/>
+  <circle cx="61" cy="65" r="18" fill="#d6a077"/><path d="M43 61c2-22 34-23 37 0-9-5-27-5-37 0z" fill="#263b4a"/><path d="M39 94c10-14 34-14 44 0l13 78H25z" fill="#1e7180"/><path d="M35 168h21v67H24zM66 168h21l10 67H67z" fill="#293c55"/>
+  <rect x="140" y="131" width="97" height="82" fill="#bd9550"/><path d="M140 131l47-20 50 20-49 23z" fill="#dec07a"/><path d="M188 154v59M163 121l50 22" stroke="#806329" stroke-width="3"/>
+  <text x="10" y="248" font-family="Arial" font-size="9" fill="white">DEMO · human + package</text>
+</svg>

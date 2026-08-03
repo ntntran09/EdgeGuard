@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="176" fill="#c4deea"/><rect y="176" width="256" height="80" fill="#778b84"/>
+  <g fill="#d6a077"><circle cx="46" cy="83" r="16"/><circle cx="128" cy="53" r="18"/><circle cx="209" cy="79" r="16"/></g>
+  <g fill="#28404d"><path d="M30 79c2-20 29-21 32 0-8-5-24-5-32 0z"/><path d="M110 49c2-23 34-24 37 0-9-5-28-5-37 0z"/><path d="M193 75c2-20 29-21 32 0-8-5-24-5-32 0z"/></g>
+  <path d="M25 108c9-12 34-12 43 0l9 72H14z" fill="#c05d4e"/><path d="M106 82c10-14 34-14 44 0l11 98H96z" fill="#1e7180"/><path d="M188 105c9-12 33-12 42 0l10 75h-61z" fill="#b58a35"/>
+  <g fill="#293c55"><path d="M22 176h20l-4 58H13zM49 176h20l10 58H54z"/><path d="M102 176h21l-4 60H94zM134 176h21l9 60h-28z"/><path d="M185 176h20l-4 58h-24zM213 176h20l9 58h-25z"/></g>
+  <text x="10" y="248" font-family="Arial" font-size="9" fill="white">DEMO · duplicate Ground Truth human</text>
+</svg>

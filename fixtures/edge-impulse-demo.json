@@ -1,0 +1,87 @@
+{
+  "success": true,
+  "labels": ["human", "backpack", "package", "background"],
+  "availableVariants": ["int8", "float32"],
+  "samples": [
+    {
+      "sampleId": "demo-01",
+      "filename": "01-human-dung-vi-tri.jpg",
+      "thumbnailUrl": "/demo/human.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [{ "label": "human", "x": 86, "y": 35, "width": 84, "height": 205 }] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.94, "x": 89, "y": 38, "width": 80, "height": 199 }] }
+    },
+    {
+      "sampleId": "demo-02",
+      "filename": "02-backpack-sai-centroid.jpg",
+      "thumbnailUrl": "/demo/backpack.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [{ "label": "backpack", "x": 67, "y": 63, "width": 122, "height": 154 }] },
+      "structuredResult": { "predictions": [{ "label": "backpack", "score": 0.82, "x": 210, "y": 190, "width": 25, "height": 30 }] }
+    },
+    {
+      "sampleId": "demo-03",
+      "filename": "03-backpack-bi-bo-sot.jpg",
+      "thumbnailUrl": "/demo/backpack.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [{ "label": "backpack", "x": 67, "y": 63, "width": 122, "height": 154 }] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.22, "x": 2, "y": 2, "width": 10, "height": 12 }] }
+    },
+    {
+      "sampleId": "demo-04",
+      "filename": "04-background-pass.jpg",
+      "thumbnailUrl": "/demo/background.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [] },
+      "structuredResult": { "predictions": [] }
+    },
+    {
+      "sampleId": "demo-05",
+      "filename": "05-background-bao-nham.jpg",
+      "thumbnailUrl": "/demo/background.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.77, "x": 44, "y": 30, "width": 20, "height": 54 }] }
+    },
+    {
+      "sampleId": "demo-06",
+      "filename": "06-duplicate-backpack.jpg",
+      "thumbnailUrl": "/demo/backpack.svg",
+      "category": "testing",
+      "groundTruth": { "boundingBoxes": [{ "label": "backpack", "x": 67, "y": 63, "width": 122, "height": 154 }] },
+      "structuredResult": { "predictions": [{ "label": "backpack", "score": 0.61, "x": 70, "y": 68, "width": 116, "height": 148 }, { "label": "backpack", "score": 0.91, "x": 65, "y": 61, "width": 124, "height": 156 }, { "label": "backpack", "score": 0.74, "x": 77, "y": 74, "width": 105, "height": 137 }] }
+    },
+    {
+      "sampleId": "demo-07",
+      "filename": "07-duplicate-human-gt.jpg",
+      "thumbnailUrl": "/demo/human-crowd.svg",
+      "category": "validation",
+      "groundTruth": { "boundingBoxes": [{ "label": "human", "x": 14, "y": 66, "width": 63, "height": 166 }, { "label": "human", "x": 96, "y": 35, "width": 65, "height": 201 }, { "label": "human", "x": 179, "y": 61, "width": 61, "height": 174 }] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.88, "x": 99, "y": 38, "width": 61, "height": 197 }] }
+    },
+    {
+      "sampleId": "demo-08",
+      "filename": "08-human-package.jpg",
+      "thumbnailUrl": "/demo/human-package.svg",
+      "category": "validation",
+      "groundTruth": { "boundingBoxes": [{ "label": "human", "x": 24, "y": 43, "width": 76, "height": 192 }, { "label": "package", "x": 139, "y": 129, "width": 99, "height": 85 }] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.86, "x": 27, "y": 47, "width": 72, "height": 187 }, { "label": "package", "score": 0.72, "x": 142, "y": 132, "width": 94, "height": 81 }] }
+    },
+    {
+      "sampleId": "demo-09",
+      "filename": "09-score-bang-threshold.jpg",
+      "thumbnailUrl": "/demo/package.svg",
+      "category": "validation",
+      "groundTruth": { "boundingBoxes": [{ "label": "package", "x": 53, "y": 67, "width": 151, "height": 129 }] },
+      "structuredResult": { "predictions": [{ "label": "package", "score": 0.5, "x": 57, "y": 70, "width": 145, "height": 124 }] }
+    },
+    {
+      "sampleId": "demo-10",
+      "filename": "10-score-thap.jpg",
+      "thumbnailUrl": "/demo/human.svg",
+      "category": "validation",
+      "groundTruth": { "boundingBoxes": [{ "label": "human", "x": 86, "y": 35, "width": 84, "height": 205 }] },
+      "structuredResult": { "predictions": [{ "label": "human", "score": 0.4999, "x": 89, "y": 38, "width": 80, "height": 199 }] }
+    }
+  ]
+}

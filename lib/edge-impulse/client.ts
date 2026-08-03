@@ -1,0 +1,373 @@
+import { EDGE_IMPULSE_CONFIG } from "@/lib/constants/fomo";
+import { redactSecrets } from "@/lib/security/redact";
+
+const BASE_URL = "https://studio.edgeimpulse.com/v1";
+const DEFAULT_TIMEOUT_MS = 20_000;
+
+export type EdgeImpulseCredentials = { projectId: number; apiKey: string };
+
+export class EdgeImpulseError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status = 500,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "EdgeImpulseError";
+  }
+}
+
+export function validateCredentials(credentials: EdgeImpulseCredentials) {
+  if (!Number.isInteger(credentials.projectId) || credentials.projectId <= 0) {
+    throw new EdgeImpulseError("Project ID không hợp lệ. Project ID chỉ gồm chữ số.", "INVALID_PROJECT_ID", 400);
+  }
+  if (credentials.apiKey.trim().length < 10) {
+    throw new EdgeImpulseError("API key không hợp lệ hoặc quá ngắn.", "INVALID_API_KEY", 400);
+  }
+}
+
+function friendlyError(status: number): EdgeImpulseError {
+  if (status === 401 || status === 403)
+    return new EdgeImpulseError("Không thể xác thực. Hãy kiểm tra Project ID và API key.", "UNAUTHORIZED", status);
+  if (status === 404)
+    return new EdgeImpulseError(
+      "Không tìm thấy kết quả Model Testing. Hãy mở Edge Impulse Studio, vào Model testing, nhấn Classify all, chờ quá trình hoàn tất, sau đó thử tải lại.",
+      "NO_MODEL_TESTING_RESULTS",
+      404,
+    );
+  if (status === 429)
+    return new EdgeImpulseError("Edge Impulse đang giới hạn tần suất. Hãy đợi một chút rồi thử lại.", "RATE_LIMITED", 429);
+  if (status >= 500)
+    return new EdgeImpulseError("Máy chủ Edge Impulse đang gặp lỗi. Hãy thử lại sau.", "UPSTREAM_SERVER_ERROR", 502);
+  return new EdgeImpulseError("Edge Impulse từ chối yêu cầu.", "UPSTREAM_REQUEST_FAILED", 502);
+}
+
+function friendlyImageError(status: number): EdgeImpulseError {
+  if (status === 401 || status === 403)
+    return new EdgeImpulseError("Cannot authenticate image request. Check Project ID and API key.", "UNAUTHORIZED", status);
+  if (status === 404)
+    return new EdgeImpulseError("Sample image was not found on Edge Impulse raw-data endpoints.", "SAMPLE_IMAGE_NOT_FOUND", 404);
+  if (status === 429)
+    return new EdgeImpulseError("Edge Impulse is rate limiting image requests. Try again shortly.", "RATE_LIMITED", 429);
+  if (status >= 500)
+    return new EdgeImpulseError("Edge Impulse image server returned an error. Try again later.", "UPSTREAM_IMAGE_SERVER_ERROR", 502);
+  return new EdgeImpulseError("Edge Impulse rejected the image request.", "IMAGE_REQUEST_FAILED", 502);
+}
+
+async function request(
+  credentials: EdgeImpulseCredentials,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<unknown> {
+  validateCredentials(credentials);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers: { Accept: "application/json", "x-api-key": credentials.apiKey, ...init.headers },
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    if (!response.ok) throw friendlyError(response.status);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("json"))
+      throw new EdgeImpulseError("Edge Impulse trả về dữ liệu không phải JSON.", "INVALID_CONTENT_TYPE", 502);
+    return await response.json();
+  } catch (error) {
+    const safeError =
+      error instanceof EdgeImpulseError
+        ? error
+        : error instanceof DOMException && error.name === "AbortError"
+          ? new EdgeImpulseError("Kết nối Edge Impulse đã hết thời gian chờ.", "NETWORK_TIMEOUT", 504)
+          : new EdgeImpulseError("Không thể kết nối tới Edge Impulse. Hãy kiểm tra mạng.", "NETWORK_ERROR", 502);
+    console.error({
+      status: safeError.status,
+      endpoint: path.split("?")[0],
+      durationMs: Date.now() - started,
+      errorCode: redactSecrets(safeError.code),
+    });
+    throw safeError;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function buildClassificationResultUrl(projectId: number): string {
+  const params = new URLSearchParams({
+    variant: EDGE_IMPULSE_CONFIG.modelVariant,
+    impulseId: String(EDGE_IMPULSE_CONFIG.impulseId),
+  });
+  return `${BASE_URL}/api/${projectId}/classify/all/result?${params.toString()}`;
+}
+
+export function buildSampleInfoUrl(projectId: number, sampleId: number): string {
+  const params = new URLSearchParams({
+    impulseId: String(EDGE_IMPULSE_CONFIG.impulseId),
+  });
+  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}?${params.toString()}`;
+}
+
+export function buildSampleImageUrl(
+  projectId: number,
+  sampleId: number,
+  options: { afterInputBlock?: boolean; includeImpulseId?: boolean } = {},
+): string {
+  const params = new URLSearchParams();
+  if (options.includeImpulseId ?? true) params.set("impulseId", String(EDGE_IMPULSE_CONFIG.impulseId));
+  if (options.afterInputBlock) params.set("afterInputBlock", "true");
+  const query = params.toString();
+  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/image${query ? `?${query}` : ""}`;
+}
+
+export function buildRawSampleUrl(projectId: number, sampleId: number): string {
+  return `${BASE_URL}/api/${projectId}/raw-data/${sampleId}/raw`;
+}
+
+export function buildShowClassificationUrl(projectId: number, sampleId: number): string {
+  const params = new URLSearchParams({
+    modelVariant: EDGE_IMPULSE_CONFIG.modelVariant,
+    sampleId: String(sampleId),
+  });
+  return `https://studio.edgeimpulse.com/public/${projectId}/live/impulse/${EDGE_IMPULSE_CONFIG.impulseId}/classification?${params.toString()}`;
+}
+
+export function buildModelTestingUrl(projectId: number): string {
+  return `https://studio.edgeimpulse.com/public/${projectId}/live/impulse/${EDGE_IMPULSE_CONFIG.impulseId}/validation`;
+}
+
+export function getModelTestingResults(
+  credentials: EdgeImpulseCredentials,
+): Promise<unknown> {
+  const path = buildClassificationResultUrl(credentials.projectId).slice(BASE_URL.length);
+  return request(credentials, path);
+}
+
+export async function getAllRawData(
+  credentials: EdgeImpulseCredentials,
+  category: "testing" | "validation" | "training" | "post-processing" | "all",
+  limit = 200,
+  filters: { filename?: string; search?: string } = {},
+): Promise<unknown[]> {
+  const items: unknown[] = [];
+  for (let offset = 0; ; offset += limit) {
+    const params = new URLSearchParams({
+      category,
+      limit: String(limit),
+      offset: String(offset),
+      dataType: "image",
+    });
+    if (filters.filename) params.set("filename", filters.filename);
+    if (filters.search) params.set("search", filters.search);
+    const path = `/api/${credentials.projectId}/raw-data?${params.toString()}`;
+    const payload = await request(credentials, path);
+    const record = payload as Record<string, unknown>;
+    const page = [record.samples, record.data, record.items].find(Array.isArray) as unknown[] | undefined;
+    if (!page?.length) break;
+    items.push(...page);
+    if (page.length < limit) break;
+  }
+  return items;
+}
+
+export function classifySample(credentials: EdgeImpulseCredentials, sampleId: string) {
+  const path = `/api/${credentials.projectId}/classify/v2/${encodeURIComponent(sampleId)}`;
+  return request(credentials, path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ modelVariant: EDGE_IMPULSE_CONFIG.modelVariant }),
+  });
+}
+
+export function detectImageContentType(bytes: ArrayBuffer, contentType = ""): string | null {
+  const normalized = contentType.split(";")[0].trim().toLowerCase();
+  const view = new Uint8Array(bytes);
+  if (view.length >= 3 && view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) return "image/jpeg";
+  if (
+    view.length >= 8 &&
+    view[0] === 0x89 &&
+    view[1] === 0x50 &&
+    view[2] === 0x4e &&
+    view[3] === 0x47 &&
+    view[4] === 0x0d &&
+    view[5] === 0x0a &&
+    view[6] === 0x1a &&
+    view[7] === 0x0a
+  ) return "image/png";
+  if (
+    view.length >= 12 &&
+    String.fromCharCode(...view.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...view.slice(8, 12)) === "WEBP"
+  ) return "image/webp";
+  if (view.length >= 3 && String.fromCharCode(...view.slice(0, 3)) === "GIF") return "image/gif";
+  const textPrefix = new TextDecoder().decode(view.slice(0, Math.min(view.length, 256))).trimStart();
+  if (normalized === "image/svg+xml" && textPrefix.startsWith("<svg")) return "image/svg+xml";
+  return null;
+}
+
+function normalizeImageSourceUrl(source: string): string | null {
+  const value = source.trim();
+  if (!value) return null;
+  try {
+    if (/^https?:\/\//i.test(value)) return new URL(value).toString();
+    if (value.startsWith("/v1/")) return new URL(value, "https://studio.edgeimpulse.com").toString();
+    if (value.startsWith("/api/")) return new URL(value, BASE_URL).toString();
+    if (value.startsWith("/")) return new URL(value, "https://studio.edgeimpulse.com").toString();
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchImageUrl(
+  credentials: EdgeImpulseCredentials,
+  url: string,
+  signal: AbortSignal,
+): Promise<{ bytes: ArrayBuffer; contentType: string } | null> {
+  const parsed = new URL(url);
+  const headers: Record<string, string> = { Accept: "image/jpeg,image/png,image/webp,image/*,*/*" };
+  if (parsed.hostname.endsWith("edgeimpulse.com")) headers["x-api-key"] = credentials.apiKey;
+  const response = await fetch(parsed, {
+    headers,
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const bytes = await response.arrayBuffer();
+  const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+  return contentType ? { bytes, contentType } : null;
+}
+
+function bytePreview(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes.slice(0, 48));
+  const hex = [...view].map((value) => value.toString(16).padStart(2, "0")).join(" ");
+  const text = new TextDecoder().decode(view).replace(/[^\x20-\x7e]/g, ".");
+  return `${hex}${text.trim() ? ` | ${text}` : ""}`;
+}
+
+export function studioApiPath(url: URL): string {
+  return `${url.pathname}${url.search}`.replace(/^\/v1(?=\/api\/)/, "");
+}
+
+export async function getSampleImage(
+  credentials: EdgeImpulseCredentials,
+  sampleId: string,
+  afterInputBlock = false,
+  sourceUrls: string[] = [],
+): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+  validateCredentials(credentials);
+  if (!/^\d+$/.test(sampleId)) {
+    throw new EdgeImpulseError("Sample ID không hợp lệ.", "INVALID_SAMPLE_ID", 400);
+  }
+  const sampleNumber = Number(sampleId);
+  const imageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { afterInputBlock }));
+  const plainImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { includeImpulseId: false, afterInputBlock }));
+  const processedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { afterInputBlock: true }));
+  const plainProcessedImageUrl = new URL(buildSampleImageUrl(credentials.projectId, sampleNumber, { includeImpulseId: false, afterInputBlock: true }));
+  const rawUrl = new URL(buildRawSampleUrl(credentials.projectId, sampleNumber));
+  const sourceCandidates = sourceUrls
+    .map(normalizeImageSourceUrl)
+    .filter((value): value is string => Boolean(value));
+  const paths = [
+    studioApiPath(imageUrl),
+    studioApiPath(plainImageUrl),
+    ...(!afterInputBlock ? [studioApiPath(processedImageUrl)] : []),
+    ...(!afterInputBlock ? [studioApiPath(plainProcessedImageUrl)] : []),
+    studioApiPath(rawUrl),
+  ];
+  const attempts: Array<Record<string, unknown>> = [];
+  const path = paths[0];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    for (const sourceUrl of sourceCandidates) {
+      const image = await fetchImageUrl(credentials, sourceUrl, controller.signal);
+      if (image) return image;
+    }
+    const response = await fetch(`${BASE_URL}${path}`, {
+      headers: { Accept: "image/jpeg,image/png,image/webp,image/*,*/*", "x-api-key": credentials.apiKey },
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      attempts.push({ source: "raw-data", path, status: response.status });
+      throw friendlyImageError(response.status);
+    }
+    const bytes = await response.arrayBuffer();
+    const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+    if (!contentType) {
+      attempts.push({
+        source: "raw-data",
+        path,
+        status: response.status,
+        contentType: response.headers.get("content-type") ?? "",
+        preview: bytePreview(bytes),
+      });
+      throw new EdgeImpulseError(
+        "Edge Impulse không trả về định dạng ảnh hợp lệ.",
+        "INVALID_IMAGE_CONTENT_TYPE",
+        502,
+      );
+    }
+    return { bytes, contentType };
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      for (const sourceUrl of sourceCandidates) {
+        try {
+          const image = await fetchImageUrl(credentials, sourceUrl, controller.signal);
+          if (image) return image;
+        } catch {
+          // Try the raw-data endpoints before surfacing the original error.
+        }
+      }
+      for (const fallbackPath of paths.slice(1)) {
+        try {
+          const response = await fetch(`${BASE_URL}${fallbackPath}`, {
+            headers: { Accept: "image/jpeg,image/png,image/webp,image/*,*/*", "x-api-key": credentials.apiKey },
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            attempts.push({ source: "raw-data", path: fallbackPath, status: response.status });
+            continue;
+          }
+          const bytes = await response.arrayBuffer();
+          const contentType = detectImageContentType(bytes, response.headers.get("content-type") ?? "");
+          if (contentType) return { bytes, contentType };
+          attempts.push({
+            source: "raw-data",
+            path: fallbackPath,
+            status: response.status,
+            contentType: response.headers.get("content-type") ?? "",
+            preview: bytePreview(bytes),
+          });
+        } catch {
+          // Try the next image source before surfacing the original error.
+        }
+      }
+    }
+    const safeError =
+      error instanceof EdgeImpulseError
+        ? error
+        : error instanceof DOMException && error.name === "AbortError"
+          ? new EdgeImpulseError("Tải ảnh đã hết thời gian chờ.", "IMAGE_TIMEOUT", 504)
+          : new EdgeImpulseError("Không thể tải ảnh từ Edge Impulse.", "IMAGE_NETWORK_ERROR", 502);
+    console.error({
+      status: safeError.status,
+      endpoint: path,
+      durationMs: Date.now() - started,
+      errorCode: safeError.code,
+    });
+    throw new EdgeImpulseError(safeError.message, safeError.code, safeError.status, {
+      sampleId,
+      sourceCandidates,
+      attempts,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
