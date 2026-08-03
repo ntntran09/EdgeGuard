@@ -346,6 +346,34 @@ export const supabaseService = {
     };
   },
 
+  async hasEarlierAlertInWindow({ deviceId, alertType, currentAlertId, currentTimestamp, windowMs }) {
+    if (!supabase || !deviceId || !alertType || !currentAlertId) return false;
+
+    const currentTime = Date.parse(currentTimestamp || '');
+    const currentDate = Number.isFinite(currentTime) ? new Date(currentTime) : new Date();
+    const since = new Date(currentDate.getTime() - Number(windowMs || 0));
+
+    const { data, error } = await supabase
+      .from('alerts')
+      .select('id,timestamp,created_at')
+      .eq('device_id', deviceId)
+      .eq('alert_type', alertType)
+      .gte('timestamp', since.toISOString())
+      .lte('timestamp', currentDate.toISOString())
+      .order('timestamp', { ascending: true })
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(1);
+
+    if (error) {
+      console.error('[Supabase] Error checking alert cooldown window:', error.message);
+      return false;
+    }
+
+    const earliest = data?.[0];
+    return Boolean(earliest && earliest.id !== currentAlertId);
+  },
+
   async upsertTelegramBotUser({ deviceId, telegramId, displayName }) {
     if (!supabase) throw new Error('Supabase is not configured.');
 

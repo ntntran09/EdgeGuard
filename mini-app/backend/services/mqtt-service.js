@@ -911,6 +911,31 @@ export function createMqttService() {
     }
   }
 
+  async function shouldSendEmailForAlert(alert, alertResult) {
+    if (!checkAndTouchEmailNotificationCooldown(alert.deviceId, alert.alertType)) {
+      console.log(`[Email] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 1m, memory).`);
+      return false;
+    }
+
+    try {
+      const suppressedByDatabase = await supabaseService.hasEarlierAlertInWindow({
+        deviceId: alert.deviceId || config.mqtt.deviceId,
+        alertType: alert.alertType,
+        currentAlertId: alertResult?.id,
+        currentTimestamp: alertResult?.timestamp || alertResult?.created_at,
+        windowMs: EMAIL_NOTIFICATION_COOLDOWN_MS,
+      });
+      if (suppressedByDatabase) {
+        console.log(`[Email] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 1m, database).`);
+        return false;
+      }
+    } catch (error) {
+      console.error('[Email] Could not check database cooldown; using memory cooldown only:', error);
+    }
+
+    return true;
+  }
+
   async function insertAlertWithEventImage(alert, eventImage) {
     const capturedImage = eventImage ?? await captureEventImageWithRetry();
     const imagePath = capturedImage.imagePath || alert.thumbnailUrl;
@@ -945,7 +970,7 @@ export function createMqttService() {
         console.error('[MQTT] Telegram notify failed:', err);
       });
 
-      if (checkAndTouchEmailNotificationCooldown(alert.deviceId, alert.alertType)) {
+      if (await shouldSendEmailForAlert(alert, alertResult)) {
         emailRecipientsForDevice(alert.deviceId).then(async (emails) => {
           const telegramBotLink = await telegramService.getBotLink();
           const emailSeverityLabel = alertDisplaySeverity === 'danger'
@@ -970,8 +995,6 @@ export function createMqttService() {
         }).catch((err) => {
           console.error('[MQTT] Email notify failed:', err);
         });
-      } else {
-        console.log(`[Email] Suppressed repeated notification for alert "${alert.alertType}" (cooldown 1m).`);
       }
 
     }

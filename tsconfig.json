@@ -16,6 +16,21 @@
     "plugins": [{ "name": "next" }],
     "paths": { "@/*": ["./*"] }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "next-env.d.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "lib/**/*.ts",
+    "tests/**/*.ts",
+    ".next/types/**/*.ts",
+    "*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "mini-app",
+    "hardware",
+    "ai-models"
+  ]
 }
